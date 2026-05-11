@@ -10,10 +10,25 @@ from app.api.routes.symbols import router as symbols_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.services.cache.redis_store import RedisStore
+from app.services.market_detail.query_service import MarketDetailQueryService
 from app.ws.market import router as market_ws_router
 
 
 configure_logging()
+
+
+def build_allowed_origins(frontend_origin: str) -> list[str]:
+    origins = [frontend_origin]
+
+    try:
+        if frontend_origin.startswith("http://localhost:"):
+            origins.append(frontend_origin.replace("http://localhost:", "http://127.0.0.1:", 1))
+        elif frontend_origin.startswith("http://127.0.0.1:"):
+            origins.append(frontend_origin.replace("http://127.0.0.1:", "http://localhost:", 1))
+    except Exception:
+        return origins
+
+    return list(dict.fromkeys(origins))
 
 
 @asynccontextmanager
@@ -27,9 +42,12 @@ async def lifespan(app: FastAPI):
         market_event_key_prefix=settings.market_event_key_prefix,
         market_events_stream_key=settings.market_events_stream_key,
     )
+    app.state.market_detail_query_service = MarketDetailQueryService(settings.postgres_dsn)
+    await app.state.market_detail_query_service.connect()
 
     yield
 
+    await app.state.market_detail_query_service.close()
     await app.state.redis_store.close()
 
 
@@ -39,7 +57,7 @@ def create_app() -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[settings.frontend_origin],
+        allow_origins=build_allowed_origins(settings.frontend_origin),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

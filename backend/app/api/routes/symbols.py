@@ -13,6 +13,19 @@ class ActivateSymbolRequest(BaseModel):
     symbol: str = Field(min_length=1, max_length=16)
 
 
+def _normalize_symbol_or_422(symbol: str) -> str:
+    try:
+        return normalize_symbol_input(symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+def _validate_limit(limit: int) -> int:
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be between 1 and 200")
+    return limit
+
+
 @router.get("/active")
 async def active_symbols(request: Request) -> dict[str, list[str]]:
     redis_store = request.app.state.redis_store
@@ -26,12 +39,82 @@ async def active_snapshots(request: Request) -> dict[str, dict[str, object]]:
     return {"snapshots": await redis_store.get_symbol_snapshots(symbols)}
 
 
+@router.get("/{symbol}/detail")
+async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
+    normalized_symbol = _normalize_symbol_or_422(symbol)
+    redis_store = request.app.state.redis_store
+    query_service = request.app.state.market_detail_query_service
+
+    snapshot = await redis_store.get_symbol_snapshot(normalized_symbol)
+    if snapshot is None:
+        snapshot = await query_service.fetch_snapshot(normalized_symbol)
+
+    latest_event = await redis_store.get_symbol_event(normalized_symbol)
+    if latest_event is None:
+        latest_event = await query_service.fetch_latest_event(normalized_symbol)
+
+    latest_kline = await query_service.fetch_latest_kline(normalized_symbol, period="1d")
+    daily_bars_preview = await query_service.fetch_klines(normalized_symbol, period="1d", limit=30)
+    intraday_sampled_bars = await query_service.fetch_intraday_sampled_bars(normalized_symbol, interval_minutes=5)
+    order_book = await query_service.fetch_best_bid_ask(normalized_symbol)
+
+    return {
+        "symbol": normalized_symbol,
+        "snapshot": snapshot,
+        "latestEvent": latest_event,
+        "latestKline": latest_kline,
+        "dailyBarsPreview": list(reversed(daily_bars_preview)),
+        "intradaySampledBars": intraday_sampled_bars,
+        "orderBook": order_book,
+        "capabilities": {
+            "supportsIntradayKline": False,
+            "supportsOrderBookDepth5": False,
+            "supportsSampledIntradayBars": len(intraday_sampled_bars) > 1,
+            "supportsBestBidAsk": any(value is not None for value in order_book.values()),
+        },
+    }
+
+
+@router.get("/{symbol}/ticks")
+async def symbol_ticks(symbol: str, request: Request, limit: int = 60) -> dict[str, object]:
+    normalized_symbol = _normalize_symbol_or_422(symbol)
+    validated_limit = _validate_limit(limit)
+    query_service = request.app.state.market_detail_query_service
+    return {
+        "symbol": normalized_symbol,
+        "ticks": await query_service.fetch_ticks(normalized_symbol, validated_limit),
+    }
+
+
+@router.get("/{symbol}/kline")
+async def symbol_kline(symbol: str, request: Request, period: str = "1d", limit: int = 1) -> dict[str, object]:
+    normalized_symbol = _normalize_symbol_or_422(symbol)
+    validated_limit = _validate_limit(limit)
+    if period != "1d":
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="only period=1d is currently supported")
+
+    query_service = request.app.state.market_detail_query_service
+    return {
+        "symbol": normalized_symbol,
+        "period": period,
+        "klines": await query_service.fetch_klines(normalized_symbol, period=period, limit=validated_limit),
+    }
+
+
+@router.get("/{symbol}/events")
+async def symbol_events(symbol: str, request: Request, limit: int = 20) -> dict[str, object]:
+    normalized_symbol = _normalize_symbol_or_422(symbol)
+    validated_limit = _validate_limit(limit)
+    query_service = request.app.state.market_detail_query_service
+    return {
+        "symbol": normalized_symbol,
+        "events": await query_service.fetch_events(normalized_symbol, validated_limit),
+    }
+
+
 @router.post("/activate", status_code=status.HTTP_202_ACCEPTED)
 async def activate_symbol(payload: ActivateSymbolRequest, request: Request) -> dict[str, str]:
-    try:
-        symbol = normalize_symbol_input(payload.symbol)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    symbol = _normalize_symbol_or_422(payload.symbol)
 
     redis_store = request.app.state.redis_store
     await redis_store.activate_symbol(symbol)
@@ -45,10 +128,7 @@ async def activate_symbol(payload: ActivateSymbolRequest, request: Request) -> d
 
 @router.delete("/{symbol}", status_code=status.HTTP_202_ACCEPTED)
 async def deactivate_symbol(symbol: str, request: Request) -> dict[str, str]:
-    try:
-        normalized_symbol = normalize_symbol_input(symbol)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    normalized_symbol = _normalize_symbol_or_422(symbol)
 
     redis_store = request.app.state.redis_store
     await redis_store.deactivate_symbol(normalized_symbol)
