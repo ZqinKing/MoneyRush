@@ -33,6 +33,21 @@ class PostgresStore:
             async with connection.transaction():
                 await connection.execute(
                     """
+                    INSERT INTO stock_profile (symbol, name, exchange, updated_at)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (symbol) DO UPDATE SET
+                        name = EXCLUDED.name,
+                        exchange = EXCLUDED.exchange,
+                        updated_at = EXCLUDED.updated_at
+                    """,
+                    snapshot["symbol"],
+                    snapshot.get("companyName"),
+                    snapshot.get("exchange"),
+                    tick["ts"],
+                )
+
+                await connection.execute(
+                    """
                     INSERT INTO stock_snapshot (
                         symbol,
                         last_price,

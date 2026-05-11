@@ -3,14 +3,39 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 
+SYMBOL_COMPANY_NAMES = {
+    "000001": "平安银行",
+    "000002": "万科A",
+    "000333": "美的集团",
+    "002594": "比亚迪",
+    "300750": "宁德时代",
+    "600036": "招商银行",
+    "600519": "贵州茅台",
+    "601318": "中国平安",
+    "688981": "中芯国际",
+}
+
+
 def _symbol_seed(symbol: str) -> int:
     return sum(ord(character) for character in symbol)
+
+
+def _infer_exchange(symbol: str) -> str:
+    if symbol.startswith(("5", "6", "9")):
+        return "SH"
+    return "SZ"
+
+
+def _company_name(symbol: str) -> str:
+    return SYMBOL_COMPANY_NAMES.get(symbol, f"示例企业 {symbol}")
 
 
 def build_market_state(symbol: str, step: int) -> dict[str, dict[str, object]]:
     now = datetime.now(UTC)
     minute_bucket = now.replace(second=0, microsecond=0)
     seed = _symbol_seed(symbol)
+    exchange = _infer_exchange(symbol)
+    company_name = _company_name(symbol)
 
     base_price = 8 + (seed % 37) + ((seed % 100) / 100)
     drift = ((step % 9) - 4) * 0.07
@@ -29,6 +54,8 @@ def build_market_state(symbol: str, step: int) -> dict[str, dict[str, object]]:
 
     snapshot = {
         "symbol": symbol,
+        "companyName": company_name,
+        "exchange": exchange,
         "lastPrice": last_price,
         "changePct": change_pct,
         "pe": round(8 + (seed % 20) * 0.9, 4),
@@ -76,6 +103,8 @@ def build_market_state(symbol: str, step: int) -> dict[str, dict[str, object]]:
         "type": "market_update",
         "generatedAt": now.isoformat(),
         "symbol": symbol,
+        "companyName": company_name,
+        "exchange": exchange,
         "snapshot": snapshot,
         "tick": {
             "price": last_price,
