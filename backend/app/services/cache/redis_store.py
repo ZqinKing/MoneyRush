@@ -44,6 +44,19 @@ class RedisStore:
             },
         )
 
+    async def deactivate_symbol(self, symbol: str) -> str:
+        timestamp = datetime.now(UTC).isoformat()
+        await self._redis.srem(self._active_symbols_key, symbol)
+        await self._redis.delete(self._snapshot_key(symbol), self._event_key(symbol))
+        return await self._redis.xadd(
+            self._stream_key,
+            {
+                "event": "deactivate_symbol",
+                "symbol": symbol,
+                "requested_at": timestamp,
+            },
+        )
+
     async def get_active_symbols(self) -> list[str]:
         symbols = await self._redis.smembers(self._active_symbols_key)
         return sorted(symbols)

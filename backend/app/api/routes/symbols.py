@@ -41,3 +41,20 @@ async def activate_symbol(payload: ActivateSymbolRequest, request: Request) -> d
         "symbol": symbol,
         "message": f"collector activation queued for {symbol}",
     }
+
+
+@router.delete("/{symbol}", status_code=status.HTTP_202_ACCEPTED)
+async def deactivate_symbol(symbol: str, request: Request) -> dict[str, str]:
+    try:
+        normalized_symbol = normalize_symbol_input(symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    redis_store = request.app.state.redis_store
+    await redis_store.deactivate_symbol(normalized_symbol)
+
+    return {
+        "status": "accepted",
+        "symbol": normalized_symbol,
+        "message": f"collector deactivation queued for {normalized_symbol}",
+    }
