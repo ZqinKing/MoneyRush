@@ -1,5 +1,7 @@
 # MoneyRush
 
+[中文说明 / Chinese README](./README.zh-CN.md)
+
 MoneyRush is a greenfield market-monitoring base focused on a fast Phase 1 loop: activate a symbol, collect market data, persist time-series records, cache hot snapshots, and stream live state back to a dashboard.
 
 ## Current Status
