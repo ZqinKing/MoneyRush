@@ -1,0 +1,1 @@
+"""MoneyRush API application package."""
