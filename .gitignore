@@ -18,3 +18,5 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+.ui-review/
+AGENTS.md
