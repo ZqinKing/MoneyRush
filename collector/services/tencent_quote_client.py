@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta, timezone
 import logging
 from time import monotonic
@@ -320,6 +320,22 @@ class MarketQuoteClient:
             return tencent_quote.to_market_state()
 
         tencent_quote = self._get_tencent_quote_or_none(symbol)
+        if tencent_quote is not None:
+            mootdx_quote = self._align_trade_day(mootdx_quote, tencent_quote)
+
+        if not self._is_mootdx_quote_sane(mootdx_quote, tencent_quote):
+            if tencent_quote is not None:
+                logger.warning(
+                    "mootdx quote diverged from enrichment source; falling back to tencent",
+                    extra={
+                        "symbol": symbol,
+                        "mootdx_last_price": mootdx_quote.last_price,
+                        "tencent_last_price": tencent_quote.last_price,
+                    },
+                )
+                return tencent_quote.to_market_state()
+            raise RuntimeError(f"mootdx quote failed validation for {symbol}")
+
         return self._build_market_state(mootdx_quote, tencent_quote)
 
     def _get_mootdx_quote(self, symbol: str) -> MootdxQuote:
@@ -363,6 +379,43 @@ class MarketQuoteClient:
         except Exception:
             logger.exception("tencent enrichment fetch failed; continuing with mootdx core quote", extra={"symbol": symbol})
             return None
+
+    @staticmethod
+    def _align_trade_day(mootdx_quote: MootdxQuote, tencent_quote: TencentQuote) -> MootdxQuote:
+        trade_day = tencent_quote.updated_at.astimezone(CHINA_MARKET_TZ).date()
+        quote_time = mootdx_quote.updated_at.astimezone(CHINA_MARKET_TZ).time()
+        aligned_local = datetime.combine(trade_day, quote_time, tzinfo=CHINA_MARKET_TZ)
+        aligned_updated_at = aligned_local.astimezone(UTC)
+        aligned_daily_bucket = aligned_updated_at.replace(hour=0, minute=0, second=0, microsecond=0)
+        return replace(mootdx_quote, updated_at=aligned_updated_at, daily_bucket=aligned_daily_bucket)
+
+    def _is_mootdx_quote_sane(self, mootdx_quote: MootdxQuote, tencent_quote: TencentQuote | None) -> bool:
+        if mootdx_quote.previous_close <= 0:
+            return False
+
+        price_fields = (
+            mootdx_quote.last_price,
+            mootdx_quote.open_price,
+            mootdx_quote.high_price,
+            mootdx_quote.low_price,
+        )
+        if any(value <= 0 for value in price_fields):
+            return False
+
+        if mootdx_quote.high_price < max(mootdx_quote.open_price, mootdx_quote.last_price):
+            return False
+
+        if mootdx_quote.low_price > min(mootdx_quote.open_price, mootdx_quote.last_price):
+            return False
+
+        if mootdx_quote.volume < 0 or mootdx_quote.amount < 0:
+            return False
+
+        if tencent_quote is None or tencent_quote.last_price <= 0:
+            return True
+
+        divergence_pct = abs(mootdx_quote.last_price - tencent_quote.last_price) / tencent_quote.last_price * 100
+        return divergence_pct <= self._settings.collector_vendor_price_divergence_limit_pct
 
     @staticmethod
     def _build_market_state(mootdx_quote: MootdxQuote, tencent_quote: TencentQuote | None) -> dict[str, dict[str, object]]:
