@@ -54,9 +54,14 @@ PostgreSQL/TimescaleDB and Redis stay on the internal Docker network only, which
 
 ## License
 
-This repository uses the `MoneyRush Personal Use License 1.0`.
+This repository uses **GNU AGPL v3** for the community edition.
 
-- Personal and non-commercial use is free.
-- Commercial use requires prior written authorization.
+- This is a standard copyleft open-source license.
+- If you modify and run the software for users over a network, AGPLv3 may require you to offer the corresponding source of that modified version to those users.
+- If you want to use MoneyRush without AGPLv3 obligations, see the commercial licensing path below.
 
 See `LICENSE` for the full terms.
+
+Commercial licensing information is available in [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md).
+
+For Chinese readers, a non-authoritative explanatory note is also available at [`LICENSE.zh-CN.md`](./LICENSE.zh-CN.md).

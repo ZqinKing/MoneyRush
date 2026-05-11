@@ -59,9 +59,14 @@ PostgreSQL/TimescaleDB 和 Redis 默认仅运行在 Docker 内部网络中，不
 
 ## 许可协议
 
-本仓库使用自定义协议 `MoneyRush Personal Use License 1.0`。
+本仓库的社区版使用 **GNU AGPL v3**。
 
-- 个人使用、学习、研究和非商用使用：免费允许
-- 商业使用：必须事先获得书面授权
+- 这是一份标准的强 copyleft 开源许可证
+- 如果你修改并以网络服务形式向用户提供该软件，AGPLv3 可能要求你向这些用户提供该修改版本的对应源码
+- 如果你不希望承担 AGPLv3 义务，应走单独商业授权路径
 
-完整条款请查看 [`LICENSE`](./LICENSE)。
+完整条款请查看英文正式协议 [`LICENSE`](./LICENSE)。
+
+商业授权说明请查看 [`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md)。
+
+如果你希望先看中文说明，可阅读 [`LICENSE.zh-CN.md`](./LICENSE.zh-CN.md)。该文件是便于理解的中文解读，正式法律文本仍以英文版 `LICENSE` 为准。
