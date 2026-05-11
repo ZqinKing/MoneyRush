@@ -20,7 +20,10 @@ class CollectorWorker:
     def __init__(self, settings) -> None:
         self._settings = settings
         self._redis = Redis.from_url(settings.redis_url, decode_responses=True)
-        self._postgres = PostgresStore(settings.postgres_dsn)
+        self._postgres = PostgresStore(
+            settings.postgres_dsn,
+            enable_runtime_data_repair=settings.collector_enable_runtime_data_repair,
+        )
         self._quote_client = MarketQuoteClient(settings)
         self._last_stream_id = "$"
         self._last_collected_at: dict[str, float] = {}

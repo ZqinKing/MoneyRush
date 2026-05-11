@@ -29,8 +29,9 @@ def _normalize_kline_bucket_ts(bucket_ts: object, period: object) -> datetime:
 
 
 class PostgresStore:
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: str, *, enable_runtime_data_repair: bool = False) -> None:
         self._dsn = dsn
+        self._enable_runtime_data_repair = enable_runtime_data_repair
         self._pool: asyncpg.Pool | None = None
 
     async def connect(self) -> None:
@@ -76,9 +77,10 @@ class PostgresStore:
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS symbol_command_log_symbol_ts_idx ON symbol_command_log (symbol, ts DESC)"
             )
-            repairs = await self._repair_runtime_data(connection)
-            if any(repairs.values()):
-                logger.warning("collector repaired persisted market data", extra=repairs)
+            if self._enable_runtime_data_repair:
+                repairs = await self._repair_runtime_data(connection)
+                if any(repairs.values()):
+                    logger.warning("collector repaired persisted market data", extra=repairs)
 
     async def _repair_runtime_data(self, connection: asyncpg.Connection) -> dict[str, int]:
         repaired_ticks = await connection.fetchval(
