@@ -37,6 +37,29 @@ SELECT create_hypertable('stock_tick', 'ts', if_not_exists => TRUE, migrate_data
 
 CREATE INDEX IF NOT EXISTS stock_tick_symbol_ts_idx ON stock_tick (symbol, ts DESC);
 
+CREATE TABLE IF NOT EXISTS stock_event (
+    ts TIMESTAMPTZ NOT NULL,
+    symbol TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    source TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+SELECT create_hypertable('stock_event', 'ts', if_not_exists => TRUE, migrate_data => TRUE);
+
+CREATE INDEX IF NOT EXISTS stock_event_symbol_ts_idx ON stock_event (symbol, ts DESC);
+
+CREATE TABLE IF NOT EXISTS symbol_command_log (
+    ts TIMESTAMPTZ NOT NULL,
+    symbol TEXT NOT NULL,
+    command_type TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+SELECT create_hypertable('symbol_command_log', 'ts', if_not_exists => TRUE, migrate_data => TRUE);
+
+CREATE INDEX IF NOT EXISTS symbol_command_log_symbol_ts_idx ON symbol_command_log (symbol, ts DESC);
+
 CREATE TABLE IF NOT EXISTS stock_kline (
     bucket_ts TIMESTAMPTZ NOT NULL,
     symbol TEXT NOT NULL,
