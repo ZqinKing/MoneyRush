@@ -20,3 +20,4 @@ dist/
 .vscode/
 .ui-review/
 AGENTS.md
+.playwright-mcp/

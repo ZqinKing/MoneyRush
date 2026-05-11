@@ -265,6 +265,19 @@ input {
   border: 1px solid rgba(157, 180, 255, 0.12);
 }
 
+.snapshot-card.clickable {
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.snapshot-card.clickable:hover,
+.snapshot-card.clickable:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(129, 164, 255, 0.35);
+  box-shadow: 0 12px 30px rgba(23, 47, 99, 0.22);
+  outline: none;
+}
+
 .snapshot-card header,
 .event-card header {
   display: flex;
@@ -326,6 +339,231 @@ input {
   color: #6fe5b3;
 }
 
+.detail-layout {
+  display: grid;
+  gap: 16px;
+}
+
+.detail-hero-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 2.1fr) minmax(280px, 0.9fr);
+  gap: 14px;
+}
+
+.detail-heading {
+  align-items: center;
+}
+
+.detail-meta {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+}
+
+.detail-price {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+.back-button {
+  border: 1px solid rgba(129, 164, 255, 0.22);
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: rgba(6, 11, 22, 0.82);
+  color: #d9e6ff;
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+
+.detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.detail-card {
+  border-radius: 16px;
+  padding: 18px;
+  background: rgba(4, 8, 16, 0.9);
+  border: 1px solid rgba(157, 180, 255, 0.12);
+}
+
+.chart-card {
+  display: grid;
+  gap: 14px;
+}
+
+.chart-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.chart-summary-badge {
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(43, 96, 255, 0.12);
+  border: 1px solid rgba(129, 164, 255, 0.2);
+  color: #dbe6ff;
+}
+
+.chart-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.kline-chart,
+.volume-chart {
+  width: 100%;
+  display: block;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(8, 14, 26, 0.92), rgba(4, 8, 16, 0.92));
+  border: 1px solid rgba(157, 180, 255, 0.08);
+}
+
+.kline-chart {
+  min-height: 320px;
+}
+
+.volume-chart {
+  min-height: 120px;
+}
+
+.chart-grid-line {
+  stroke: rgba(157, 180, 255, 0.12);
+  stroke-width: 1;
+}
+
+.chart-axis-label {
+  fill: #8fa6d8;
+  font-size: 11px;
+}
+
+.line-chart-area {
+  fill: rgba(43, 107, 255, 0.14);
+}
+
+.line-chart-path {
+  fill: none;
+  stroke: #81a4ff;
+  stroke-width: 2.2;
+  vector-effect: non-scaling-stroke;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.line-chart-point {
+  fill: #dbe6ff;
+}
+
+.candle-wick,
+.candle-body,
+.volume-bar {
+  vector-effect: non-scaling-stroke;
+}
+
+.candle-wick.up,
+.candle-body.up,
+.volume-bar.up {
+  stroke: #ff8a8a;
+  fill: #ff8a8a;
+}
+
+.candle-wick.down,
+.candle-body.down,
+.volume-bar.down {
+  stroke: #6fe5b3;
+  fill: #6fe5b3;
+}
+
+.chart-axis-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  color: #8fa6d8;
+  font-size: 0.78rem;
+  padding: 0 4px;
+}
+
+.market-summary-card {
+  display: grid;
+  align-content: start;
+}
+
+.detail-card h3 {
+  margin-top: 0;
+  margin-bottom: 14px;
+}
+
+.detail-card dl {
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.detail-card dl div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-card dt {
+  color: #bbcaea;
+}
+
+.detail-card dd {
+  margin: 0;
+  text-align: right;
+}
+
+.wide-card {
+  grid-column: 1 / -1;
+}
+
+.detail-table-wrap {
+  overflow-x: auto;
+}
+
+.detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 560px;
+}
+
+.detail-table th,
+.detail-table td {
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(157, 180, 255, 0.12);
+  text-align: left;
+}
+
+.detail-table th {
+  color: #8fa6d8;
+  font-weight: 600;
+}
+
+.detail-event-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.detail-event-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid rgba(157, 180, 255, 0.12);
+}
+
 @media (max-width: 800px) {
   .grid {
     grid-template-columns: 1fr;
@@ -356,5 +594,29 @@ input {
   .inline-form-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .detail-meta {
+    justify-items: start;
+  }
+
+  .detail-hero-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .chart-card-header {
+    flex-direction: column;
+  }
+
+  .chart-summary-badge {
+    justify-items: start;
+  }
+
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wide-card {
+    grid-column: auto;
   }
 }
