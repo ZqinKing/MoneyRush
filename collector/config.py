@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     market_event_key_prefix: str = "moneyrush:event"
     market_events_stream_key: str = "moneyrush:market:events"
     collector_poll_interval_seconds: int = 5
+    collector_symbol_min_interval_seconds: int = 10
 
 
 @lru_cache(maxsize=1)

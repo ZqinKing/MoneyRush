@@ -64,6 +64,7 @@ services:
       MARKET_EVENT_KEY_PREFIX: moneyrush:event
       MARKET_EVENTS_STREAM_KEY: moneyrush:market:events
       COLLECTOR_POLL_INTERVAL_SECONDS: ${COLLECTOR_POLL_INTERVAL_SECONDS:-5}
+      COLLECTOR_SYMBOL_MIN_INTERVAL_SECONDS: ${COLLECTOR_SYMBOL_MIN_INTERVAL_SECONDS:-10}
     depends_on:
       db:
         condition: service_healthy
