@@ -8,11 +8,27 @@ SYMBOL_COMPANY_NAMES = {
     "000002": "万科A",
     "000333": "美的集团",
     "002594": "比亚迪",
+    "300274": "阳光电源",
     "300750": "宁德时代",
+    "600000": "浦发银行",
     "600036": "招商银行",
     "600519": "贵州茅台",
     "601318": "中国平安",
     "688981": "中芯国际",
+}
+
+SYMBOL_PRICE_ANCHORS = {
+    "000001": 11.24,
+    "000002": 8.16,
+    "000333": 64.35,
+    "002594": 248.40,
+    "300274": 138.82,
+    "300750": 446.50,
+    "600000": 10.05,
+    "600036": 42.88,
+    "600519": 1672.00,
+    "601318": 51.30,
+    "688981": 48.60,
 }
 
 
@@ -30,6 +46,13 @@ def _company_name(symbol: str) -> str:
     return SYMBOL_COMPANY_NAMES.get(symbol, f"示例企业 {symbol}")
 
 
+def _reference_price(symbol: str, seed: int) -> float:
+    anchored_price = SYMBOL_PRICE_ANCHORS.get(symbol)
+    if anchored_price is not None:
+        return anchored_price
+    return round(8 + (seed % 37) + ((seed % 100) / 100), 4)
+
+
 def build_market_state(symbol: str, step: int) -> dict[str, dict[str, object]]:
     now = datetime.now(UTC)
     minute_bucket = now.replace(second=0, microsecond=0)
@@ -37,11 +60,19 @@ def build_market_state(symbol: str, step: int) -> dict[str, dict[str, object]]:
     exchange = _infer_exchange(symbol)
     company_name = _company_name(symbol)
 
-    base_price = 8 + (seed % 37) + ((seed % 100) / 100)
-    drift = ((step % 9) - 4) * 0.07
-    last_price = round(base_price + drift, 4)
-    previous_close = round(base_price - 0.12, 4)
-    open_price = round(base_price - 0.05, 4)
+    reference_price = _reference_price(symbol, seed)
+    if symbol in SYMBOL_PRICE_ANCHORS:
+        last_price = round(reference_price, 4)
+        close_drift = ((step % 7) - 3) * max(reference_price * 0.002, 0.08)
+        open_drift = ((step % 5) - 2) * max(reference_price * 0.0015, 0.05)
+        previous_close = round(reference_price - close_drift, 4)
+        open_price = round(reference_price - open_drift, 4)
+    else:
+        drift = ((step % 9) - 4) * 0.07
+        last_price = round(reference_price + drift, 4)
+        previous_close = round(reference_price - 0.12, 4)
+        open_price = round(reference_price - 0.05, 4)
+
     high_price = round(max(open_price, last_price) + 0.18, 4)
     low_price = round(min(open_price, last_price) - 0.16, 4)
     change_pct = round(((last_price - previous_close) / previous_close) * 100, 4)
