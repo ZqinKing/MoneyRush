@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 from time import monotonic
 from collections.abc import Sequence
 
 from redis.asyncio import Redis
 
-from collector.services.market_simulator import build_market_state
 from collector.services.persistence import PostgresStore
+from collector.services.tencent_quote_client import MarketQuoteClient
 
 
 logger = logging.getLogger(__name__)
@@ -20,8 +21,8 @@ class CollectorWorker:
         self._settings = settings
         self._redis = Redis.from_url(settings.redis_url, decode_responses=True)
         self._postgres = PostgresStore(settings.postgres_dsn)
+        self._quote_client = MarketQuoteClient(settings)
         self._last_stream_id = "$"
-        self._symbol_steps: dict[str, int] = {}
         self._last_collected_at: dict[str, float] = {}
         self._postgres_ready = False
 
@@ -64,14 +65,12 @@ class CollectorWorker:
             return
 
         self._last_collected_at[symbol] = now
-        step = self._symbol_steps.get(symbol, 0) + 1
-        self._symbol_steps[symbol] = step
-
-        market_state = build_market_state(symbol, step)
+        market_state = await asyncio.to_thread(self._quote_client.fetch_quote, symbol)
         await self._postgres.persist_market_state(
             snapshot=market_state["snapshot"],
             tick=market_state["tick"],
             kline=market_state["kline"],
+            event=market_state["event"],
         )
 
         await self._redis.set(
@@ -97,12 +96,11 @@ class CollectorWorker:
                 "symbol": symbol,
                 "company_name": market_state["snapshot"]["companyName"],
                 "last_price": market_state["snapshot"]["lastPrice"],
-                "step": step,
+                "source": market_state["snapshot"]["source"],
             },
         )
 
     def _clear_symbol_runtime_state(self, symbol: str) -> None:
-        self._symbol_steps.pop(symbol, None)
         self._last_collected_at.pop(symbol, None)
 
     async def _consume_command_stream(self) -> None:
@@ -129,15 +127,31 @@ class CollectorWorker:
             if payload.get("event") == "activate_symbol":
                 symbol = payload.get("symbol")
                 if symbol:
+                    await self._persist_command_event(symbol, payload)
                     await self._redis.sadd(self._settings.active_symbols_key, symbol)
                     return
 
             if payload.get("event") == "deactivate_symbol":
                 symbol = payload.get("symbol")
                 if symbol:
+                    await self._persist_command_event(symbol, payload)
                     await self._redis.srem(self._settings.active_symbols_key, symbol)
                     await self._redis.delete(
                         f"{self._settings.market_snapshot_key_prefix}:{symbol}",
                         f"{self._settings.market_event_key_prefix}:{symbol}",
                     )
                     self._clear_symbol_runtime_state(symbol)
+
+    async def _persist_command_event(self, symbol: str, payload: dict[str, str]) -> None:
+        requested_at = payload.get("requested_at")
+        if requested_at:
+            timestamp = datetime.fromisoformat(requested_at)
+        else:
+            timestamp = datetime.now(UTC)
+
+        await self._postgres.persist_symbol_command(
+            timestamp=timestamp,
+            symbol=symbol,
+            command_type=payload.get("event", "unknown"),
+            payload=payload,
+        )
