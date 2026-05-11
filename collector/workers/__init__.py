@@ -1,0 +1,1 @@
+"""Collector workers package."""
