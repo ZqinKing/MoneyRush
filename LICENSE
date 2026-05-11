@@ -1,0 +1,63 @@
+MoneyRush Personal Use License 1.0
+
+Copyright (c) 2026 MoneyRush contributors
+
+This license applies to the source code, configuration, documentation, and other materials in this repository (the "Software"), unless a file explicitly states otherwise.
+
+1. Personal and Non-Commercial Use
+
+Permission is granted, free of charge, to any individual or organization to use, copy, modify, and run the Software for personal learning, research, evaluation, internal experimentation, and other non-commercial purposes.
+
+Redistribution of the Software for non-commercial purposes is permitted in source form only, provided that:
+
+- this license is included in full;
+- all copyright, attribution, and notice statements are retained; and
+- recipients are informed that commercial use requires separate authorization.
+
+2. Commercial Use Requires Prior Authorization
+
+Commercial use of the Software is not permitted under this license without prior written authorization from the copyright holder.
+
+For purposes of this license, "Commercial Use" includes, without limitation:
+
+- using the Software, or a modified version of it, in exchange for payment or other compensation;
+- using the Software to provide a paid service or hosted offering;
+- using the Software in support of revenue-generating business operations;
+- incorporating the Software into a product or service offered to customers, clients, or third parties;
+- consulting, contracting, outsourcing, or deliverable work performed for a customer or employer using the Software; or
+- sublicensing, reselling, relicensing, or redistributing the Software as part of a commercial offering.
+
+To obtain commercial authorization, contact the repository maintainer or copyright holder through the repository's published contact channel.
+
+3. Restrictions
+
+Unless prior written commercial authorization is granted, you may not:
+
+- use the Software for Commercial Use;
+- remove or alter copyright, attribution, or license notices;
+- imply that the copyright holder endorses your use, fork, distribution, or derived work; or
+- use any trade names, trademarks, service marks, or logos associated with the Software except as needed for accurate attribution.
+
+4. Ownership
+
+The Software is licensed, not sold. All rights not expressly granted by this license are reserved by the copyright holder.
+
+5. Contributions
+
+Unless explicitly agreed otherwise in writing, any contribution intentionally submitted for inclusion in this repository is provided under the same terms as this license.
+
+6. Disclaimer of Warranty
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. THE ENTIRE RISK AS TO THE QUALITY AND PERFORMANCE OF THE SOFTWARE IS WITH YOU.
+
+7. Limitation of Liability
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OF OR OTHER DEALINGS IN THE SOFTWARE.
+
+8. Termination
+
+Any rights granted under this license automatically terminate if you violate its terms. Upon termination, you must stop using and redistributing the Software until you obtain written permission to continue.
+
+9. Nature of License
+
+This is a source-available license. It is not intended to be an OSI-approved open-source license.
