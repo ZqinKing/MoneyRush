@@ -312,14 +312,14 @@ class MarketQuoteClient:
         self._tencent_failure_until = 0.0
 
     def fetch_quote(self, symbol: str) -> dict[str, dict[str, object]]:
-        tencent_quote = self._get_tencent_quote(symbol)
-
         try:
             mootdx_quote = self._get_mootdx_quote(symbol)
         except Exception:
+            tencent_quote = self._get_tencent_quote(symbol)
             logger.exception("mootdx primary quote fetch failed; falling back to tencent", extra={"symbol": symbol})
             return tencent_quote.to_market_state()
 
+        tencent_quote = self._get_tencent_quote_or_none(symbol)
         return self._build_market_state(mootdx_quote, tencent_quote)
 
     def _get_mootdx_quote(self, symbol: str) -> MootdxQuote:
@@ -357,24 +357,33 @@ class MarketQuoteClient:
         self._tencent_cache[symbol] = (quote, now)
         return quote
 
+    def _get_tencent_quote_or_none(self, symbol: str) -> TencentQuote | None:
+        try:
+            return self._get_tencent_quote(symbol)
+        except Exception:
+            logger.exception("tencent enrichment fetch failed; continuing with mootdx core quote", extra={"symbol": symbol})
+            return None
+
     @staticmethod
-    def _build_market_state(mootdx_quote: MootdxQuote, tencent_quote: TencentQuote) -> dict[str, dict[str, object]]:
+    def _build_market_state(mootdx_quote: MootdxQuote, tencent_quote: TencentQuote | None) -> dict[str, dict[str, object]]:
         change_pct = round(((mootdx_quote.last_price - mootdx_quote.previous_close) / mootdx_quote.previous_close) * 100, 4)
+        company_name = tencent_quote.company_name if tencent_quote is not None else mootdx_quote.symbol
+        composite_source = "mootdx+tencent-finance" if tencent_quote is not None else "mootdx"
 
         snapshot = {
             "symbol": mootdx_quote.symbol,
-            "companyName": tencent_quote.company_name,
+            "companyName": company_name,
             "exchange": mootdx_quote.exchange,
             "lastPrice": mootdx_quote.last_price,
             "changePct": change_pct,
-            "pe": tencent_quote.pe,
-            "pb": tencent_quote.pb,
-            "turnoverRate": tencent_quote.turnover_rate,
-            "marketCap": tencent_quote.market_cap,
-            "limitUp": tencent_quote.limit_up,
-            "limitDown": tencent_quote.limit_down,
+            "pe": tencent_quote.pe if tencent_quote is not None else None,
+            "pb": tencent_quote.pb if tencent_quote is not None else None,
+            "turnoverRate": tencent_quote.turnover_rate if tencent_quote is not None else None,
+            "marketCap": tencent_quote.market_cap if tencent_quote is not None else None,
+            "limitUp": tencent_quote.limit_up if tencent_quote is not None else None,
+            "limitDown": tencent_quote.limit_down if tencent_quote is not None else None,
             "updatedAt": mootdx_quote.updated_at.isoformat(),
-            "source": "mootdx+tencent-finance",
+            "source": composite_source,
         }
 
         tick = {
@@ -418,7 +427,7 @@ class MarketQuoteClient:
             "type": "market_update",
             "generatedAt": mootdx_quote.updated_at.isoformat(),
             "symbol": mootdx_quote.symbol,
-            "companyName": tencent_quote.company_name,
+            "companyName": company_name,
             "exchange": mootdx_quote.exchange,
             "snapshot": snapshot,
             "tick": {
