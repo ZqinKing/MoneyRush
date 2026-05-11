@@ -30,6 +30,19 @@ function normalizeLoopbackUrl(configuredUrl, fallbackUrl) {
 const apiBaseUrl = normalizeLoopbackUrl(import.meta.env.VITE_API_BASE_URL, 'http://localhost:8000');
 const wsBaseUrl = normalizeLoopbackUrl(import.meta.env.VITE_WS_BASE_URL, 'ws://localhost:8000');
 
+const requestStateLabels = {
+  idle: '等待操作',
+  submitting: '正在提交请求…',
+  accepted: '已加入监控队列',
+};
+
+const connectionStateLabels = {
+  connecting: '连接中',
+  connected: '已连接',
+  disconnected: '连接已断开',
+  error: '连接异常',
+};
+
 function serializeIdentityValue(value) {
   if (Array.isArray(value)) {
     return `[${value.map((item) => serializeIdentityValue(item)).join(',')}]`;
@@ -121,6 +134,29 @@ function formatPlainNumber(value) {
   return new Intl.NumberFormat('zh-CN', {
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatPrice(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  return new Intl.NumberFormat('zh-CN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function getRequestStatusLabel(value) {
+  if (typeof value !== 'string') {
+    return '等待操作';
+  }
+
+  return requestStateLabels[value] || `请求失败：${value}`;
+}
+
+function getConnectionStatusLabel(value) {
+  return connectionStateLabels[value] || '状态未知';
 }
 
 function formatAxisDate(value) {
@@ -496,7 +532,7 @@ function App() {
           </div>
           <span>{snapshot?.source || '等待采集'}</span>
         </header>
-        <div className="snapshot-metric">{snapshot?.lastPrice ?? '--'}</div>
+        <div className="snapshot-metric">{formatPrice(snapshot?.lastPrice)}</div>
         <dl>
           <div>
             <dt>涨跌幅</dt>
@@ -553,7 +589,7 @@ function App() {
         <div className="panel-heading detail-heading">
           <div>
             <button type="button" className="back-button" onClick={handleCloseSnapshotDetail}>
-              返回快照看板
+              返回总览
             </button>
             <h2>{snapshot?.companyName || '个股详情'}</h2>
             <p className="snapshot-subtitle">
@@ -568,10 +604,6 @@ function App() {
           </div>
         </div>
 
-        <p className="panel-tip compact">
-          当前版本仅支持最新日 K 摘要与买一卖一，暂不提供分时走势与五档盘口。
-        </p>
-
         {detailRequestState === 'loading' ? <p className="status-line">详情数据加载中...</p> : null}
         {detailRequestState === 'error' ? <p className="status-line">详情数据加载失败，请稍后重试。</p> : null}
 
@@ -579,15 +611,15 @@ function App() {
           <section className="detail-card chart-card wide-card">
             <div className="chart-card-header">
               <div>
-                <h3>{usingIntradayBars ? '盘中采样走势' : '日 K 行情图'}</h3>
+                <h3>{usingIntradayBars ? '盘中走势概览' : '日 K 走势概览'}</h3>
                 <p className="panel-tip compact">
                   {usingIntradayBars
-                    ? '当前历史日 K 不足，已自动回退为基于持续采样 tick 聚合的盘中走势。'
-                    : '当前版本展示历史日 K 与成交量，不含分时与分钟级 K 线。'}
+                    ? '历史日 K 不足时，自动回退为基于持续采样 tick 聚合的盘中走势。'
+                    : '展示日 K 与成交量，暂不提供分钟级 K 线。'}
                 </p>
               </div>
               <div className="chart-summary-badge">
-                <span>最新价 {snapshot?.lastPrice ?? '--'}</span>
+                <span>最新价 {formatPrice(snapshot?.lastPrice)}</span>
                 <span>{formatSignedPercent(snapshot?.changePct)}</span>
               </div>
             </div>
@@ -708,7 +740,7 @@ function App() {
 
         <div className="detail-grid">
           <section className="detail-card">
-            <h3>顶部概览</h3>
+               <h3>基础指标</h3>
             <dl>
               <div>
                 <dt>更新时间</dt>
@@ -734,13 +766,13 @@ function App() {
           </section>
 
           <section className="detail-card">
-            <h3>盘口摘要</h3>
-            <dl>
+             <h3>盘口摘要</h3>
+             <dl>
               <div>
                 <dt>买一</dt>
                 <dd>
                   {orderBook?.bid1 != null || orderBook?.bidVolume1 != null
-                    ? `${orderBook?.bid1 ?? '--'} / ${formatPlainNumber(orderBook?.bidVolume1)}`
+                    ? `${formatPrice(orderBook?.bid1)} / ${formatPlainNumber(orderBook?.bidVolume1)}`
                     : '--'}
                 </dd>
               </div>
@@ -748,15 +780,14 @@ function App() {
                 <dt>卖一</dt>
                 <dd>
                   {orderBook?.ask1 != null || orderBook?.askVolume1 != null
-                    ? `${orderBook?.ask1 ?? '--'} / ${formatPlainNumber(orderBook?.askVolume1)}`
+                    ? `${formatPrice(orderBook?.ask1)} / ${formatPlainNumber(orderBook?.askVolume1)}`
                     : '--'}
                 </dd>
               </div>
             </dl>
-            {!capabilities?.supportsBestBidAsk ? (
-              <p className="panel-tip compact">当前数据源未提供稳定的买一卖一盘口。</p>
-            ) : null}
-            <p className="panel-tip compact">当前版本暂不提供五档盘口。</p>
+            <p className="panel-tip compact">
+              {!capabilities?.supportsBestBidAsk ? '当前数据源未稳定提供买一卖一；' : ''} 暂不提供五档盘口。
+            </p>
           </section>
 
           <section className="detail-card wide-card">
@@ -815,9 +846,9 @@ function App() {
     <main className="layout">
       <section className="panel hero">
         <p className="eyebrow">项目 · MoneyRush</p>
-        <h1>实时盯盘控制台</h1>
+        <h1>实时行情看板</h1>
         <p className="lede">
-          默认中文展示，首页优先看结构化快照。实时事件日志收进单独菜单，避免首页被原始流式信息占满。
+          用总览看全局，用事件看异动，用管理页维护监控标的。
         </p>
         <div className="hero-toolbar">
           <button
@@ -825,21 +856,21 @@ function App() {
             type="button"
             onClick={() => setActiveView('overview')}
           >
-            首页总览
+            总览
           </button>
           <button
             className={activeView === 'events' ? 'view-tab active' : 'view-tab'}
             type="button"
             onClick={() => setActiveView('events')}
           >
-            实时事件
+            事件
           </button>
           <button
             className={activeView === 'management' ? 'view-tab active' : 'view-tab'}
             type="button"
             onClick={() => setActiveView('management')}
           >
-            监控管理
+            管理
           </button>
         </div>
       </section>
@@ -851,7 +882,12 @@ function App() {
               renderDetailView()
             ) : (
               <>
-                <h2>快照看板</h2>
+                <div className="section-heading">
+                  <div>
+                    <h2>快照总览</h2>
+                    <p className="panel-tip compact">按标的汇总最新价格、涨跌幅和关键估值指标，点击卡片可查看详情。</p>
+                  </div>
+                </div>
                 <div className="snapshot-grid">
                   {activeSymbols.length ? (
                     activeSymbols.map((item) => {
@@ -870,7 +906,7 @@ function App() {
             <div className="panel-heading">
               <div>
                 <h2>监控管理</h2>
-                <p className="panel-tip compact">激活、查看、移除都收敛在这里，避免首页出现重复操作入口。</p>
+                <p className="panel-tip compact">新增、查看和移除监控标的都集中在这里。</p>
               </div>
               <div className="management-meta">
                 <span className="symbol-count-badge">监控中 {activeSymbols.length}</span>
@@ -883,14 +919,14 @@ function App() {
                   type="button"
                   onClick={() => setControlView('activate')}
                 >
-                  标的激活
+                  添加标的
                 </button>
                 <button
                   className={controlView === 'watchlist' ? 'view-tab active' : 'view-tab'}
                   type="button"
                   onClick={() => setControlView('watchlist')}
                 >
-                  当前监控
+                  监控列表
                 </button>
               </div>
             </div>
@@ -923,13 +959,18 @@ function App() {
             )}
 
             <div className="management-status-row">
-              <p className="status-line">请求状态：{requestState}</p>
-              <p className="status-line">实时连接：{connectionState}</p>
-            </div>
+               <p className="status-line">请求状态：{getRequestStatusLabel(requestState)}</p>
+               <p className="status-line">实时连接：{getConnectionStatusLabel(connectionState)}</p>
+             </div>
           </article>
         ) : (
           <article className="panel wide">
-            <h2>实时事件</h2>
+            <div className="section-heading">
+              <div>
+                <h2>实时事件</h2>
+                <p className="panel-tip compact">按标的查看最近一条结构化事件，避免原始流消息干扰主看板。</p>
+              </div>
+            </div>
             <div className="event-grid">
               {eventCards.length ? (
                 eventCards.map(({ symbol: currentSymbol, snapshot, event }) => (

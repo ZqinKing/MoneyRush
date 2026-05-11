@@ -1,6 +1,6 @@
 :root {
   color-scheme: dark;
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Segoe UI', 'PingFang SC', 'Noto Sans SC', sans-serif;
   line-height: 1.5;
   font-weight: 400;
   background: #09111f;
@@ -58,10 +58,17 @@ input {
   margin-bottom: 20px;
 }
 
+.hero h1 {
+  font-size: clamp(2rem, 3vw, 2.7rem);
+  letter-spacing: -0.03em;
+  margin-bottom: 10px;
+}
+
 .hero-toolbar {
   display: flex;
   gap: 12px;
   margin-top: 18px;
+  flex-wrap: wrap;
 }
 
 .panel-heading {
@@ -111,10 +118,19 @@ input {
   background: rgba(6, 11, 22, 0.82);
   color: #d9e6ff;
   cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.view-tab:hover,
+.view-tab:focus-visible {
+  border-color: rgba(129, 164, 255, 0.44);
+  transform: translateY(-1px);
+  outline: none;
 }
 
 .view-tab.active {
   background: linear-gradient(135deg, #2c6bff, #5a87ff);
+  border-color: transparent;
 }
 
 .hero h1,
@@ -133,6 +149,15 @@ input {
 .lede {
   max-width: 70ch;
   color: #bbcaea;
+  margin: 0;
+}
+
+.section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
 }
 
 .symbol-form {
@@ -176,6 +201,9 @@ input {
 .status-line {
   margin-bottom: 0;
   color: #bbcaea;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .panel-tip {
@@ -263,6 +291,7 @@ input {
   padding: 16px;
   background: rgba(4, 8, 16, 0.9);
   border: 1px solid rgba(157, 180, 255, 0.12);
+  min-height: 100%;
 }
 
 .snapshot-card.clickable {
@@ -304,6 +333,7 @@ input {
   font-size: 2rem;
   font-weight: 700;
   margin-bottom: 12px;
+  letter-spacing: -0.03em;
 }
 
 .snapshot-card dl,
@@ -363,6 +393,7 @@ input {
 .detail-price {
   font-size: 2rem;
   font-weight: 700;
+  letter-spacing: -0.03em;
 }
 
 .back-button {
@@ -580,6 +611,10 @@ input {
 
   .hero-toolbar {
     flex-wrap: wrap;
+  }
+
+  .section-heading {
+    flex-direction: column;
   }
 
   .panel-heading {
