@@ -119,7 +119,7 @@ function formatTime(value) {
     return '--:--:--';
   }
 
-  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false });
+  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
 function formatDateTime(value) {
@@ -127,7 +127,7 @@ function formatDateTime(value) {
     return '--';
   }
 
-  return new Date(value).toLocaleString('zh-CN', { hour12: false });
+  return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
 function formatPlainNumber(value) {
@@ -283,6 +283,15 @@ function formatSignedAxisPercent(value) {
 
   const sign = value > 0 ? '+' : '';
   return `${sign}${value.toFixed(2)}%`;
+}
+
+function formatSignedPriceDelta(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}`;
 }
 
 function estimatePreviousClose(snapshot, latestKline, intradaySampledBars) {
@@ -536,15 +545,29 @@ function buildLineChartGeometry(points, width = 860, height = 320, referencePric
   const maxValueFromData = Math.max(...closes);
   const minValueFromData = Math.min(...closes);
   const previousClose = typeof referencePrice === 'number' ? referencePrice : null;
-  const symmetricRange = previousClose !== null
-    ? Math.max(
-        Math.abs(maxValueFromData - previousClose),
-        Math.abs(previousClose - minValueFromData),
-        Math.max(Math.abs(previousClose) * 0.005, 0.5),
-      )
-    : null;
-  const maxValue = previousClose !== null ? previousClose + symmetricRange : maxValueFromData;
-  const minValue = previousClose !== null ? previousClose - symmetricRange : minValueFromData;
+  const dataSpan = maxValueFromData - minValueFromData;
+  const effectiveSpan = dataSpan || Math.max(Math.abs(maxValueFromData) * 0.002, 0.6);
+  const outerPadding = Math.max(effectiveSpan * 0.18, Math.abs(maxValueFromData) * 0.0012, 0.18);
+  let maxValue = maxValueFromData + outerPadding;
+  let minValue = minValueFromData - outerPadding;
+  let referenceVisible = false;
+
+  if (previousClose !== null) {
+    const distanceToRange = previousClose < minValue
+      ? minValue - previousClose
+      : previousClose > maxValue
+        ? previousClose - maxValue
+        : 0;
+    const inclusionThreshold = Math.max(effectiveSpan * 0.65, Math.abs(previousClose) * 0.004, 0.8);
+
+    if (distanceToRange <= inclusionThreshold) {
+      const referencePadding = Math.max(effectiveSpan * 0.08, 0.2);
+      maxValue = Math.max(maxValue, previousClose + referencePadding);
+      minValue = Math.min(minValue, previousClose - referencePadding);
+      referenceVisible = true;
+    }
+  }
+
   const range = maxValue - minValue || Math.max(maxValue * 0.02, 1);
   const topPadding = 18;
   const bottomPadding = 26;
@@ -558,31 +581,88 @@ function buildLineChartGeometry(points, width = 860, height = 320, referencePric
     y: scaleY(point.close),
     label: formatTime(point.bucketTs),
     close: point.close,
+    volume: point.volume,
+    amount: point.amount,
   }));
 
   const polyline = chartPoints.map((point) => `${point.x},${point.y}`).join(' ');
   const area = `0,${height - bottomPadding} ${polyline} ${width},${height - bottomPadding}`;
-  const ticks = [maxValue, previousClose ?? maxValue - range / 2, minValue].map((value) => ({
-    value,
-    y: scaleY(value),
-    percent: previousClose !== null && previousClose !== 0 ? ((value - previousClose) / previousClose) * 100 : null,
-  }));
+  let cumulativeAmount = 0;
+  let cumulativeVolume = 0;
+  const averagePoints = chartPoints
+    .map((point) => {
+      if (typeof point.amount === 'number' && typeof point.volume === 'number' && point.volume > 0) {
+        cumulativeAmount += point.amount;
+        cumulativeVolume += point.volume;
+      }
+
+      if (cumulativeVolume <= 0) {
+        return null;
+      }
+
+      const averagePrice = cumulativeAmount / cumulativeVolume;
+      return `${point.x},${scaleY(averagePrice)}`;
+    })
+    .filter(Boolean)
+    .join(' ');
+  const tickLevels = 5;
+  const ticks = Array.from({ length: tickLevels }, (_, index) => {
+    const value = maxValue - (range / (tickLevels - 1)) * index;
+    const delta = previousClose !== null ? value - previousClose : null;
+
+    return {
+      value,
+      delta,
+      y: scaleY(value),
+      percent: previousClose !== null && previousClose !== 0 ? (delta / previousClose) * 100 : null,
+    };
+  });
+  const latestPoint = chartPoints.length ? chartPoints[chartPoints.length - 1] : null;
+  const highPoint = chartPoints.reduce((best, point) => (best === null || point.close > best.close ? point : best), null);
+  const lowPoint = chartPoints.reduce((best, point) => (best === null || point.close < best.close ? point : best), null);
 
   return {
     width,
     height,
     chartPoints,
+    averagePolyline: averagePoints,
     polyline,
     area,
     ticks,
     maxValue,
     minValue,
     previousClose,
-    baselineY: previousClose !== null ? scaleY(previousClose) : null,
+    baselineY: referenceVisible && previousClose !== null ? scaleY(previousClose) : null,
+    referenceVisible,
+    latestPoint,
+    highPoint,
+    lowPoint,
     timeMarks: timeScale.marks,
     lunchBreakStartX: timeScale.gapStart,
     lunchBreakEndX: timeScale.gapEnd,
   };
+}
+
+function getLineChartTone(chart, fallbackPrice = null) {
+  if (!chart) {
+    return 'neutral';
+  }
+
+  const lastClose = chart.chartPoints?.length ? chart.chartPoints[chart.chartPoints.length - 1]?.close : null;
+  const baseline = chart.previousClose ?? fallbackPrice;
+  if (typeof lastClose !== 'number' || typeof baseline !== 'number') {
+    return 'neutral';
+  }
+
+  if (lastClose > baseline) {
+    return 'positive';
+  }
+
+  if (lastClose < baseline) {
+    return 'negative';
+  }
+
+  return 'neutral';
 }
 
 function buildEmptyIntradayChartGeometry(referencePrice, width = 860, height = 320) {
@@ -931,8 +1011,10 @@ function App() {
     const emptyIntradayChart = !intradayLineChart ? buildEmptyIntradayChartGeometry(previousClose ?? snapshot?.lastPrice) : null;
     const showingIntraday = detailChartView === 'intraday';
     const activeChartTitle = showingIntraday ? '分时走势' : '日 K 走势';
-    const intradayAxisLabels = buildAxisLabels(intradayLineChart?.chartPoints || [], 6, (item) => item?.label || '');
+    const intradayAxisLabels = intradayLineChart?.timeMarks || [];
     const dailyAxisLabels = buildAxisLabels(candleChart?.candles || [], 6, (item) => item?.label || '');
+    const recentTicks = sortItemsAscendingByTime(ticks, 'ts').slice(-12).reverse();
+    const intradayTone = getLineChartTone(intradayLineChart, snapshot?.lastPrice ?? previousClose ?? null);
 
     return (
       <div className="detail-layout">
@@ -958,13 +1040,13 @@ function App() {
         {detailRequestState === 'error' ? <p className="status-line">详情数据加载失败，请稍后重试。</p> : null}
 
         <div className="detail-hero-grid">
-          <section className="detail-card chart-card wide-card">
+          <section className="detail-card chart-card">
             <div className="chart-card-header">
               <div>
                 <h3>{activeChartTitle}</h3>
                 <p className="panel-tip compact">
                   {showingIntraday
-                    ? '默认展示当前交易日分时线；若今日无成交采样，将显示空白分时骨架。'
+                    ? '默认展示当前交易日分时线，并按日内波动自动缩放；若今日无成交采样，将显示空白分时骨架。'
                     : '日 K 优先展示详情接口返回的 60 根日线，并与当前已入库历史保持一致。'}
                 </p>
               </div>
@@ -997,22 +1079,45 @@ function App() {
                   <div className="chart-section">
                     <div className="chart-section-heading">
                       <h4>分时线</h4>
-                      <span>{intradayChartPoints.length} 个点位</span>
+                      <span>{intradayChartPoints.length} 个点位 · 白线价格 / 黄线均价</span>
                     </div>
-                    <svg className="kline-chart" viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`} role="img" aria-label="分时采样走势">
+                    <svg className={`kline-chart line-chart-surface ${intradayTone}-tone`} viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`} role="img" aria-label="分时采样走势">
+                      <defs>
+                        <linearGradient id="intradayAreaGradient" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" className="line-chart-area-stop start" />
+                          <stop offset="100%" className="line-chart-area-stop end" />
+                        </linearGradient>
+                        <linearGradient id="intradayPathGradient" x1="0" y1="0" x2="1" y2="0">
+                          <stop offset="0%" className="line-chart-path-stop start" />
+                          <stop offset="100%" className="line-chart-path-stop end" />
+                        </linearGradient>
+                        <filter id="intradayLineGlow" x="-10%" y="-10%" width="120%" height="120%">
+                          <feGaussianBlur stdDeviation="3.5" result="blur" />
+                          <feMerge>
+                            <feMergeNode in="blur" />
+                            <feMergeNode in="SourceGraphic" />
+                          </feMerge>
+                        </filter>
+                      </defs>
                       {intradayLineChart.ticks.map((tick) => (
                         <g key={`${tick.value}`}>
                           <line x1="0" x2={intradayLineChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
-                          <text x={intradayLineChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
+                          <text x={intradayLineChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label chart-axis-price-label">
                             {tick.value.toFixed(2)}
                           </text>
-                          <text x={intradayLineChart.width - 64} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.pct > 0 ? 'axis-positive' : tick.pct < 0 ? 'axis-negative' : ''}`}>
-                            {formatSignedAxisPercent(tick.pct)}
+                          <text x={intradayLineChart.width - 72} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.delta > 0 ? 'axis-positive' : tick.delta < 0 ? 'axis-negative' : ''}`}>
+                            {formatSignedPriceDelta(tick.delta)}
+                          </text>
+                          <text x={intradayLineChart.width - 136} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.percent > 0 ? 'axis-positive' : tick.percent < 0 ? 'axis-negative' : ''}`}>
+                            {formatSignedAxisPercent(tick.percent)}
                           </text>
                         </g>
                       ))}
                       {intradayLineChart.baselineY !== null ? (
-                        <line x1="0" x2={intradayLineChart.width} y1={intradayLineChart.baselineY} y2={intradayLineChart.baselineY} className="empty-chart-guide" />
+                        <g>
+                          <line x1="0" x2={intradayLineChart.width} y1={intradayLineChart.baselineY} y2={intradayLineChart.baselineY} className="empty-chart-guide" />
+                          <text x="6" y={intradayLineChart.baselineY - 6} className="chart-axis-label baseline-label">昨收 {formatPrice(intradayLineChart.previousClose)}</text>
+                        </g>
                       ) : null}
                       <rect
                         x={intradayLineChart.lunchBreakStartX}
@@ -1021,15 +1126,75 @@ function App() {
                         height={intradayLineChart.height}
                         className="lunch-break-mask"
                       />
+                      <text
+                        x={(intradayLineChart.lunchBreakStartX + intradayLineChart.lunchBreakEndX) / 2}
+                        y="18"
+                        textAnchor="middle"
+                        className="chart-axis-label lunch-break-label"
+                      >
+                        午间休市
+                      </text>
                       <polygon points={intradayLineChart.area} className="line-chart-area" />
+                      {intradayLineChart.averagePolyline ? <polyline points={intradayLineChart.averagePolyline} className="line-chart-average-path" /> : null}
+                      <polyline points={intradayLineChart.polyline} className="line-chart-path line-chart-path-glow" />
                       <polyline points={intradayLineChart.polyline} className="line-chart-path" />
-                      {intradayLineChart.chartPoints.map((point, index) => (
-                        <circle key={`point-${index}`} cx={point.x} cy={point.y} r="1.8" className="line-chart-point" />
-                      ))}
+                      {intradayLineChart.highPoint ? (
+                        <text x={Math.min(intradayLineChart.highPoint.x + 8, intradayLineChart.width - 70)} y={Math.max(intradayLineChart.highPoint.y - 10, 18)} className="chart-extrema-label">
+                          高 {formatPrice(intradayLineChart.highPoint.close)}
+                        </text>
+                      ) : null}
+                      {intradayLineChart.lowPoint ? (
+                        <text x={Math.min(intradayLineChart.lowPoint.x + 8, intradayLineChart.width - 70)} y={Math.min(intradayLineChart.lowPoint.y + 18, intradayLineChart.height - 10)} className="chart-extrema-label">
+                          低 {formatPrice(intradayLineChart.lowPoint.close)}
+                        </text>
+                      ) : null}
+                      {intradayLineChart.latestPoint ? (
+                        <g>
+                          <line
+                            x1="0"
+                            x2={intradayLineChart.width}
+                            y1={intradayLineChart.latestPoint.y}
+                            y2={intradayLineChart.latestPoint.y}
+                            className="current-price-guide"
+                          />
+                          <rect
+                            x={intradayLineChart.width - 82}
+                            y={Math.max(intradayLineChart.latestPoint.y - 13, 4)}
+                            width="76"
+                            height="22"
+                            rx="10"
+                            className="current-price-badge"
+                          />
+                          <text
+                            x={intradayLineChart.width - 44}
+                            y={Math.max(intradayLineChart.latestPoint.y + 2, 18)}
+                            textAnchor="middle"
+                            className="current-price-badge-text"
+                          >
+                            {formatPrice(intradayLineChart.latestPoint.close)}
+                          </text>
+                        </g>
+                      ) : null}
+                      {intradayLineChart.chartPoints.length ? (
+                        <circle
+                          cx={intradayLineChart.chartPoints[intradayLineChart.chartPoints.length - 1].x}
+                          cy={intradayLineChart.chartPoints[intradayLineChart.chartPoints.length - 1].y}
+                          r="4.4"
+                          className="line-chart-point"
+                        />
+                      ) : null}
                     </svg>
                     <div className="chart-axis-row">
-                      {intradayAxisLabels.map((item) => <span key={item.key}>{item.label}</span>)}
+                      {intradayAxisLabels.map((item) => <span key={item.label}>{item.label}</span>)}
                     </div>
+                    <div className="intraday-legend-row">
+                      <span className="intraday-legend-chip"><span className="intraday-legend-line price" aria-hidden="true" />价格线</span>
+                      <span className="intraday-legend-chip"><span className="intraday-legend-line average" aria-hidden="true" />均价线</span>
+                      <span className="intraday-legend-chip">右轴：价格 / 涨跌额 / 涨跌幅</span>
+                    </div>
+                    {!intradayLineChart.referenceVisible && intradayLineChart.previousClose !== null ? (
+                      <p className="panel-tip compact">昨收 {formatPrice(intradayLineChart.previousClose)} · 当前图表按日内价格波动缩放以突出趋势。</p>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="chart-section">
@@ -1044,8 +1209,8 @@ function App() {
                           <text x={emptyIntradayChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
                             {tick.label}
                           </text>
-                          <text x={emptyIntradayChart.width - 64} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.pct > 0 ? 'axis-positive' : tick.pct < 0 ? 'axis-negative' : ''}`}>
-                            {formatSignedAxisPercent(tick.pct)}
+                          <text x={emptyIntradayChart.width - 64} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.percent > 0 ? 'axis-positive' : tick.percent < 0 ? 'axis-negative' : ''}`}>
+                            {formatSignedAxisPercent(tick.percent)}
                           </text>
                         </g>
                       ))}
@@ -1147,38 +1312,48 @@ function App() {
 
           <section className="detail-card market-summary-card">
             <h3>行情摘要</h3>
-            <dl>
-              <div>
-                <dt>最新价</dt>
-                <dd>{snapshot?.lastPrice ?? '--'}</dd>
-              </div>
-              <div>
-                <dt>涨跌幅</dt>
-                <dd className={snapshot?.changePct > 0 ? 'positive' : snapshot?.changePct < 0 ? 'negative' : ''}>
+            <div className="market-summary-grid">
+              <article className="summary-metric summary-metric-strong">
+                <span>最新价</span>
+                <strong>{formatPrice(snapshot?.lastPrice)}</strong>
+                <em className={snapshot?.changePct > 0 ? 'positive' : snapshot?.changePct < 0 ? 'negative' : ''}>
                   {formatSignedPercent(snapshot?.changePct)}
-                </dd>
-              </div>
-              <div>
-                <dt>开 / 高 / 低 / 收</dt>
-                <dd>
+                </em>
+              </article>
+              <article className="summary-metric">
+                <span>今日振幅</span>
+                <strong>
                   {latestKline
-                    ? `${latestKline.open ?? '--'} / ${latestKline.high ?? '--'} / ${latestKline.low ?? '--'} / ${latestKline.close ?? '--'}`
+                    ? `${formatPrice(latestKline.high)} / ${formatPrice(latestKline.low)}`
                     : '--'}
-                </dd>
-              </div>
-              <div>
-                <dt>成交量</dt>
-                <dd>{formatCompactNumber(latestKline?.volume)}</dd>
-              </div>
-              <div>
-                <dt>成交额</dt>
-                <dd>{formatCompactNumber(latestKline?.amount)}</dd>
-              </div>
-              <div>
-                <dt>更新时间</dt>
-                <dd>{formatDateTime(snapshot?.updatedAt)}</dd>
-              </div>
-            </dl>
+                </strong>
+                <em>高 / 低</em>
+              </article>
+              <article className="summary-metric">
+                <span>开 / 收</span>
+                <strong>
+                  {latestKline
+                    ? `${formatPrice(latestKline.open)} / ${formatPrice(latestKline.close)}`
+                    : '--'}
+                </strong>
+                <em>开盘 / 最新收盘</em>
+              </article>
+              <article className="summary-metric">
+                <span>成交量</span>
+                <strong>{formatCompactNumber(latestKline?.volume)}</strong>
+                <em>最新成交量</em>
+              </article>
+              <article className="summary-metric">
+                <span>成交额</span>
+                <strong>{formatCompactNumber(latestKline?.amount)}</strong>
+                <em>最新成交额</em>
+              </article>
+              <article className="summary-metric">
+                <span>更新时间</span>
+                <strong>{formatTime(snapshot?.updatedAt)}</strong>
+                <em>{formatDateTime(snapshot?.updatedAt)}</em>
+              </article>
+            </div>
           </section>
         </div>
 
@@ -1235,9 +1410,15 @@ function App() {
           </section>
 
           <section className="detail-card wide-card">
-            <h3>最近 Tick</h3>
-            {ticks.length ? (
-              <div className="detail-table-wrap">
+            <div className="detail-card-header compact-card-header">
+              <div>
+                <h3>最近 Tick</h3>
+                <p className="panel-tip compact">默认只展示最新 12 条，避免详情页被长列表冲散。</p>
+              </div>
+              {ticks.length > recentTicks.length ? <span className="table-meta-badge">共 {ticks.length} 条</span> : null}
+            </div>
+            {recentTicks.length ? (
+              <div className="detail-table-wrap detail-table-wrap-scrollable">
                 <table className="detail-table">
                   <thead>
                     <tr>
@@ -1249,7 +1430,7 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {ticks.map((tick, index) => (
+                    {recentTicks.map((tick, index) => (
                       <tr key={`${tick.ts}-${tick.price}-${index}`}>
                         <td>{formatTime(tick.ts)}</td>
                         <td>{tick.price ?? '--'}</td>
