@@ -12,13 +12,17 @@ function isLoopbackHostname(hostname) {
   return hostname === 'localhost' || hostname === '127.0.0.1';
 }
 
+function isBindableLocalHostname(hostname) {
+  return isLoopbackHostname(hostname) || hostname === '0.0.0.0';
+}
+
 function normalizeLoopbackUrl(configuredUrl, fallbackUrl) {
   const browserHostname = getBrowserHostname();
   const rawUrl = configuredUrl || fallbackUrl;
 
   try {
     const parsedUrl = new URL(rawUrl);
-    if (browserHostname && isLoopbackHostname(browserHostname) && isLoopbackHostname(parsedUrl.hostname)) {
+    if (browserHostname && isBindableLocalHostname(parsedUrl.hostname)) {
       parsedUrl.hostname = browserHostname;
     }
     return parsedUrl.toString().replace(/\/$/, '');
@@ -170,6 +174,256 @@ function formatAxisDate(value) {
   return `${month}/${day}`;
 }
 
+function sortItemsAscendingByTime(items, ...keys) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  return [...items].sort((left, right) => {
+    const leftValue = keys.map((key) => left?.[key]).find(Boolean);
+    const rightValue = keys.map((key) => right?.[key]).find(Boolean);
+    const leftTime = leftValue ? new Date(leftValue).getTime() : 0;
+    const rightTime = rightValue ? new Date(rightValue).getTime() : 0;
+    return leftTime - rightTime;
+  });
+}
+
+function sortBarsAscendingByBucketTs(bars) {
+  return sortItemsAscendingByTime(bars, 'bucketTs');
+}
+
+function isSameChinaTradeDay(value, referenceValue = new Date()) {
+  if (!value) {
+    return false;
+  }
+
+  const date = new Date(value);
+  const reference = new Date(referenceValue);
+  if (Number.isNaN(date.getTime()) || Number.isNaN(reference.getTime())) {
+    return false;
+  }
+
+  const toChinaDay = (item) => {
+    const chinaDate = new Date(item.getTime() + 8 * 60 * 60 * 1000);
+    return `${chinaDate.getUTCFullYear()}-${chinaDate.getUTCMonth()}-${chinaDate.getUTCDate()}`;
+  };
+
+  return toChinaDay(date) === toChinaDay(reference);
+}
+
+function buildAxisLabels(items, maxLabels = 6, getLabel = (item) => item?.label ?? '') {
+  if (!Array.isArray(items) || items.length === 0) {
+    return [];
+  }
+
+  if (items.length <= maxLabels) {
+    return items.map((item, index) => ({ key: `${index}-${getLabel(item)}`, label: getLabel(item) }));
+  }
+
+  const selectedIndexes = new Set([0, items.length - 1]);
+  const segmentCount = Math.max(maxLabels - 1, 1);
+  for (let step = 1; step < segmentCount; step += 1) {
+    selectedIndexes.add(Math.round((step * (items.length - 1)) / segmentCount));
+  }
+
+  return [...selectedIndexes]
+    .sort((left, right) => left - right)
+    .map((index) => ({ key: `${index}-${getLabel(items[index])}`, label: getLabel(items[index]) }));
+}
+
+function buildReadableEventItems(events) {
+  if (!Array.isArray(events)) {
+    return [];
+  }
+
+  const seen = new Set();
+  return events
+    .map((event) => {
+      const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
+      const tick = payload?.tick && typeof payload.tick === 'object' ? payload.tick : {};
+      const kline = payload?.kline && typeof payload.kline === 'object' ? payload.kline : {};
+      const snapshot = payload?.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot : {};
+      const identity = [
+        event?.eventType,
+        tick?.side,
+        tick?.price,
+        tick?.volume,
+        kline?.close,
+        kline?.high,
+        kline?.low,
+      ].join('|');
+
+      return {
+        identity,
+        time: event?.ts,
+        eventType: event?.eventType || '--',
+        price: tick?.price,
+        volume: tick?.volume,
+        side: tick?.side,
+        close: kline?.close,
+        high: kline?.high,
+        low: kline?.low,
+        changePct: snapshot?.changePct,
+      };
+    })
+    .filter((item) => {
+      if (seen.has(item.identity)) {
+        return false;
+      }
+      seen.add(item.identity);
+      return true;
+    })
+    .slice(0, 8);
+}
+
+function formatSignedAxisPercent(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  const sign = value > 0 ? '+' : '';
+  return `${sign}${value.toFixed(2)}%`;
+}
+
+function estimatePreviousClose(snapshot, latestKline, intradaySampledBars) {
+  if (typeof snapshot?.lastPrice === 'number' && typeof snapshot?.changePct === 'number' && snapshot.changePct > -100) {
+    const divisor = 1 + snapshot.changePct / 100;
+    if (divisor !== 0) {
+      return snapshot.lastPrice / divisor;
+    }
+  }
+
+  if (typeof latestKline?.open === 'number') {
+    return latestKline.open;
+  }
+
+  if (Array.isArray(intradaySampledBars) && intradaySampledBars.length) {
+    const firstBar = intradaySampledBars[0];
+    if (typeof firstBar?.open === 'number') {
+      return firstBar.open;
+    }
+  }
+
+  return null;
+}
+
+function getChinaSessionPosition(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const chinaDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const minutes = chinaDate.getUTCHours() * 60 + chinaDate.getUTCMinutes();
+
+  const morningOpen = 9 * 60 + 30;
+  const morningClose = 11 * 60 + 30;
+  const afternoonOpen = 13 * 60;
+  const afternoonClose = 15 * 60;
+
+  if (minutes < morningOpen || minutes > afternoonClose) {
+    return null;
+  }
+
+  if (minutes <= morningClose) {
+    return {
+      segment: 'morning',
+      progress: (minutes - morningOpen) / (morningClose - morningOpen),
+    };
+  }
+
+  if (minutes >= afternoonOpen) {
+    return {
+      segment: 'afternoon',
+      progress: (minutes - afternoonOpen) / (afternoonClose - afternoonOpen),
+    };
+  }
+
+  return {
+    segment: 'break',
+    progress: 0,
+  };
+}
+
+function buildIntradayTimeScale(width, gapWidth = 26) {
+  const morningWidth = (width - gapWidth) / 2;
+  const afternoonStart = morningWidth + gapWidth;
+
+  const positionToX = (position) => {
+    if (!position) {
+      return null;
+    }
+
+    if (position.segment === 'morning') {
+      return morningWidth * position.progress;
+    }
+
+    if (position.segment === 'afternoon') {
+      return afternoonStart + morningWidth * position.progress;
+    }
+
+    return morningWidth + gapWidth / 2;
+  };
+
+  return {
+    gapStart: morningWidth,
+    gapEnd: afternoonStart,
+    positionToX,
+    marks: [
+      { label: '09:30', x: 0 },
+      { label: '10:30', x: morningWidth * 0.5 },
+      { label: '11:30', x: morningWidth },
+      { label: '13:00', x: afternoonStart },
+      { label: '14:00', x: afternoonStart + morningWidth * 0.5 },
+      { label: '15:00', x: width },
+    ],
+  };
+}
+
+function buildMovingAverageOverlays(bars, candles, scaleY) {
+  if (!Array.isArray(bars) || !Array.isArray(candles) || bars.length !== candles.length) {
+    return [];
+  }
+
+  const periods = [
+    { period: 5, colorClass: 'ma-line ma5', label: 'MA5' },
+    { period: 10, colorClass: 'ma-line ma10', label: 'MA10' },
+    { period: 20, colorClass: 'ma-line ma20', label: 'MA20' },
+  ];
+
+  return periods.map(({ period, colorClass, label }) => {
+    const points = [];
+
+    for (let index = period - 1; index < bars.length; index += 1) {
+      const window = bars.slice(index - period + 1, index + 1);
+      const closes = window.map((bar) => bar.close).filter((value) => typeof value === 'number');
+      if (closes.length !== period) {
+        continue;
+      }
+
+      const average = closes.reduce((sum, value) => sum + value, 0) / period;
+      points.push({
+        x: candles[index].x,
+        y: scaleY(average),
+        value: average,
+      });
+    }
+
+    return {
+      period,
+      label,
+      colorClass,
+      polyline: points.map((point) => `${point.x},${point.y}`).join(' '),
+      latestValue: points.length ? points[points.length - 1].value : null,
+      points,
+    };
+  }).filter((item) => item.points.length >= 2);
+}
+
 function buildCandlestickChartGeometry(bars, width = 860, height = 320) {
   if (!Array.isArray(bars) || bars.length === 0) {
     return null;
@@ -187,13 +441,16 @@ function buildCandlestickChartGeometry(bars, width = 860, height = 320) {
   const topPadding = 18;
   const bottomPadding = 26;
   const usableHeight = height - topPadding - bottomPadding;
-  const stepX = width / bars.length;
-  const candleWidth = Math.max(stepX * 0.58, 4);
+  const slotCount = Math.max(bars.length, 12);
+  const stepX = width / slotCount;
+  const candleWidth = Math.min(Math.max(stepX * 0.58, 4), 40);
+  const spanWidth = bars.length > 1 ? stepX * (bars.length - 1) : 0;
+  const startX = bars.length > 1 ? (width - spanWidth) / 2 : width / 2;
 
   const scaleY = (price) => topPadding + ((maxHigh - price) / priceRange) * usableHeight;
 
   const candles = bars.map((bar, index) => {
-    const x = index * stepX + stepX / 2;
+    const x = bars.length > 1 ? startX + index * stepX : startX;
     const openY = scaleY(bar.open);
     const closeY = scaleY(bar.close);
     const highY = scaleY(bar.high);
@@ -223,7 +480,7 @@ function buildCandlestickChartGeometry(bars, width = 860, height = 320) {
     y: scaleY(value),
   }));
 
-  return { width, height, candles, ticks, minLow, maxHigh };
+  return { width, height, candles, ticks, minLow, maxHigh, scaleY };
 }
 
 function buildVolumeChartGeometry(bars, width = 860, height = 120) {
@@ -240,13 +497,17 @@ function buildVolumeChartGeometry(bars, width = 860, height = 120) {
   const topPadding = 8;
   const bottomPadding = 20;
   const usableHeight = height - topPadding - bottomPadding;
-  const stepX = width / bars.length;
-  const barWidth = Math.max(stepX * 0.58, 3);
+  const slotCount = Math.max(bars.length, 12);
+  const stepX = width / slotCount;
+  const barWidth = Math.min(Math.max(stepX * 0.58, 3), 36);
+  const spanWidth = bars.length > 1 ? stepX * (bars.length - 1) : 0;
+  const startX = bars.length > 1 ? (width - spanWidth) / 2 : width / 2;
 
   const items = bars.map((bar, index) => {
     const volume = typeof bar.volume === 'number' ? bar.volume : 0;
     const barHeight = (volume / maxVolume) * usableHeight;
-    const x = index * stepX + stepX / 2 - barWidth / 2;
+    const centerX = bars.length > 1 ? startX + index * stepX : startX;
+    const x = centerX - barWidth / 2;
     const y = height - bottomPadding - barHeight;
     return {
       index,
@@ -262,7 +523,7 @@ function buildVolumeChartGeometry(bars, width = 860, height = 120) {
   return { width, height, items, maxVolume };
 }
 
-function buildLineChartGeometry(points, width = 860, height = 320) {
+function buildLineChartGeometry(points, width = 860, height = 320, referencePrice = null) {
   if (!Array.isArray(points) || points.length === 0) {
     return null;
   }
@@ -272,18 +533,28 @@ function buildLineChartGeometry(points, width = 860, height = 320) {
     return null;
   }
 
-  const maxValue = Math.max(...closes);
-  const minValue = Math.min(...closes);
+  const maxValueFromData = Math.max(...closes);
+  const minValueFromData = Math.min(...closes);
+  const previousClose = typeof referencePrice === 'number' ? referencePrice : null;
+  const symmetricRange = previousClose !== null
+    ? Math.max(
+        Math.abs(maxValueFromData - previousClose),
+        Math.abs(previousClose - minValueFromData),
+        Math.max(Math.abs(previousClose) * 0.005, 0.5),
+      )
+    : null;
+  const maxValue = previousClose !== null ? previousClose + symmetricRange : maxValueFromData;
+  const minValue = previousClose !== null ? previousClose - symmetricRange : minValueFromData;
   const range = maxValue - minValue || Math.max(maxValue * 0.02, 1);
   const topPadding = 18;
   const bottomPadding = 26;
   const usableHeight = height - topPadding - bottomPadding;
-  const stepX = points.length > 1 ? width / (points.length - 1) : width;
+  const timeScale = buildIntradayTimeScale(width);
 
   const scaleY = (value) => topPadding + ((maxValue - value) / range) * usableHeight;
 
   const chartPoints = points.map((point, index) => ({
-    x: points.length > 1 ? index * stepX : width / 2,
+    x: timeScale.positionToX(getChinaSessionPosition(point.bucketTs)) ?? (points.length > 1 ? (width / (points.length - 1)) * index : width / 2),
     y: scaleY(point.close),
     label: formatTime(point.bucketTs),
     close: point.close,
@@ -291,9 +562,57 @@ function buildLineChartGeometry(points, width = 860, height = 320) {
 
   const polyline = chartPoints.map((point) => `${point.x},${point.y}`).join(' ');
   const area = `0,${height - bottomPadding} ${polyline} ${width},${height - bottomPadding}`;
-  const ticks = [maxValue, maxValue - range / 2, minValue].map((value) => ({ value, y: scaleY(value) }));
+  const ticks = [maxValue, previousClose ?? maxValue - range / 2, minValue].map((value) => ({
+    value,
+    y: scaleY(value),
+    percent: previousClose !== null && previousClose !== 0 ? ((value - previousClose) / previousClose) * 100 : null,
+  }));
 
-  return { width, height, chartPoints, polyline, area, ticks, maxValue, minValue };
+  return {
+    width,
+    height,
+    chartPoints,
+    polyline,
+    area,
+    ticks,
+    maxValue,
+    minValue,
+    previousClose,
+    baselineY: previousClose !== null ? scaleY(previousClose) : null,
+    timeMarks: timeScale.marks,
+    lunchBreakStartX: timeScale.gapStart,
+    lunchBreakEndX: timeScale.gapEnd,
+  };
+}
+
+function buildEmptyIntradayChartGeometry(referencePrice, width = 860, height = 320) {
+  const numericReference = typeof referencePrice === 'number' ? referencePrice : null;
+  const range = numericReference !== null ? Math.max(Math.abs(numericReference) * 0.02, 1) : 2;
+  const midValue = numericReference ?? 0;
+  const maxValue = midValue + range;
+  const minValue = midValue - range;
+  const topPadding = 18;
+  const bottomPadding = 26;
+  const usableHeight = height - topPadding - bottomPadding;
+  const timeScale = buildIntradayTimeScale(width);
+
+  const scaleY = (value) => topPadding + ((maxValue - value) / (maxValue - minValue || 1)) * usableHeight;
+
+  return {
+    width,
+    height,
+    ticks: [maxValue, midValue, minValue].map((value) => ({
+      value,
+      y: scaleY(value),
+      label: numericReference !== null ? value.toFixed(2) : '--',
+      percent: numericReference !== null && numericReference !== 0 ? ((value - numericReference) / numericReference) * 100 : null,
+    })),
+    timeMarks: timeScale.marks,
+    lunchBreakStartX: timeScale.gapStart,
+    lunchBreakEndX: timeScale.gapEnd,
+    guideY: scaleY(midValue),
+    previousClose: numericReference,
+  };
 }
 
 function App() {
@@ -308,6 +627,7 @@ function App() {
   const [selectedSnapshotSymbol, setSelectedSnapshotSymbol] = useState(null);
   const [snapshotDetails, setSnapshotDetails] = useState({});
   const [detailRequestState, setDetailRequestState] = useState('idle');
+  const [detailChartView, setDetailChartView] = useState('intraday');
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
   const eventCards = useMemo(
@@ -397,9 +717,9 @@ function App() {
       try {
         const [detailResponse, ticksResponse, eventsResponse, klineResponse] = await Promise.all([
           fetch(`${apiBaseUrl}/api/v1/symbols/${encodeURIComponent(selectedSnapshotSymbol)}/detail`),
-          fetch(`${apiBaseUrl}/api/v1/symbols/${encodeURIComponent(selectedSnapshotSymbol)}/ticks?limit=20`),
+          fetch(`${apiBaseUrl}/api/v1/symbols/${encodeURIComponent(selectedSnapshotSymbol)}/ticks?limit=60`),
           fetch(`${apiBaseUrl}/api/v1/symbols/${encodeURIComponent(selectedSnapshotSymbol)}/events?limit=10`),
-          fetch(`${apiBaseUrl}/api/v1/symbols/${encodeURIComponent(selectedSnapshotSymbol)}/kline?period=1d&limit=1`),
+          fetch(`${apiBaseUrl}/api/v1/symbols/${encodeURIComponent(selectedSnapshotSymbol)}/kline?period=1d&limit=60`),
         ]);
 
         if (!detailResponse.ok) {
@@ -501,11 +821,13 @@ function App() {
   function handleOpenSnapshotDetail(symbolToOpen) {
     setSelectedSnapshotSymbol(symbolToOpen);
     setDetailRequestState(snapshotDetails[symbolToOpen] ? 'ready' : 'loading');
+    setDetailChartView('intraday');
   }
 
   function handleCloseSnapshotDetail() {
     setSelectedSnapshotSymbol(null);
     setDetailRequestState('idle');
+    setDetailChartView('intraday');
   }
 
   function renderOverviewCard(item, snapshot) {
@@ -563,26 +885,54 @@ function App() {
 
   function renderDetailView() {
     const detailPayload = selectedDetail?.detail || null;
-    const dailyBars =
-      detailPayload?.dailyBarsPreview && Array.isArray(detailPayload.dailyBarsPreview) && detailPayload.dailyBarsPreview.length
+    const previewBars =
+      detailPayload?.dailyBarsPreview && Array.isArray(detailPayload.dailyBarsPreview)
         ? detailPayload.dailyBarsPreview
-        : selectedDetail?.klines || [];
+        : [];
+    const fetchedKlines = Array.isArray(selectedDetail?.klines) ? selectedDetail.klines : [];
+    const dailyBars = sortBarsAscendingByBucketTs(fetchedKlines.length > previewBars.length ? fetchedKlines : previewBars);
     const intradaySampledBars =
       detailPayload?.intradaySampledBars && Array.isArray(detailPayload.intradaySampledBars)
         ? detailPayload.intradaySampledBars
         : [];
-    const chartBars = dailyBars.length > 1 ? dailyBars : intradaySampledBars;
-    const usingIntradayBars = dailyBars.length <= 1 && intradaySampledBars.length > 1;
-    const latestKline = chartBars.length ? chartBars[chartBars.length - 1] : detailPayload?.latestKline || null;
+    const ticks = dedupeTicks(selectedDetail?.ticks || []);
+    const intradayTickPoints = sortItemsAscendingByTime(
+      ticks
+        .filter((tick) => isSameChinaTradeDay(tick?.ts))
+        .map((tick) => ({
+          bucketTs: tick.ts,
+          close: tick.price,
+          open: tick.price,
+          high: tick.price,
+          low: tick.price,
+          volume: tick.volume,
+          amount: tick.amount,
+          source: tick.source,
+        })),
+      'bucketTs',
+    );
+    const intradayChartPoints = intradayTickPoints.length > intradaySampledBars.length ? intradayTickPoints : intradaySampledBars;
+    const latestKline = dailyBars.length
+      ? dailyBars[dailyBars.length - 1]
+      : intradayChartPoints.length
+        ? intradayChartPoints[intradayChartPoints.length - 1]
+        : detailPayload?.latestKline || null;
     const latestEvent = detailPayload?.latestEvent || null;
     const orderBook = detailPayload?.orderBook || {};
     const capabilities = detailPayload?.capabilities || {};
-    const ticks = dedupeTicks(selectedDetail?.ticks || []);
     const events = dedupeEvents(selectedDetail?.events || []);
+    const readableEvents = buildReadableEventItems(events);
     const snapshot = selectedSnapshot || detailPayload?.snapshot || null;
-    const candleChart = dailyBars.length > 1 ? buildCandlestickChartGeometry(dailyBars) : null;
-    const volumeChart = buildVolumeChartGeometry(chartBars);
-    const intradayLineChart = !candleChart ? buildLineChartGeometry(intradaySampledBars) : null;
+    const previousClose = estimatePreviousClose(snapshot, latestKline, intradayChartPoints);
+    const candleChart = dailyBars.length ? buildCandlestickChartGeometry(dailyBars) : null;
+    const movingAverageOverlays = candleChart ? buildMovingAverageOverlays(dailyBars, candleChart.candles, candleChart.scaleY) : [];
+    const volumeChart = dailyBars.length ? buildVolumeChartGeometry(dailyBars) : null;
+    const intradayLineChart = intradayChartPoints.length ? buildLineChartGeometry(intradayChartPoints, 860, 320, previousClose ?? snapshot?.lastPrice ?? null) : null;
+    const emptyIntradayChart = !intradayLineChart ? buildEmptyIntradayChartGeometry(previousClose ?? snapshot?.lastPrice) : null;
+    const showingIntraday = detailChartView === 'intraday';
+    const activeChartTitle = showingIntraday ? '分时走势' : '日 K 走势';
+    const intradayAxisLabels = buildAxisLabels(intradayLineChart?.chartPoints || [], 6, (item) => item?.label || '');
+    const dailyAxisLabels = buildAxisLabels(candleChart?.candles || [], 6, (item) => item?.label || '');
 
     return (
       <div className="detail-layout">
@@ -611,11 +961,11 @@ function App() {
           <section className="detail-card chart-card wide-card">
             <div className="chart-card-header">
               <div>
-                <h3>{usingIntradayBars ? '盘中走势概览' : '日 K 走势概览'}</h3>
+                <h3>{activeChartTitle}</h3>
                 <p className="panel-tip compact">
-                  {usingIntradayBars
-                    ? '历史日 K 不足时，自动回退为基于持续采样 tick 聚合的盘中走势。'
-                    : '展示日 K 与成交量，暂不提供分钟级 K 线。'}
+                  {showingIntraday
+                    ? '默认展示当前交易日分时线；若今日无成交采样，将显示空白分时骨架。'
+                    : '日 K 优先展示详情接口返回的 60 根日线，并与当前已入库历史保持一致。'}
                 </p>
               </div>
               <div className="chart-summary-badge">
@@ -624,80 +974,174 @@ function App() {
               </div>
             </div>
 
-            {candleChart || intradayLineChart ? (
+            <div className="chart-view-tabs" role="tablist" aria-label="详情图表切换">
+              <button
+                type="button"
+                className={showingIntraday ? 'view-tab active' : 'view-tab'}
+                onClick={() => setDetailChartView('intraday')}
+              >
+                分时
+              </button>
+              <button
+                type="button"
+                className={!showingIntraday ? 'view-tab active' : 'view-tab'}
+                onClick={() => setDetailChartView('daily')}
+              >
+                日K
+              </button>
+            </div>
+
+            {showingIntraday ? (
               <div className="chart-stack">
-                {candleChart ? (
-                  <svg className="kline-chart" viewBox={`0 0 ${candleChart.width} ${candleChart.height}`} role="img" aria-label="日K蜡烛图">
-                    {candleChart.ticks.map((tick) => (
-                      <g key={`${tick.value}`}>
-                        <line x1="0" x2={candleChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
-                        <text x={candleChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
-                          {tick.value.toFixed(2)}
-                        </text>
-                      </g>
-                    ))}
-                    {candleChart.candles.map((candle) => (
-                      <g key={`${candle.index}-${candle.label}`}>
-                        <line x1={candle.x} x2={candle.x} y1={candle.highY} y2={candle.lowY} className={candle.rising ? 'candle-wick up' : 'candle-wick down'} />
-                        <rect
-                          x={candle.bodyLeft}
-                          y={candle.bodyTop}
-                          width={candle.candleWidth}
-                          height={candle.bodyHeight}
-                          rx="1"
-                          className={candle.rising ? 'candle-body up' : 'candle-body down'}
-                        />
-                      </g>
-                    ))}
-                  </svg>
-                ) : (
-                  <svg className="kline-chart" viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`} role="img" aria-label="盘中采样走势">
-                    {intradayLineChart.ticks.map((tick) => (
-                      <g key={`${tick.value}`}>
-                        <line x1="0" x2={intradayLineChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
-                        <text x={intradayLineChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
-                          {tick.value.toFixed(2)}
-                        </text>
-                      </g>
-                    ))}
-                    <polygon points={intradayLineChart.area} className="line-chart-area" />
-                    <polyline points={intradayLineChart.polyline} className="line-chart-path" />
-                    {intradayLineChart.chartPoints.map((point, index) => (
-                      <circle key={`point-${index}`} cx={point.x} cy={point.y} r="1.8" className="line-chart-point" />
-                    ))}
-                  </svg>
-                )}
-
-                {volumeChart ? (
-                  <svg className="volume-chart" viewBox={`0 0 ${volumeChart.width} ${volumeChart.height}`} role="img" aria-label="成交量柱图">
-                    <line x1="0" x2={volumeChart.width} y1={volumeChart.height - 20} y2={volumeChart.height - 20} className="chart-grid-line" />
-                    {volumeChart.items.map((item) => (
+                {intradayLineChart ? (
+                  <div className="chart-section">
+                    <div className="chart-section-heading">
+                      <h4>分时线</h4>
+                      <span>{intradayChartPoints.length} 个点位</span>
+                    </div>
+                    <svg className="kline-chart" viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`} role="img" aria-label="分时采样走势">
+                      {intradayLineChart.ticks.map((tick) => (
+                        <g key={`${tick.value}`}>
+                          <line x1="0" x2={intradayLineChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
+                          <text x={intradayLineChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
+                            {tick.value.toFixed(2)}
+                          </text>
+                          <text x={intradayLineChart.width - 64} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.pct > 0 ? 'axis-positive' : tick.pct < 0 ? 'axis-negative' : ''}`}>
+                            {formatSignedAxisPercent(tick.pct)}
+                          </text>
+                        </g>
+                      ))}
+                      {intradayLineChart.baselineY !== null ? (
+                        <line x1="0" x2={intradayLineChart.width} y1={intradayLineChart.baselineY} y2={intradayLineChart.baselineY} className="empty-chart-guide" />
+                      ) : null}
                       <rect
-                        key={`volume-${item.index}`}
-                        x={item.x}
-                        y={item.y}
-                        width={item.width}
-                        height={item.height}
-                        rx="1"
-                        className={item.rising ? 'volume-bar up' : 'volume-bar down'}
+                        x={intradayLineChart.lunchBreakStartX}
+                        y="0"
+                        width={Math.max(intradayLineChart.lunchBreakEndX - intradayLineChart.lunchBreakStartX, 0)}
+                        height={intradayLineChart.height}
+                        className="lunch-break-mask"
                       />
-                    ))}
-                    <text x={volumeChart.width - 6} y="14" textAnchor="end" className="chart-axis-label">
-                      Vol {formatCompactNumber(volumeChart.maxVolume)}
-                    </text>
-                  </svg>
+                      <polygon points={intradayLineChart.area} className="line-chart-area" />
+                      <polyline points={intradayLineChart.polyline} className="line-chart-path" />
+                      {intradayLineChart.chartPoints.map((point, index) => (
+                        <circle key={`point-${index}`} cx={point.x} cy={point.y} r="1.8" className="line-chart-point" />
+                      ))}
+                    </svg>
+                    <div className="chart-axis-row">
+                      {intradayAxisLabels.map((item) => <span key={item.key}>{item.label}</span>)}
+                    </div>
+                  </div>
                 ) : (
-                  <p className="panel-tip compact">当前图表缺少可用成交量数据。</p>
+                  <div className="chart-section">
+                    <div className="chart-section-heading">
+                      <h4>分时线</h4>
+                      <span>今日暂无成交采样</span>
+                    </div>
+                    <svg className="kline-chart empty-chart" viewBox={`0 0 ${emptyIntradayChart.width} ${emptyIntradayChart.height}`} role="img" aria-label="空白分时走势骨架">
+                      {emptyIntradayChart.ticks.map((tick) => (
+                        <g key={`${tick.value}-${tick.y}`}>
+                          <line x1="0" x2={emptyIntradayChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
+                          <text x={emptyIntradayChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
+                            {tick.label}
+                          </text>
+                          <text x={emptyIntradayChart.width - 64} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.pct > 0 ? 'axis-positive' : tick.pct < 0 ? 'axis-negative' : ''}`}>
+                            {formatSignedAxisPercent(tick.pct)}
+                          </text>
+                        </g>
+                      ))}
+                      <rect
+                        x={emptyIntradayChart.lunchBreakStartX}
+                        y="0"
+                        width={Math.max(emptyIntradayChart.lunchBreakEndX - emptyIntradayChart.lunchBreakStartX, 0)}
+                        height={emptyIntradayChart.height}
+                        className="lunch-break-mask"
+                      />
+                      <line x1="0" x2={emptyIntradayChart.width} y1={emptyIntradayChart.guideY} y2={emptyIntradayChart.guideY} className="empty-chart-guide" />
+                    </svg>
+                    <div className="chart-axis-row">
+                      {emptyIntradayChart.timeMarks.map((item) => <span key={item.label}>{item.label}</span>)}
+                    </div>
+                    <p className="panel-tip compact">当前交易日数据库里还没有可聚合的分时采样点。</p>
+                  </div>
                 )}
-
-                <div className="chart-axis-row">
-                  {(candleChart ? candleChart.candles : intradayLineChart.chartPoints)
-                    .filter((_, index) => index % Math.max(Math.floor((candleChart ? candleChart.candles.length : intradayLineChart.chartPoints.length) / 6), 1) === 0)
-                    .map((item, index) => <span key={`label-${index}`}>{item.label}</span>)}
-                </div>
               </div>
             ) : (
-              <p className="panel-tip compact">历史日K与盘中采样走势都不足，当前仅能展示最新行情摘要。</p>
+              <div className="chart-stack">
+                {candleChart ? (
+                  <div className="chart-section">
+                    <div className="chart-section-heading">
+                      <h4>日 K</h4>
+                      <span>{dailyBars.length} 根日线</span>
+                    </div>
+                    <svg className="kline-chart" viewBox={`0 0 ${candleChart.width} ${candleChart.height}`} role="img" aria-label="日K蜡烛图">
+                      {candleChart.ticks.map((tick) => (
+                        <g key={`${tick.value}`}>
+                          <line x1="0" x2={candleChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
+                          <text x={candleChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
+                            {tick.value.toFixed(2)}
+                          </text>
+                        </g>
+                      ))}
+                      {movingAverageOverlays.map((overlay) =>
+                        overlay.polyline ? (
+                          <polyline key={overlay.label} points={overlay.polyline} className={overlay.colorClass} />
+                        ) : null,
+                      )}
+                      {candleChart.candles.map((candle) => (
+                        <g key={`${candle.index}-${candle.label}`}>
+                          <line x1={candle.x} x2={candle.x} y1={candle.highY} y2={candle.lowY} className={candle.rising ? 'candle-wick up' : 'candle-wick down'} />
+                          <rect
+                            x={candle.bodyLeft}
+                            y={candle.bodyTop}
+                            width={candle.candleWidth}
+                            height={candle.bodyHeight}
+                            rx="1"
+                            className={candle.rising ? 'candle-body up' : 'candle-body down'}
+                          />
+                        </g>
+                      ))}
+                    </svg>
+                    {volumeChart ? (
+                      <svg className="volume-chart" viewBox={`0 0 ${volumeChart.width} ${volumeChart.height}`} role="img" aria-label="日K成交量柱图">
+                        <line x1="0" x2={volumeChart.width} y1={volumeChart.height - 20} y2={volumeChart.height - 20} className="chart-grid-line" />
+                        {volumeChart.items.map((item) => (
+                          <rect
+                            key={`volume-${item.index}`}
+                            x={item.x}
+                            y={item.y}
+                            width={item.width}
+                            height={item.height}
+                            rx="1"
+                            className={item.rising ? 'volume-bar up' : 'volume-bar down'}
+                          />
+                        ))}
+                        <text x={volumeChart.width - 6} y="14" textAnchor="end" className="chart-axis-label">
+                          Vol {formatCompactNumber(volumeChart.maxVolume)}
+                        </text>
+                      </svg>
+                    ) : (
+                      <p className="panel-tip compact">当前日 K 缺少可用成交量数据。</p>
+                    )}
+                     {movingAverageOverlays.some((overlay) => overlay.latestValue !== null) ? (
+                       <div className="ma-legend-row">
+                         {movingAverageOverlays.map((overlay) =>
+                           overlay.latestValue !== null ? (
+                            <span key={overlay.label} className="ma-chip">
+                              <span className={`ma-dot ${overlay.colorClass.replace('ma-line ', '')}`} aria-hidden="true" />
+                              <span className="ma-legend">{overlay.label} {formatPrice(overlay.latestValue)}</span>
+                            </span>
+                           ) : null,
+                         )}
+                       </div>
+                    ) : null}
+                    <div className="chart-axis-row">
+                      {dailyAxisLabels.map((item) => <span key={item.key}>{item.label}</span>)}
+                    </div>
+                  </div>
+                ) : (
+                  <p className="panel-tip compact">数据库中暂时没有可展示的日 K 数据。</p>
+                )}
+              </div>
             )}
           </section>
 
@@ -824,12 +1268,26 @@ function App() {
 
           <section className="detail-card wide-card">
             <h3>最近事件</h3>
-            {events.length ? (
+            {readableEvents.length ? (
               <ul className="detail-event-list">
-                {events.map((event, index) => (
-                  <li key={`${event.ts}-${event.eventType}-${index}`}>
-                    <strong>{event.eventType || '--'}</strong>
-                    <span>{formatDateTime(event.ts)}</span>
+                {readableEvents.map((event, index) => (
+                  <li key={`${event.time}-${event.identity}-${index}`}>
+                    <div className="detail-event-main">
+                      <strong>{event.eventType}</strong>
+                      <span>{formatDateTime(event.time)}</span>
+                    </div>
+                    <div className="detail-event-meta">
+                      <span>{typeof event.price === 'number' ? `价格 ${formatPrice(event.price)}` : '价格 --'}</span>
+                      <span>{event.side === 'buy' ? '买盘' : event.side === 'sell' ? '卖盘' : '方向 --'}</span>
+                      <span>{typeof event.volume === 'number' ? `量 ${formatCompactNumber(event.volume)}` : '量 --'}</span>
+                      <span>
+                        {typeof event.low === 'number' && typeof event.high === 'number'
+                          ? `区间 ${formatPrice(event.low)} ~ ${formatPrice(event.high)}`
+                          : '区间 --'}
+                      </span>
+                      <span>{typeof event.close === 'number' ? `收 ${formatPrice(event.close)}` : '收 --'}</span>
+                      <span>{typeof event.changePct === 'number' ? `涨跌 ${formatSignedPercent(event.changePct)}` : '涨跌 --'}</span>
+                    </div>
                   </li>
                 ))}
               </ul>
