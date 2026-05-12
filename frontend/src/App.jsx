@@ -47,6 +47,93 @@ const connectionStateLabels = {
   error: '连接异常',
 };
 
+const contentTypeLabels = {
+  all: '全部',
+  report: '研报',
+  news: '新闻',
+  announcement: '公告',
+};
+
+const contentLaneLabels = {
+  'symbol-report': '个股研报',
+  'symbol-news': '个股新闻',
+  'symbol-announcement': '个股公告',
+  'market-news': '市场快讯',
+};
+
+function buildContentFeedUrl({ symbol = '', type = 'all', limit = 20 }) {
+  const params = new URLSearchParams();
+  if (symbol) {
+    params.set('symbol', symbol);
+  }
+  if (type && type !== 'all') {
+    params.set('type', type);
+  }
+  params.set('limit', String(limit));
+  return `${apiBaseUrl}/api/v1/content/items?${params.toString()}`;
+}
+
+function buildContentStatusUrl(symbol = '') {
+  const params = new URLSearchParams();
+  if (symbol) {
+    params.set('symbol', symbol);
+  }
+  return `${apiBaseUrl}/api/v1/content/status?${params.toString()}`;
+}
+
+async function parseJsonOrThrow(response, fallbackMessage) {
+  if (!response.ok) {
+    throw new Error(fallbackMessage);
+  }
+  return response.json();
+}
+
+function formatRelativeDateTime(value) {
+  if (!value) {
+    return '--';
+  }
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return '--';
+  }
+  const diffMinutes = Math.round((Date.now() - timestamp) / 60000);
+  if (Math.abs(diffMinutes) < 1) {
+    return '刚刚';
+  }
+  if (Math.abs(diffMinutes) < 60) {
+    return `${diffMinutes} 分钟前`;
+  }
+  const diffHours = Math.round(diffMinutes / 60);
+  if (Math.abs(diffHours) < 24) {
+    return `${diffHours} 小时前`;
+  }
+  const diffDays = Math.round(diffHours / 24);
+  return `${diffDays} 天前`;
+}
+
+function getContentItemMeta(item) {
+  if (!item || typeof item !== 'object') {
+    return [];
+  }
+  if (item.type === 'report') {
+    return [item.details?.rating, item.details?.institution, item.details?.analyst].filter(Boolean);
+  }
+  if (item.type === 'announcement') {
+    return [item.details?.announcementType, item.symbol].filter(Boolean);
+  }
+  return [item.details?.articleSource, item.symbol || (item.scope === 'market' ? '市场快讯' : null)].filter(Boolean);
+}
+
+function getLaneStatusTone(job) {
+  if (job?.isCoolingDown) {
+    return 'cooldown';
+  }
+  if (job?.isStale || job?.lastError) {
+    return 'stale';
+  }
+  return 'healthy';
+}
+
 function serializeIdentityValue(value) {
   if (Array.isArray(value)) {
     return `[${value.map((item) => serializeIdentityValue(item)).join(',')}]`;
@@ -708,6 +795,11 @@ function App() {
   const [snapshotDetails, setSnapshotDetails] = useState({});
   const [detailRequestState, setDetailRequestState] = useState('idle');
   const [detailChartView, setDetailChartView] = useState('intraday');
+  const [contentType, setContentType] = useState('all');
+  const [contentSymbolFilter, setContentSymbolFilter] = useState('');
+  const [contentFeed, setContentFeed] = useState([]);
+  const [contentStatus, setContentStatus] = useState({ jobs: [], latestIngestedAt: null, summary: null });
+  const [contentRequestState, setContentRequestState] = useState('idle');
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
   const eventCards = useMemo(
@@ -780,6 +872,46 @@ function App() {
       })
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (activeView !== 'content') {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadContent() {
+      setContentRequestState('loading');
+      try {
+        const [feedResponse, statusResponse] = await Promise.all([
+          fetch(buildContentFeedUrl({ symbol: contentSymbolFilter, type: contentType, limit: 24 })),
+          fetch(buildContentStatusUrl(contentSymbolFilter)),
+        ]);
+        const [feedPayload, statusPayload] = await Promise.all([
+          parseJsonOrThrow(feedResponse, 'content feed fetch failed'),
+          parseJsonOrThrow(statusResponse, 'content status fetch failed'),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setContentFeed(Array.isArray(feedPayload.items) ? feedPayload.items : []);
+        setContentStatus(statusPayload && typeof statusPayload === 'object' ? statusPayload : { jobs: [], latestIngestedAt: null, summary: null });
+        setContentRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setContentRequestState('error');
+        }
+      }
+    }
+
+    loadContent();
+    const intervalId = window.setInterval(loadContent, 90000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeView, contentSymbolFilter, contentType]);
 
   const selectedSnapshot = selectedSnapshotSymbol ? snapshots[selectedSnapshotSymbol] : null;
   const selectedDetail = selectedSnapshotSymbol ? snapshotDetails[selectedSnapshotSymbol] : null;
@@ -960,6 +1092,122 @@ function App() {
           </div>
         </dl>
       </section>
+    );
+  }
+
+  function renderContentCard(item) {
+    const meta = getContentItemMeta(item);
+    return (
+      <section className={`content-card ${item.type === 'announcement' ? 'content-card-announcement' : ''}`} key={`${item.type}-${item.id}`}>
+        <header className="content-card-header">
+          <div>
+            <div className="content-badge-row">
+              <span className="content-type-badge">{contentTypeLabels[item.type] || '资讯'}</span>
+              {item.scope === 'market' ? <span className="content-scope-badge">市场</span> : null}
+              {item.stale ? <span className="content-health-badge stale">待刷新</span> : null}
+            </div>
+            <h3>{item.title || '未命名内容'}</h3>
+            <p className="snapshot-subtitle">{meta.join(' · ') || item.symbol || '内容情报'}</p>
+          </div>
+          <div className="content-card-time">
+            <span>{formatRelativeDateTime(item.firstSeenAt || item.publishedAt)}</span>
+            <span>{formatDateTime(item.publishedAt || item.firstSeenAt)}</span>
+          </div>
+        </header>
+        <p className="content-card-summary">{item.summary || '当前仅同步到标题与基础元信息。'}</p>
+        <div className="content-card-footer">
+          <span className="content-source">{item.provider || '--'} · {item.source || '--'}</span>
+          {item.url ? (
+            <a className="content-link" href={item.url} target="_blank" rel="noreferrer">
+              查看原文
+            </a>
+          ) : null}
+        </div>
+      </section>
+    );
+  }
+
+  function renderContentView() {
+    const hasCooldown = Array.isArray(contentStatus.jobs) && contentStatus.jobs.some((job) => job?.isCoolingDown);
+    const degradedJobs = Array.isArray(contentStatus.jobs) ? contentStatus.jobs.filter((job) => !job?.isHealthy) : [];
+    return (
+      <article className="panel wide content-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>资讯情报</h2>
+            <p className="panel-tip compact">研报、新闻与公告统一入库，优先保证可回溯与后续回测，而不是伪实时抓取。</p>
+          </div>
+          <div className="content-status-summary">
+            <span className="symbol-count-badge">最近入库 {formatRelativeDateTime(contentStatus.latestIngestedAt)}</span>
+            {contentStatus.summary?.degradedJobs ? <span className="symbol-count-badge warning">异常 lane {contentStatus.summary.degradedJobs}</span> : null}
+          </div>
+        </div>
+
+        <div className="submenu-row content-toolbar-row">
+          <div className="submenu-tabs">
+            {Object.entries(contentTypeLabels).map(([value, label]) => (
+              <button
+                key={value}
+                className={contentType === value ? 'view-tab active' : 'view-tab'}
+                type="button"
+                onClick={() => setContentType(value)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="content-filter-row">
+            <button
+              className={!contentSymbolFilter ? 'view-tab active' : 'view-tab'}
+              type="button"
+              onClick={() => setContentSymbolFilter('')}
+            >
+              全市场
+            </button>
+            {activeSymbols.map((item) => (
+              <button
+                key={item}
+                className={contentSymbolFilter === item ? 'view-tab active' : 'view-tab'}
+                type="button"
+                onClick={() => setContentSymbolFilter(item)}
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {hasCooldown ? <p className="panel-tip compact">当前部分内容 lane 处于冷却期，页面继续使用已入库数据并稍后自动刷新。</p> : null}
+        {degradedJobs.length ? (
+          <div className="content-health-grid">
+            {degradedJobs.map((job) => (
+              <article className={`content-health-card ${getLaneStatusTone(job)}`} key={`${job.lane}-${job.symbol || 'market'}`}>
+                <div className="content-health-card-header">
+                  <strong>{contentLaneLabels[job.lane] || job.lane}</strong>
+                  <span>{job.symbol || '全市场'}</span>
+                </div>
+                <p>
+                  {job.lastError
+                    ? `最近抓取失败：${job.lastError}`
+                    : job.isStale
+                      ? '当前 lane 已超过健康刷新窗口，页面继续显示已入库旧数据。'
+                      : '当前 lane 状态异常。'}
+                </p>
+                <div className="content-health-meta">
+                  <span>上次成功 {formatRelativeDateTime(job.lastSuccessAt)}</span>
+                  <span>失败次数 {job.failureCount || 0}</span>
+                </div>
+              </article>
+            ))}
+          </div>
+        ) : null}
+        {contentRequestState === 'loading' ? <p className="status-line">资讯数据加载中...</p> : null}
+        {contentRequestState === 'error' ? <p className="status-line">资讯数据加载失败，请稍后重试。</p> : null}
+
+        <div className="content-grid">
+          {contentFeed.length ? contentFeed.map((item) => renderContentCard(item)) : <p className="content-empty-state">当前筛选条件下暂无内容情报。</p>}
+        </div>
+      </article>
     );
   }
 
@@ -1505,6 +1753,13 @@ function App() {
             事件
           </button>
           <button
+            className={activeView === 'content' ? 'view-tab active' : 'view-tab'}
+            type="button"
+            onClick={() => setActiveView('content')}
+          >
+            资讯
+          </button>
+          <button
             className={activeView === 'management' ? 'view-tab active' : 'view-tab'}
             type="button"
             onClick={() => setActiveView('management')}
@@ -1540,6 +1795,8 @@ function App() {
               </>
             )}
           </article>
+        ) : activeView === 'content' ? (
+          renderContentView()
         ) : activeView === 'management' ? (
           <article className="panel wide management-panel">
             <div className="panel-heading">

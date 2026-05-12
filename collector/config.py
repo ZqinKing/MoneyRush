@@ -21,6 +21,18 @@ class Settings(BaseSettings):
     collector_vendor_failure_cooldown_seconds: int = 60
     collector_enable_runtime_data_repair: bool = False
     collector_vendor_price_divergence_limit_pct: float = 15.0
+    content_collector_enabled: bool = True
+    content_collector_poll_interval_seconds: int = 5
+    content_fetch_min_interval_seconds: int = 10
+    content_fetch_jitter_seconds: int = 2
+    content_fetch_cooldown_base_seconds: int = 1800
+    content_report_refresh_seconds: int = 43200
+    content_news_refresh_seconds: int = 1800
+    content_announcement_refresh_seconds: int = 7200
+    content_market_news_refresh_seconds: int = 900
+    content_report_backfill_days: int = 365
+    content_announcement_backfill_pages: int = 5
+    content_news_backfill_max_items: int = 100
 
 
 @lru_cache(maxsize=1)

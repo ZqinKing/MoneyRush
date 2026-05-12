@@ -15,6 +15,8 @@ class RedisStore:
         market_snapshot_key_prefix: str,
         market_event_key_prefix: str,
         market_events_stream_key: str,
+        content_feed_cache_key_prefix: str = "moneyrush:content:feed",
+        content_status_cache_key_prefix: str = "moneyrush:content:status",
     ) -> None:
         self._redis = Redis.from_url(redis_url, decode_responses=True)
         self._stream_key = stream_key
@@ -22,12 +24,29 @@ class RedisStore:
         self._market_snapshot_key_prefix = market_snapshot_key_prefix
         self._market_event_key_prefix = market_event_key_prefix
         self._market_events_stream_key = market_events_stream_key
+        self._content_feed_cache_key_prefix = content_feed_cache_key_prefix
+        self._content_status_cache_key_prefix = content_status_cache_key_prefix
 
     def _snapshot_key(self, symbol: str) -> str:
         return f"{self._market_snapshot_key_prefix}:{symbol}"
 
     def _event_key(self, symbol: str) -> str:
         return f"{self._market_event_key_prefix}:{symbol}"
+
+    def _content_feed_key(self, cache_key: str) -> str:
+        return f"{self._content_feed_cache_key_prefix}:{cache_key}"
+
+    def _content_status_key(self, cache_key: str) -> str:
+        return f"{self._content_status_cache_key_prefix}:{cache_key}"
+
+    async def _delete_by_pattern(self, pattern: str) -> None:
+        cursor = 0
+        while True:
+            cursor, keys = await self._redis.scan(cursor=cursor, match=pattern, count=100)
+            if keys:
+                await self._redis.delete(*keys)
+            if cursor == 0:
+                break
 
     async def ping(self) -> bool:
         return bool(await self._redis.ping())
@@ -112,3 +131,25 @@ class RedisStore:
 
     async def close(self) -> None:
         await self._redis.aclose()
+
+    async def clear_content_caches(self) -> None:
+        await self._delete_by_pattern(f"{self._content_feed_cache_key_prefix}:*")
+        await self._delete_by_pattern(f"{self._content_status_cache_key_prefix}:*")
+
+    async def get_content_feed_cache(self, cache_key: str) -> dict[str, object] | None:
+        payload = await self._redis.get(self._content_feed_key(cache_key))
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    async def set_content_feed_cache(self, cache_key: str, payload: dict[str, object], ttl_seconds: int) -> None:
+        await self._redis.set(self._content_feed_key(cache_key), json.dumps(payload), ex=ttl_seconds)
+
+    async def get_content_status_cache(self, cache_key: str) -> dict[str, object] | None:
+        payload = await self._redis.get(self._content_status_key(cache_key))
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    async def set_content_status_cache(self, cache_key: str, payload: dict[str, object], ttl_seconds: int) -> None:
+        await self._redis.set(self._content_status_key(cache_key), json.dumps(payload), ex=ttl_seconds)

@@ -5,11 +5,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.content import router as content_router
 from app.api.routes.health import router as health_router
 from app.api.routes.symbols import router as symbols_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.services.cache.redis_store import RedisStore
+from app.services.content_query_service import ContentQueryService
 from app.services.market_detail.query_service import MarketDetailQueryService
 from app.ws.market import router as market_ws_router
 
@@ -34,6 +36,7 @@ def build_allowed_origins(frontend_origin: str) -> list[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    app.state.settings = settings
     app.state.redis_store = RedisStore(
         redis_url=settings.redis_url,
         stream_key=settings.redis_stream_key,
@@ -41,12 +44,25 @@ async def lifespan(app: FastAPI):
         market_snapshot_key_prefix=settings.market_snapshot_key_prefix,
         market_event_key_prefix=settings.market_event_key_prefix,
         market_events_stream_key=settings.market_events_stream_key,
+        content_feed_cache_key_prefix=settings.content_feed_cache_key_prefix,
+        content_status_cache_key_prefix=settings.content_status_cache_key_prefix,
     )
     app.state.market_detail_query_service = MarketDetailQueryService(settings.postgres_dsn)
+    app.state.content_query_service = ContentQueryService(
+        settings.postgres_dsn,
+        lane_refresh_seconds={
+            "symbol-report": settings.content_report_refresh_seconds,
+            "symbol-news": settings.content_news_refresh_seconds,
+            "symbol-announcement": settings.content_announcement_refresh_seconds,
+            "market-news": settings.content_market_news_refresh_seconds,
+        },
+    )
     await app.state.market_detail_query_service.connect()
+    await app.state.content_query_service.connect()
 
     yield
 
+    await app.state.content_query_service.close()
     await app.state.market_detail_query_service.close()
     await app.state.redis_store.close()
 
@@ -74,6 +90,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health_router, prefix="/api/v1")
     app.include_router(symbols_router, prefix="/api/v1")
+    app.include_router(content_router, prefix="/api/v1")
     app.include_router(market_ws_router)
     return app
 
