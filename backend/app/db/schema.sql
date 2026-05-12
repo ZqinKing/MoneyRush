@@ -78,3 +78,106 @@ CREATE TABLE IF NOT EXISTS stock_kline (
 SELECT create_hypertable('stock_kline', 'bucket_ts', if_not_exists => TRUE, migrate_data => TRUE);
 
 CREATE INDEX IF NOT EXISTS stock_kline_symbol_period_ts_idx ON stock_kline (symbol, period, bucket_ts DESC);
+
+CREATE TABLE IF NOT EXISTS stock_research_report (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    title TEXT NOT NULL,
+    rating TEXT,
+    institution TEXT,
+    analyst TEXT,
+    industry TEXT,
+    published_at TIMESTAMPTZ,
+    first_seen_at TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    source_url TEXT,
+    provider TEXT NOT NULL DEFAULT 'akshare',
+    upstream_source TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS stock_research_report_symbol_published_idx
+    ON stock_research_report (symbol, published_at DESC);
+CREATE INDEX IF NOT EXISTS stock_research_report_symbol_first_seen_idx
+    ON stock_research_report (symbol, first_seen_at DESC);
+CREATE INDEX IF NOT EXISTS stock_research_report_published_idx
+    ON stock_research_report (published_at DESC);
+
+CREATE TABLE IF NOT EXISTS stock_news_item (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT,
+    scope TEXT NOT NULL,
+    title TEXT NOT NULL,
+    summary TEXT,
+    content TEXT,
+    article_source TEXT,
+    published_at TIMESTAMPTZ,
+    first_seen_at TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    source_url TEXT,
+    provider TEXT NOT NULL DEFAULT 'akshare',
+    upstream_source TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS stock_news_item_scope_published_idx
+    ON stock_news_item (scope, published_at DESC);
+CREATE INDEX IF NOT EXISTS stock_news_item_symbol_published_idx
+    ON stock_news_item (symbol, published_at DESC);
+CREATE INDEX IF NOT EXISTS stock_news_item_symbol_first_seen_idx
+    ON stock_news_item (symbol, first_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS stock_announcement_item (
+    id BIGSERIAL PRIMARY KEY,
+    symbol TEXT NOT NULL,
+    title TEXT NOT NULL,
+    announcement_type TEXT,
+    published_at TIMESTAMPTZ,
+    first_seen_at TIMESTAMPTZ NOT NULL,
+    last_seen_at TIMESTAMPTZ NOT NULL,
+    pdf_url TEXT,
+    provider TEXT NOT NULL DEFAULT 'akshare',
+    upstream_source TEXT NOT NULL,
+    dedupe_key TEXT NOT NULL UNIQUE,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS stock_announcement_item_symbol_published_idx
+    ON stock_announcement_item (symbol, published_at DESC);
+CREATE INDEX IF NOT EXISTS stock_announcement_item_symbol_first_seen_idx
+    ON stock_announcement_item (symbol, first_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS content_fetch_checkpoint (
+    lane TEXT NOT NULL,
+    symbol TEXT NOT NULL DEFAULT '',
+    cursor JSONB NOT NULL DEFAULT '{}'::jsonb,
+    next_due_at TIMESTAMPTZ NOT NULL,
+    cooldown_until TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    PRIMARY KEY (lane, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS content_fetch_checkpoint_next_due_idx
+    ON content_fetch_checkpoint (next_due_at ASC);
+
+CREATE TABLE IF NOT EXISTS content_fetch_log (
+    id BIGSERIAL PRIMARY KEY,
+    lane TEXT NOT NULL,
+    symbol TEXT,
+    provider TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ NOT NULL,
+    http_hint TEXT,
+    error_message TEXT,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS content_fetch_log_lane_started_idx
+    ON content_fetch_log (lane, started_at DESC);
