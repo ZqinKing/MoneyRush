@@ -302,6 +302,61 @@ class PostgresStore:
                     json.dumps(event),
                 )
 
+    async def persist_kline_history(self, klines: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not klines:
+            return
+
+        rows = [
+            (
+                _normalize_kline_bucket_ts(item["bucketTs"], item["period"]),
+                item["symbol"],
+                item["period"],
+                item["open"],
+                item["high"],
+                item["low"],
+                item["close"],
+                item.get("volume"),
+                item.get("amount"),
+                item["source"],
+                json.dumps(item.get("raw", {})),
+            )
+            for item in klines
+        ]
+
+        async with self._pool.acquire() as connection:
+            async with connection.transaction():
+                await connection.executemany(
+                    """
+                    INSERT INTO stock_kline (
+                        bucket_ts,
+                        symbol,
+                        period,
+                        open,
+                        high,
+                        low,
+                        close,
+                        volume,
+                        amount,
+                        source,
+                        raw
+                    ) VALUES (
+                        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb
+                    )
+                    ON CONFLICT (symbol, period, bucket_ts) DO UPDATE SET
+                        open = EXCLUDED.open,
+                        high = EXCLUDED.high,
+                        low = EXCLUDED.low,
+                        close = EXCLUDED.close,
+                        volume = EXCLUDED.volume,
+                        amount = EXCLUDED.amount,
+                        source = EXCLUDED.source,
+                        raw = EXCLUDED.raw
+                    """,
+                    rows,
+                )
+
     async def persist_symbol_command(self, *, timestamp, symbol: str, command_type: str, payload: dict[str, object]) -> None:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")

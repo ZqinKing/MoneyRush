@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from time import monotonic
 from collections.abc import Sequence
 
@@ -14,6 +14,7 @@ from collector.services.tencent_quote_client import MarketQuoteClient
 
 
 logger = logging.getLogger(__name__)
+CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 
 
 class CollectorWorker:
@@ -27,6 +28,7 @@ class CollectorWorker:
         self._quote_client = MarketQuoteClient(settings)
         self._last_stream_id = "$"
         self._last_collected_at: dict[str, float] = {}
+        self._daily_history_synced_for_trade_day: dict[str, str] = {}
         self._postgres_ready = False
 
     async def run(self) -> None:
@@ -55,6 +57,7 @@ class CollectorWorker:
         logger.info("active symbols snapshot", extra={"active_symbols": active_symbols})
 
         for symbol in active_symbols:
+            await self._ensure_daily_history(symbol)
             await self._collect_symbol(symbol)
 
     async def _collect_symbol(self, symbol: str) -> None:
@@ -105,6 +108,26 @@ class CollectorWorker:
 
     def _clear_symbol_runtime_state(self, symbol: str) -> None:
         self._last_collected_at.pop(symbol, None)
+        self._daily_history_synced_for_trade_day.pop(symbol, None)
+
+    async def _ensure_daily_history(self, symbol: str) -> None:
+        trade_day = datetime.now(CHINA_MARKET_TZ).date().isoformat()
+        if self._daily_history_synced_for_trade_day.get(symbol) == trade_day:
+            return
+
+        history = await asyncio.to_thread(self._quote_client.fetch_daily_history, symbol, 60)
+        if history:
+            await self._postgres.persist_kline_history(history)
+            logger.info(
+                "collector backfilled daily kline history",
+                extra={
+                    "symbol": symbol,
+                    "trade_day": trade_day,
+                    "rows": len(history),
+                },
+            )
+
+        self._daily_history_synced_for_trade_day[symbol] = trade_day
 
     async def _consume_command_stream(self) -> None:
         messages = await self._redis.xread(

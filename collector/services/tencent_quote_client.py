@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 import logging
 from time import monotonic
 from urllib.request import urlopen
@@ -45,6 +45,28 @@ def _parse_timestamp(value: str) -> datetime:
     if len(value) == 14 and value.isdigit():
         return datetime.strptime(value, "%Y%m%d%H%M%S").replace(tzinfo=CHINA_MARKET_TZ).astimezone(UTC)
     return datetime.now(UTC)
+
+
+def _to_utc_day_bucket(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return normalized.replace(hour=0, minute=0, second=0, microsecond=0)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+    if isinstance(value, str):
+        for parser in (datetime.fromisoformat,):
+            try:
+                parsed = parser(value)
+                return _to_utc_day_bucket(parsed)
+            except ValueError:
+                continue
+        for pattern in ("%Y-%m-%d", "%Y%m%d"):
+            try:
+                parsed_date = datetime.strptime(value, pattern).date()
+                return datetime(parsed_date.year, parsed_date.month, parsed_date.day, tzinfo=UTC)
+            except ValueError:
+                continue
+    return None
 
 
 @dataclass(slots=True)
@@ -284,6 +306,65 @@ class MootdxQuoteClient:
             daily_bucket=daily_bucket,
         )
 
+    def fetch_daily_history(self, symbol: str, limit: int = 60) -> list[dict[str, object]]:
+        client = self._ensure_client()
+        remaining = max(limit, 0)
+        start = 0
+        records: list[dict[str, object]] = []
+
+        while remaining > 0:
+          chunk_size = min(remaining, 800)
+          frame = client.bars(symbol=symbol, frequency=9, start=start, offset=chunk_size)
+          if frame is None or frame.empty:
+              break
+
+          normalized_frame = frame.copy()
+          if getattr(normalized_frame.index, "name", None) and normalized_frame.index.name not in normalized_frame.columns:
+              normalized_frame = normalized_frame.reset_index()
+
+          for row in normalized_frame.to_dict("records"):
+              bucket_ts = _to_utc_day_bucket(
+                  row.get("datetime")
+                  or row.get("date")
+                  or row.get("trade_date")
+              )
+              open_price = _to_float(str(row.get("open")))
+              high_price = _to_float(str(row.get("high")))
+              low_price = _to_float(str(row.get("low")))
+              close_price = _to_float(str(row.get("close")))
+              volume = _to_int(str(row.get("volume") if row.get("volume") is not None else row.get("vol")))
+              amount = _to_float(str(row.get("amount")))
+
+              if bucket_ts is None or None in (open_price, high_price, low_price, close_price):
+                  continue
+
+              records.append(
+                  {
+                      "bucketTs": bucket_ts,
+                      "symbol": symbol,
+                      "period": "1d",
+                      "open": open_price,
+                      "high": high_price,
+                      "low": low_price,
+                      "close": close_price,
+                      "volume": volume,
+                      "amount": amount,
+                      "source": "mootdx",
+                      "raw": row,
+                  }
+              )
+
+          fetched_count = len(frame.index)
+          if fetched_count < chunk_size:
+              break
+          remaining -= fetched_count
+          start += fetched_count
+
+        deduped: dict[datetime, dict[str, object]] = {}
+        for item in records:
+            deduped[item["bucketTs"]] = item
+        return [deduped[key] for key in sorted(deduped.keys(), reverse=True)[:limit]]
+
     @classmethod
     def _combine_quote_timestamp(cls, servertime: object) -> datetime:
         if not isinstance(servertime, str):
@@ -337,6 +418,9 @@ class MarketQuoteClient:
             raise RuntimeError(f"mootdx quote failed validation for {symbol}")
 
         return self._build_market_state(mootdx_quote, tencent_quote)
+
+    def fetch_daily_history(self, symbol: str, limit: int = 60) -> list[dict[str, object]]:
+        return self._mootdx_client.fetch_daily_history(symbol, limit=limit)
 
     def _get_mootdx_quote(self, symbol: str) -> MootdxQuote:
         now = monotonic()
