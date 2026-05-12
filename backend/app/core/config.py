@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     app_name: str = "MoneyRush API"
     app_env: str = "development"
     frontend_origin: str = "http://localhost:5173"
+    frontend_origin_regex: str = r"https?://([A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(:5173)?$"
     redis_url: str = "redis://redis:6379/0"
     postgres_dsn: str = "postgresql://moneyrush:moneyrush@db:5432/moneyrush"
     redis_stream_key: str = "moneyrush:symbol:commands"
