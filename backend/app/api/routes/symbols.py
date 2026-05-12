@@ -118,6 +118,7 @@ async def activate_symbol(payload: ActivateSymbolRequest, request: Request) -> d
 
     redis_store = request.app.state.redis_store
     await redis_store.activate_symbol(symbol)
+    await redis_store.clear_content_caches()
 
     return {
         "status": "accepted",
@@ -131,7 +132,10 @@ async def deactivate_symbol(symbol: str, request: Request) -> dict[str, str]:
     normalized_symbol = _normalize_symbol_or_422(symbol)
 
     redis_store = request.app.state.redis_store
+    content_query_service = request.app.state.content_query_service
     await redis_store.deactivate_symbol(normalized_symbol)
+    await content_query_service.delete_symbol_tracking(normalized_symbol)
+    await redis_store.clear_content_caches()
 
     return {
         "status": "accepted",
