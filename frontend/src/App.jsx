@@ -414,7 +414,10 @@ function getChinaSessionPosition(value) {
   }
 
   const chinaDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-  const minutes = chinaDate.getUTCHours() * 60 + chinaDate.getUTCMinutes();
+  const minutes = chinaDate.getUTCHours() * 60
+    + chinaDate.getUTCMinutes()
+    + chinaDate.getUTCSeconds() / 60
+    + chinaDate.getUTCMilliseconds() / 60000;
 
   const morningOpen = 9 * 60 + 30;
   const morningClose = 11 * 60 + 30;
@@ -662,15 +665,29 @@ function buildLineChartGeometry(points, width = 860, height = 320, referencePric
   const timeScale = buildIntradayTimeScale(width);
 
   const scaleY = (value) => topPadding + ((maxValue - value) / range) * usableHeight;
+  const fallbackStep = points.length > 1 ? width / (points.length - 1) : 0;
+  const minimumStep = fallbackStep > 0 ? Math.min(fallbackStep * 0.12, 0.9) : 0.6;
+  let previousX = null;
 
-  const chartPoints = points.map((point, index) => ({
-    x: timeScale.positionToX(getChinaSessionPosition(point.bucketTs)) ?? (points.length > 1 ? (width / (points.length - 1)) * index : width / 2),
-    y: scaleY(point.close),
-    label: formatTime(point.bucketTs),
-    close: point.close,
-    volume: point.volume,
-    amount: point.amount,
-  }));
+  const chartPoints = points.map((point, index) => {
+    const mappedX = timeScale.positionToX(getChinaSessionPosition(point.bucketTs));
+    const fallbackX = points.length > 1 ? fallbackStep * index : width / 2;
+    const rawX = mappedX ?? fallbackX;
+    const x = previousX !== null && rawX <= previousX
+      ? Math.min(previousX + minimumStep, width)
+      : rawX;
+
+    previousX = x;
+
+    return {
+      x,
+      y: scaleY(point.close),
+      label: formatTime(point.bucketTs),
+      close: point.close,
+      volume: point.volume,
+      amount: point.amount,
+    };
+  });
 
   const polyline = chartPoints.map((point) => `${point.x},${point.y}`).join(' ');
   const area = `0,${height - bottomPadding} ${polyline} ${width},${height - bottomPadding}`;
@@ -1239,7 +1256,7 @@ function App() {
         })),
       'bucketTs',
     );
-    const intradayChartPoints = intradayTickPoints.length > intradaySampledBars.length ? intradayTickPoints : intradaySampledBars;
+    const intradayChartPoints = intradaySampledBars.length ? intradaySampledBars : intradayTickPoints;
     const latestKline = dailyBars.length
       ? dailyBars[dailyBars.length - 1]
       : intradayChartPoints.length
