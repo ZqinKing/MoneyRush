@@ -21,3 +21,4 @@ dist/
 .ui-review/
 AGENTS.md
 .playwright-mcp/
+playwright_screenshots/
