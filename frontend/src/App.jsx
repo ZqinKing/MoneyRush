@@ -38,6 +38,8 @@ const requestStateLabels = {
   idle: '等待操作',
   submitting: '正在提交请求…',
   accepted: '已加入监控队列',
+  already_active: '该股票已在监控列表中',
+  invalid_symbol: '股票代码不存在',
 };
 
 const symbolInputPattern = /^\d{6}$/;
@@ -254,6 +256,10 @@ function getRequestStatusTone(value) {
   }
 
   if (value === 'submitting' || (typeof value === 'string' && value.startsWith('正在移除'))) {
+    return 'pending';
+  }
+
+  if (value === 'already_active') {
     return 'pending';
   }
 
@@ -1047,11 +1053,13 @@ function App() {
         body: JSON.stringify({ symbol: normalizedSymbol }),
       });
 
+      const payload = await response.json().catch(() => ({}));
+
       if (!response.ok) {
-        throw new Error(`激活失败（HTTP ${response.status}）`);
+        throw new Error(payload.detail || payload.message || `激活失败（HTTP ${response.status}）`);
       }
 
-      setRequestState('accepted');
+      setRequestState(typeof payload.status === 'string' ? payload.status : 'accepted');
       setSymbol('');
     } catch (error) {
       setRequestState(error.message);
@@ -1196,8 +1204,28 @@ function App() {
 
   function renderContentCard(item) {
     const meta = getContentItemMeta(item);
+    const isClickable = Boolean(item.url);
+    const openContent = () => {
+      if (!item.url) {
+        return;
+      }
+      window.open(item.url, '_blank', 'noopener,noreferrer');
+    };
+
     return (
-      <section className={`content-card ${item.type === 'announcement' ? 'content-card-announcement' : ''}`} key={`${item.type}-${item.id}`}>
+      <section
+        className={`content-card ${item.type === 'announcement' ? 'content-card-announcement' : ''} ${isClickable ? 'clickable' : ''}`}
+        key={`${item.type}-${item.id}`}
+        role={isClickable ? 'button' : undefined}
+        tabIndex={isClickable ? 0 : undefined}
+        onClick={isClickable ? openContent : undefined}
+        onKeyDown={isClickable ? (event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            openContent();
+          }
+        } : undefined}
+      >
         <header className="content-card-header">
           <div>
             <div className="content-badge-row">
@@ -1217,7 +1245,7 @@ function App() {
         <div className="content-card-footer">
           <span className="content-source">{item.provider || '--'} · {item.source || '--'}</span>
           {item.url ? (
-            <a className="content-link" href={item.url} target="_blank" rel="noreferrer">
+            <a className="content-link" href={item.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
               查看原文
             </a>
           ) : null}

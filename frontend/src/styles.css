@@ -400,6 +400,19 @@ input {
   gap: 14px;
 }
 
+.content-card.clickable {
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.content-card.clickable:hover,
+.content-card.clickable:focus-visible {
+  transform: translateY(-2px);
+  border-color: rgba(129, 164, 255, 0.35);
+  box-shadow: 0 12px 30px rgba(23, 47, 99, 0.22);
+  outline: none;
+}
+
 .content-card-announcement {
   border-left: 3px solid rgba(129, 164, 255, 0.6);
 }
