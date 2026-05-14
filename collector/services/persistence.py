@@ -281,6 +281,130 @@ class PostgresStore:
             SELECT COUNT(*)::int FROM deleted
             """
         )
+        repaired_mootdx_tick_volumes = await connection.fetchval(
+            """
+            WITH repaired AS (
+                UPDATE stock_tick
+                SET volume = volume * 100,
+                    raw = jsonb_set(
+                        jsonb_set(COALESCE(raw, '{}'::jsonb), '{providerVolumeUnit}', '"lots"', true),
+                        '{volumeUnit}',
+                        '"shares"',
+                        true
+                    )
+                WHERE source = 'mootdx'
+                  AND volume IS NOT NULL
+                  AND COALESCE(raw ->> 'volumeUnit', '') <> 'shares'
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM repaired
+            """
+        )
+        repaired_mootdx_kline_volumes = await connection.fetchval(
+            """
+            WITH repaired AS (
+                UPDATE stock_kline
+                SET volume = volume * 100,
+                    raw = jsonb_set(
+                        jsonb_set(COALESCE(raw, '{}'::jsonb), '{providerVolumeUnit}', '"lots"', true),
+                        '{volumeUnit}',
+                        '"shares"',
+                        true
+                    )
+                WHERE source = 'mootdx'
+                  AND volume IS NOT NULL
+                  AND COALESCE(raw ->> 'volumeUnit', '') <> 'shares'
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM repaired
+            """
+        )
+        repaired_tencent_tick_volumes = await connection.fetchval(
+            """
+            WITH repaired AS (
+                UPDATE stock_tick
+                SET volume = volume * 100,
+                    raw = jsonb_set(
+                        jsonb_set(COALESCE(raw, '{}'::jsonb), '{providerVolumeUnit}', '"lots"', true),
+                        '{volumeUnit}',
+                        '"shares"',
+                        true
+                    )
+                WHERE source = 'tencent-finance'
+                  AND volume IS NOT NULL
+                  AND COALESCE(raw ->> 'volumeUnit', '') <> 'shares'
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM repaired
+            """
+        )
+        repaired_tencent_kline_volumes = await connection.fetchval(
+            """
+            WITH repaired AS (
+                UPDATE stock_kline
+                SET volume = volume * 100,
+                    raw = jsonb_set(
+                        jsonb_set(COALESCE(raw, '{}'::jsonb), '{providerVolumeUnit}', '"lots"', true),
+                        '{volumeUnit}',
+                        '"shares"',
+                        true
+                    )
+                WHERE source = 'tencent-finance'
+                  AND volume IS NOT NULL
+                  AND COALESCE(raw ->> 'volumeUnit', '') <> 'shares'
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM repaired
+            """
+        )
+        repaired_mootdx_event_volumes = await connection.fetchval(
+            """
+            WITH repaired AS (
+                UPDATE stock_event
+                SET payload = jsonb_set(
+                    jsonb_set(
+                        jsonb_set(COALESCE(payload, '{}'::jsonb), '{tick,volume}', to_jsonb((((payload -> 'tick' ->> 'volume')::numeric) * 100)::bigint), true),
+                        '{tick,volumeUnit}',
+                        '"shares"',
+                        true
+                    ),
+                    '{providerVolumeUnit}',
+                    '"lots"',
+                    true
+                )
+                WHERE source IN ('mootdx', 'mootdx+tencent-finance')
+                  AND jsonb_typeof(payload -> 'tick') = 'object'
+                  AND jsonb_typeof(payload -> 'tick' -> 'volume') = 'number'
+                  AND COALESCE(payload -> 'tick' ->> 'volumeUnit', '') <> 'shares'
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM repaired
+            """
+        )
+        repaired_tencent_event_volumes = await connection.fetchval(
+            """
+            WITH repaired AS (
+                UPDATE stock_event
+                SET payload = jsonb_set(
+                    jsonb_set(
+                        jsonb_set(COALESCE(payload, '{}'::jsonb), '{tick,volume}', to_jsonb((((payload -> 'tick' ->> 'volume')::numeric) * 100)::bigint), true),
+                        '{tick,volumeUnit}',
+                        '"shares"',
+                        true
+                    ),
+                    '{providerVolumeUnit}',
+                    '"lots"',
+                    true
+                )
+                WHERE source = 'tencent-finance'
+                  AND jsonb_typeof(payload -> 'tick') = 'object'
+                  AND jsonb_typeof(payload -> 'tick' -> 'volume') = 'number'
+                  AND COALESCE(payload -> 'tick' ->> 'volumeUnit', '') <> 'shares'
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM repaired
+            """
+        )
 
         return {
             "repaired_ticks": repaired_ticks or 0,
@@ -288,6 +412,12 @@ class PostgresStore:
             "repaired_snapshots": repaired_snapshots or 0,
             "repaired_profiles": repaired_profiles or 0,
             "deleted_invalid_daily_klines": deleted_invalid_daily_klines or 0,
+            "repaired_mootdx_tick_volumes": repaired_mootdx_tick_volumes or 0,
+            "repaired_mootdx_kline_volumes": repaired_mootdx_kline_volumes or 0,
+            "repaired_tencent_tick_volumes": repaired_tencent_tick_volumes or 0,
+            "repaired_tencent_kline_volumes": repaired_tencent_kline_volumes or 0,
+            "repaired_mootdx_event_volumes": repaired_mootdx_event_volumes or 0,
+            "repaired_tencent_event_volumes": repaired_tencent_event_volumes or 0,
         }
 
     async def close(self) -> None:

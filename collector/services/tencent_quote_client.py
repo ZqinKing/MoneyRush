@@ -12,6 +12,7 @@ from mootdx.quotes import Quotes
 QUOTE_URL = "https://qt.gtimg.cn/q="
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 DEFAULT_MOOTDX_SERVER = ("180.153.18.170", 7709)
+A_SHARE_LOT_SIZE = 100
 logger = logging.getLogger(__name__)
 
 
@@ -39,6 +40,12 @@ def _to_int(value: str) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+def _lots_to_shares(value: int | None) -> int | None:
+    if value is None:
+        return None
+    return value * A_SHARE_LOT_SIZE
 
 
 def _parse_timestamp(value: str) -> datetime:
@@ -119,6 +126,9 @@ class TencentQuote:
             "side": "buy" if self.last_price >= self.previous_close else "sell",
             "source": "tencent-finance",
             "raw": {
+                "provider": "tencent-finance",
+                "providerVolumeUnit": "lots",
+                "volumeUnit": "shares",
                 "currency": self.currency,
                 "previousClose": self.previous_close,
                 "open": self.open_price,
@@ -137,6 +147,9 @@ class TencentQuote:
             "amount": self.amount,
             "source": "tencent-finance",
             "raw": {
+                "provider": "tencent-finance",
+                "providerVolumeUnit": "lots",
+                "volumeUnit": "shares",
                 "previousClose": self.previous_close,
                 "currency": self.currency,
             },
@@ -152,6 +165,7 @@ class TencentQuote:
             "tick": {
                 "price": self.last_price,
                 "volume": self.volume,
+                "volumeUnit": "shares",
                 "side": tick["side"],
             },
             "kline": {
@@ -212,7 +226,7 @@ class TencentQuoteClient:
         open_price = _to_float(parts[5])
         high_price = _to_float(parts[33])
         low_price = _to_float(parts[34])
-        volume = _to_int(parts[36])
+        volume = _lots_to_shares(_to_int(parts[36]))
         amount = None
         if parts[35]:
             detail_parts = parts[35].split("/")
@@ -287,6 +301,10 @@ class MootdxQuoteClient:
             tzinfo=UTC,
         )
 
+        volume_shares = _lots_to_shares(int(float(quote_row["volume"])))
+        bid_volume_1 = _lots_to_shares(_to_int(str(quote_row.get("bid_vol1"))))
+        ask_volume_1 = _lots_to_shares(_to_int(str(quote_row.get("ask_vol1"))))
+
         return MootdxQuote(
             symbol=symbol,
             exchange=_infer_exchange(symbol),
@@ -295,13 +313,13 @@ class MootdxQuoteClient:
             open_price=float(quote_row["open"]),
             high_price=float(quote_row["high"]),
             low_price=float(quote_row["low"]),
-            volume=int(float(quote_row["volume"])),
+            volume=volume_shares,
             amount=float(quote_row["amount"]),
             updated_at=updated_at,
             bid_price_1=_to_float(str(quote_row.get("bid1"))),
             ask_price_1=_to_float(str(quote_row.get("ask1"))),
-            bid_volume_1=_to_int(str(quote_row.get("bid_vol1"))),
-            ask_volume_1=_to_int(str(quote_row.get("ask_vol1"))),
+            bid_volume_1=bid_volume_1,
+            ask_volume_1=ask_volume_1,
             raw={key: self._normalize_scalar(value) for key, value in quote_row.to_dict().items()},
             daily_bucket=daily_bucket,
         )
@@ -332,8 +350,9 @@ class MootdxQuoteClient:
               high_price = _to_float(str(row.get("high")))
               low_price = _to_float(str(row.get("low")))
               close_price = _to_float(str(row.get("close")))
-              volume = _to_int(str(row.get("volume") if row.get("volume") is not None else row.get("vol")))
+              volume_lots = _to_int(str(row.get("volume") if row.get("volume") is not None else row.get("vol")))
               amount = _to_float(str(row.get("amount")))
+              volume = _lots_to_shares(volume_lots)
 
               if bucket_ts is None or None in (open_price, high_price, low_price, close_price):
                   continue
@@ -350,7 +369,12 @@ class MootdxQuoteClient:
                       "volume": volume,
                       "amount": amount,
                       "source": "mootdx",
-                      "raw": row,
+                      "raw": {
+                          **row,
+                          "provider": "mootdx",
+                          "providerVolumeUnit": "lots",
+                          "volumeUnit": "shares",
+                      },
                   }
               )
 
@@ -533,6 +557,8 @@ class MarketQuoteClient:
             "source": "mootdx",
             "raw": {
                 "provider": "mootdx",
+                "providerVolumeUnit": "lots",
+                "volumeUnit": "shares",
                 "quote": mootdx_quote.raw,
                 "previousClose": mootdx_quote.previous_close,
                 "bid1": mootdx_quote.bid_price_1,
@@ -555,6 +581,8 @@ class MarketQuoteClient:
             "source": "mootdx",
             "raw": {
                 "provider": "mootdx",
+                "providerVolumeUnit": "lots",
+                "volumeUnit": "shares",
                 "updatedAt": mootdx_quote.updated_at.isoformat(),
                 "previousClose": mootdx_quote.previous_close,
             },
@@ -570,6 +598,7 @@ class MarketQuoteClient:
             "tick": {
                 "price": mootdx_quote.last_price,
                 "volume": mootdx_quote.volume,
+                "volumeUnit": "shares",
                 "side": tick["side"],
             },
             "kline": {
