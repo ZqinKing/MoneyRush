@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import random
 import time
@@ -9,9 +10,19 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import akshare as ak
+import requests
+
+from collector.services.tencent_quote_client import TencentQuoteClient
 
 
 logger = logging.getLogger(__name__)
+SYMBOL_NEWS_SEARCH_URL = "https://search-api-web.eastmoney.com/search/jsonp"
+SYMBOL_NEWS_CALLBACK = "cb"
+SYMBOL_NEWS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "*/*",
+    "Referer": "https://so.eastmoney.com/news/",
+}
 
 
 class UpstreamContentFetchError(RuntimeError):
@@ -68,6 +79,8 @@ class AkshareContentClient:
     def __init__(self, settings) -> None:
         self._settings = settings
         self._last_request_at: float | None = None
+        self._tencent_quote_client = TencentQuoteClient()
+        self._symbol_news_keyword_cache: dict[str, str | None] = {}
 
     def _sleep_for_rate_limit(self) -> None:
         min_interval = max(self._settings.content_fetch_min_interval_seconds, 0)
@@ -129,20 +142,35 @@ class AkshareContentClient:
         fetched_at = datetime.now(UTC)
         items: list[dict[str, object]] = []
 
-        try:
-            frame = self._call(ak.stock_news_em, symbol=symbol)
-        except Exception as exc:
-            raise UpstreamContentFetchError(f"stock_news_em failed for {symbol}: {exc}") from exc
+        keyword_candidates = self._build_symbol_news_keywords(symbol)
+        records: list[dict[str, object]] | None = None
+        last_error: Exception | None = None
 
-        if frame is None or getattr(frame, "empty", True):
+        for keyword in keyword_candidates:
+            try:
+                candidate_records = self._fetch_symbol_news_records(keyword)
+                if not candidate_records:
+                    continue
+                records = candidate_records
+                if records is not None:
+                    break
+            except Exception as exc:
+                last_error = exc
+                logger.warning("stock_news_em candidate failed", extra={"symbol": symbol, "keyword": keyword, "error": str(exc)})
+
+        if records is None and last_error is not None:
+            raise UpstreamContentFetchError(f"stock_news_em failed for {symbol}: {last_error}") from last_error
+
+        if records is None:
             return FetchResult(items=items, upstream_source="eastmoney", fetched_at=fetched_at)
 
-        for row in frame.to_dict(orient="records"):
+        accepted_keywords = {value for value in keyword_candidates if value}
+        for row in records:
             title = _safe_text(row.get("新闻标题") or row.get("标题"))
             if not title:
                 continue
             keyword = _safe_text(row.get("关键词"))
-            if keyword and keyword != symbol:
+            if keyword and accepted_keywords and keyword not in accepted_keywords:
                 logger.warning("skip mismatched stock news item", extra={"symbol": symbol, "keyword": keyword, "title": title})
                 continue
             published_at = _safe_datetime(row.get("发布时间") or row.get("时间"))
@@ -168,6 +196,94 @@ class AkshareContentClient:
 
         max_items = max(self._settings.content_news_backfill_max_items, 1)
         return FetchResult(items=items[:max_items], upstream_source="eastmoney", fetched_at=fetched_at)
+
+    def _fetch_symbol_news_records(self, keyword: str) -> list[dict[str, object]]:
+        self._sleep_for_rate_limit()
+        response = requests.get(
+            SYMBOL_NEWS_SEARCH_URL,
+            params={
+                "cb": SYMBOL_NEWS_CALLBACK,
+                "param": json.dumps(
+                    {
+                        "uid": "",
+                        "keyword": keyword,
+                        "type": ["cmsArticle"],
+                        "client": "web",
+                        "clientType": "web",
+                        "clientVersion": "curr",
+                        "param": {
+                            "cmsArticle": {
+                                "searchScope": "default",
+                                "sort": "default",
+                                "pageIndex": 1,
+                                "pageSize": 100,
+                                "preTag": "<em>",
+                                "postTag": "</em>",
+                            }
+                        },
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            },
+            headers=SYMBOL_NEWS_HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+        payload_text = response.text.strip()
+        if not payload_text:
+            raise UpstreamContentFetchError(f"empty stock news response for keyword {keyword}")
+
+        callback_prefix = f"{SYMBOL_NEWS_CALLBACK}("
+        if not payload_text.startswith(callback_prefix) or not payload_text.endswith(")"):
+            raise UpstreamContentFetchError(f"unexpected stock news payload for keyword {keyword}")
+
+        payload = json.loads(payload_text[len(callback_prefix):-1])
+        result = payload.get("result") if isinstance(payload, dict) else None
+        items = result.get("cmsArticle") if isinstance(result, dict) else None
+        if not isinstance(items, list):
+            raise UpstreamContentFetchError(f"missing cmsArticle result for keyword {keyword}")
+
+        normalized_items: list[dict[str, object]] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            article_code = _safe_text(item.get("code"))
+            normalized_items.append(
+                {
+                    "关键词": keyword,
+                    "新闻标题": _safe_text(item.get("title")),
+                    "新闻内容": _safe_text(item.get("content")),
+                    "发布时间": _safe_text(item.get("date")),
+                    "文章来源": _safe_text(item.get("mediaName")),
+                    "新闻链接": f"https://finance.eastmoney.com/a/{article_code}.html" if article_code else None,
+                }
+            )
+        return normalized_items
+
+    def _build_symbol_news_keywords(self, symbol: str) -> list[str]:
+        company_name = self._resolve_symbol_company_name(symbol)
+        candidates = [company_name, symbol]
+        deduped: list[str] = []
+        for candidate in candidates:
+            if candidate and candidate not in deduped:
+                deduped.append(candidate)
+        return deduped or [symbol]
+
+    def _resolve_symbol_company_name(self, symbol: str) -> str | None:
+        if symbol in self._symbol_news_keyword_cache:
+            return self._symbol_news_keyword_cache[symbol]
+
+        try:
+            quote = self._tencent_quote_client.fetch_quote(symbol)
+        except Exception:
+            logger.exception("failed to resolve symbol company name for content fetch", extra={"symbol": symbol})
+            self._symbol_news_keyword_cache[symbol] = None
+            return None
+
+        company_name = _safe_text(quote.company_name)
+        self._symbol_news_keyword_cache[symbol] = company_name
+        return company_name
 
     def fetch_announcements(self, symbol: str) -> FetchResult:
         fetched_at = datetime.now(UTC)
