@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from app.services.normalize.market_payloads import normalize_symbol_input
 
@@ -112,19 +113,43 @@ async def symbol_events(symbol: str, request: Request, limit: int = 20) -> dict[
     }
 
 
-@router.post("/activate", status_code=status.HTTP_202_ACCEPTED)
-async def activate_symbol(payload: ActivateSymbolRequest, request: Request) -> dict[str, str]:
+@router.post("/activate")
+async def activate_symbol(payload: ActivateSymbolRequest, request: Request) -> JSONResponse:
     symbol = _normalize_symbol_or_422(payload.symbol)
 
     redis_store = request.app.state.redis_store
+    symbol_lookup_service = request.app.state.symbol_lookup_service
+
+    if await redis_store.is_symbol_active(symbol):
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "already_active",
+                "symbol": symbol,
+                "message": f"{symbol} 已在监控列表中",
+            },
+        )
+
+    try:
+        lookup_result = symbol_lookup_service.lookup(symbol)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"股票校验失败：{exc}") from exc
+
+    if not lookup_result.is_valid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"股票代码 {symbol} 不存在")
+
     await redis_store.activate_symbol(symbol)
     await redis_store.clear_content_caches()
 
-    return {
-        "status": "accepted",
-        "symbol": symbol,
-        "message": f"collector activation queued for {symbol}",
-    }
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "accepted",
+            "symbol": symbol,
+            "companyName": lookup_result.company_name,
+            "message": f"已将 {symbol} {lookup_result.company_name or ''} 加入监控队列".strip(),
+        },
+    )
 
 
 @router.delete("/{symbol}", status_code=status.HTTP_202_ACCEPTED)

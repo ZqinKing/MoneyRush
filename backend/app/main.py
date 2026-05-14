@@ -13,6 +13,7 @@ from app.core.logging import configure_logging
 from app.services.cache.redis_store import RedisStore
 from app.services.content_query_service import ContentQueryService
 from app.services.market_detail.query_service import MarketDetailQueryService
+from app.services.symbol_lookup import SymbolLookupService
 from app.ws.market import router as market_ws_router
 
 
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
             "market-news": settings.content_market_news_refresh_seconds,
         },
     )
+    app.state.symbol_lookup_service = SymbolLookupService()
     await app.state.market_detail_query_service.connect()
     await app.state.content_query_service.connect()
 

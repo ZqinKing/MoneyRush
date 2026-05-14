@@ -80,6 +80,9 @@ class RedisStore:
         symbols = await self._redis.smembers(self._active_symbols_key)
         return sorted(symbols)
 
+    async def is_symbol_active(self, symbol: str) -> bool:
+        return bool(await self._redis.sismember(self._active_symbols_key, symbol))
+
     async def get_symbol_snapshot(self, symbol: str) -> dict[str, object] | None:
         payload = await self._redis.get(self._snapshot_key(symbol))
         if payload is None:
