@@ -40,6 +40,8 @@ const requestStateLabels = {
   accepted: '已加入监控队列',
 };
 
+const symbolInputPattern = /^\d{6}$/;
+
 const connectionStateLabels = {
   connecting: '连接中',
   connected: '已连接',
@@ -243,7 +245,39 @@ function getRequestStatusLabel(value) {
     return '等待操作';
   }
 
-  return requestStateLabels[value] || `请求失败：${value}`;
+  return requestStateLabels[value] || value;
+}
+
+function getRequestStatusTone(value) {
+  if (value === 'accepted' || (typeof value === 'string' && value.startsWith('已停止监控'))) {
+    return 'success';
+  }
+
+  if (value === 'submitting' || (typeof value === 'string' && value.startsWith('正在移除'))) {
+    return 'pending';
+  }
+
+  if (value === 'idle' || value == null) {
+    return 'neutral';
+  }
+
+  return 'error';
+}
+
+function formatTickVolume(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  return `${formatCompactNumber(value)}股`;
+}
+
+function formatTurnoverAmount(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  return `${formatCompactNumber(value)}元`;
 }
 
 function getConnectionStatusLabel(value) {
@@ -323,25 +357,14 @@ function buildReadableEventItems(events) {
     return [];
   }
 
-  const seen = new Set();
   return events
     .map((event) => {
       const payload = event?.payload && typeof event.payload === 'object' ? event.payload : {};
       const tick = payload?.tick && typeof payload.tick === 'object' ? payload.tick : {};
       const kline = payload?.kline && typeof payload.kline === 'object' ? payload.kline : {};
       const snapshot = payload?.snapshot && typeof payload.snapshot === 'object' ? payload.snapshot : {};
-      const identity = [
-        event?.eventType,
-        tick?.side,
-        tick?.price,
-        tick?.volume,
-        kline?.close,
-        kline?.high,
-        kline?.low,
-      ].join('|');
 
       return {
-        identity,
         time: event?.ts,
         eventType: event?.eventType || '--',
         price: tick?.price,
@@ -352,13 +375,6 @@ function buildReadableEventItems(events) {
         low: kline?.low,
         changePct: snapshot?.changePct,
       };
-    })
-    .filter((item) => {
-      if (seen.has(item.identity)) {
-        return false;
-      }
-      seen.add(item.identity);
-      return true;
     })
     .slice(0, 8);
 }
@@ -800,9 +816,10 @@ function buildEmptyIntradayChartGeometry(referencePrice, width = 860, height = 3
 }
 
 function App() {
-  const [symbol, setSymbol] = useState('000001');
+  const [symbol, setSymbol] = useState('');
   const [connectionState, setConnectionState] = useState('connecting');
   const [requestState, setRequestState] = useState('idle');
+  const [removingSymbol, setRemovingSymbol] = useState('');
   const [activeSymbols, setActiveSymbols] = useState([]);
   const [snapshots, setSnapshots] = useState({});
   const [messages, setMessages] = useState([]);
@@ -1007,6 +1024,18 @@ function App() {
 
   async function handleSubmit(event) {
     event.preventDefault();
+    const normalizedSymbol = symbol.trim().toUpperCase();
+
+    if (!normalizedSymbol) {
+      setRequestState('请输入6位股票代码');
+      return;
+    }
+
+    if (!symbolInputPattern.test(normalizedSymbol)) {
+      setRequestState('请输入6位股票代码');
+      return;
+    }
+
     setRequestState('submitting');
 
     try {
@@ -1015,20 +1044,26 @@ function App() {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ symbol }),
+        body: JSON.stringify({ symbol: normalizedSymbol }),
       });
 
       if (!response.ok) {
-        throw new Error(`activation failed with status ${response.status}`);
+        throw new Error(`激活失败（HTTP ${response.status}）`);
       }
 
       setRequestState('accepted');
+      setSymbol('');
     } catch (error) {
       setRequestState(error.message);
     }
   }
 
   async function handleRemoveSymbol(symbolToRemove) {
+    if (removingSymbol) {
+      return;
+    }
+
+    setRemovingSymbol(symbolToRemove);
     setRequestState(`正在移除 ${symbolToRemove}...`);
 
     try {
@@ -1037,13 +1072,15 @@ function App() {
       });
 
       if (!response.ok) {
-        throw new Error(`remove failed with status ${response.status}`);
+        throw new Error(`移除失败（HTTP ${response.status}）`);
       }
 
       removeSymbolFromState(symbolToRemove);
       setRequestState(`已停止监控 ${symbolToRemove}`);
     } catch (error) {
       setRequestState(error.message);
+    } finally {
+      setRemovingSymbol('');
     }
   }
 
@@ -1109,6 +1146,51 @@ function App() {
           </div>
         </dl>
       </section>
+    );
+  }
+
+  function renderWatchlistCard(item) {
+    const snapshot = snapshots[item];
+    const lastUpdate = snapshot?.updatedAt || null;
+    return (
+      <article className="watchlist-card" key={item}>
+        <div className="watchlist-card-header">
+          <div>
+            <strong>{snapshot?.companyName || '待识别公司'}</strong>
+            <p className="snapshot-subtitle">
+              {item} · {snapshot?.exchange || '--'}
+            </p>
+          </div>
+          <span className="watchlist-source-chip">{snapshot?.source || '等待采集'}</span>
+        </div>
+        <div className="watchlist-price-row">
+          <div className="snapshot-metric small">{formatPrice(snapshot?.lastPrice)}</div>
+          <span className={snapshot?.changePct > 0 ? 'positive' : snapshot?.changePct < 0 ? 'negative' : ''}>
+            {formatSignedPercent(snapshot?.changePct)}
+          </span>
+        </div>
+        <dl className="watchlist-meta-grid">
+          <div>
+            <dt>更新时间</dt>
+            <dd>{formatTime(snapshot?.updatedAt)}</dd>
+          </div>
+          <div>
+            <dt>换手率</dt>
+            <dd>{snapshot?.turnoverRate ?? '--'}</dd>
+          </div>
+        </dl>
+        <div className="watchlist-card-footer">
+          <span className="panel-tip compact">{lastUpdate ? formatDateTime(lastUpdate) : '等待首个快照'}</span>
+          <button
+            type="button"
+            className="remove-symbol-button"
+            onClick={() => handleRemoveSymbol(item)}
+            disabled={Boolean(removingSymbol)}
+          >
+            {removingSymbol === item ? '移除中…' : '移除'}
+          </button>
+        </div>
+      </article>
     );
   }
 
@@ -1605,13 +1687,13 @@ function App() {
               </article>
               <article className="summary-metric">
                 <span>成交量</span>
-                <strong>{formatCompactNumber(latestKline?.volume)}</strong>
-                <em>最新成交量</em>
+                <strong>{formatTickVolume(latestKline?.volume)}</strong>
+                <em>最新成交量（股）</em>
               </article>
               <article className="summary-metric">
                 <span>成交额</span>
-                <strong>{formatCompactNumber(latestKline?.amount)}</strong>
-                <em>最新成交额</em>
+                <strong>{formatTurnoverAmount(latestKline?.amount)}</strong>
+                <em>最新成交额（元）</em>
               </article>
               <article className="summary-metric">
                 <span>更新时间</span>
@@ -1656,7 +1738,7 @@ function App() {
                 <dt>买一</dt>
                 <dd>
                   {orderBook?.bid1 != null || orderBook?.bidVolume1 != null
-                    ? `${formatPrice(orderBook?.bid1)} / ${formatPlainNumber(orderBook?.bidVolume1)}`
+                    ? `${formatPrice(orderBook?.bid1)} / ${formatTickVolume(orderBook?.bidVolume1)}`
                     : '--'}
                 </dd>
               </div>
@@ -1664,7 +1746,7 @@ function App() {
                 <dt>卖一</dt>
                 <dd>
                   {orderBook?.ask1 != null || orderBook?.askVolume1 != null
-                    ? `${formatPrice(orderBook?.ask1)} / ${formatPlainNumber(orderBook?.askVolume1)}`
+                    ? `${formatPrice(orderBook?.ask1)} / ${formatTickVolume(orderBook?.askVolume1)}`
                     : '--'}
                 </dd>
               </div>
@@ -1678,7 +1760,7 @@ function App() {
             <div className="detail-card-header compact-card-header">
               <div>
                 <h3>最近 Tick</h3>
-                <p className="panel-tip compact">默认只展示最新 12 条，避免详情页被长列表冲散。</p>
+                <p className="panel-tip compact">默认只展示最新 12 条；成交量按股展示，成交额按元展示，避免单位误读。</p>
               </div>
               {ticks.length > recentTicks.length ? <span className="table-meta-badge">共 {ticks.length} 条</span> : null}
             </div>
@@ -1698,9 +1780,9 @@ function App() {
                     {recentTicks.map((tick, index) => (
                       <tr key={`${tick.ts}-${tick.price}-${index}`}>
                         <td>{formatTime(tick.ts)}</td>
-                        <td>{tick.price ?? '--'}</td>
-                        <td>{formatCompactNumber(tick.volume)}</td>
-                        <td>{formatCompactNumber(tick.amount)}</td>
+                        <td>{formatPrice(tick.price)}</td>
+                        <td>{formatTickVolume(tick.volume)}</td>
+                        <td>{formatTurnoverAmount(tick.amount)}</td>
                         <td>{tick.side === 'buy' ? '买盘' : tick.side === 'sell' ? '卖盘' : '--'}</td>
                       </tr>
                     ))}
@@ -1725,7 +1807,7 @@ function App() {
                     <div className="detail-event-meta">
                       <span>{typeof event.price === 'number' ? `价格 ${formatPrice(event.price)}` : '价格 --'}</span>
                       <span>{event.side === 'buy' ? '买盘' : event.side === 'sell' ? '卖盘' : '方向 --'}</span>
-                      <span>{typeof event.volume === 'number' ? `量 ${formatCompactNumber(event.volume)}` : '量 --'}</span>
+                       <span>{typeof event.volume === 'number' ? `量 ${formatTickVolume(event.volume)}` : '量 --'}</span>
                       <span>
                         {typeof event.low === 'number' && typeof event.high === 'number'
                           ? `区间 ${formatPrice(event.low)} ~ ${formatPrice(event.high)}`
@@ -1849,32 +1931,26 @@ function App() {
                 <label htmlFor="symbol">股票代码</label>
                 <div className="inline-form-row">
                   <input id="symbol" value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder="例如 000001" />
-                  <button type="submit">激活监控</button>
+                  <button type="submit" disabled={requestState === 'submitting'}>{requestState === 'submitting' ? '提交中…' : '激活监控'}</button>
                 </div>
+                <p className="panel-tip compact">请输入 6 位股票代码，如 000001。</p>
               </form>
             ) : (
               <div className="watchlist-panel">
-                <ul className="pill-list">
+                <div className="watchlist-grid">
                   {activeSymbols.length ? (
-                    activeSymbols.map((item) => (
-                      <li className="symbol-pill" key={item}>
-                        <span>{item}</span>
-                        <button type="button" className="remove-symbol-button" onClick={() => handleRemoveSymbol(item)}>
-                          移除
-                        </button>
-                      </li>
-                    ))
+                    activeSymbols.map((item) => renderWatchlistCard(item))
                   ) : (
-                    <li>尚无激活标的。</li>
+                    <p className="panel-tip compact">尚无激活标的。</p>
                   )}
-                </ul>
+                </div>
               </div>
             )}
 
             <div className="management-status-row">
-               <p className="status-line">请求状态：{getRequestStatusLabel(requestState)}</p>
-               <p className="status-line">实时连接：{getConnectionStatusLabel(connectionState)}</p>
-             </div>
+               <p className={`status-line ${getRequestStatusTone(requestState)}`}>请求状态：{getRequestStatusLabel(requestState)}</p>
+                <p className="status-line">实时连接：{getConnectionStatusLabel(connectionState)}</p>
+              </div>
           </article>
         ) : (
           <article className="panel wide">
@@ -1900,11 +1976,11 @@ function App() {
                     <dl>
                       <div>
                         <dt>最新价</dt>
-                        <dd>{event?.tick?.price ?? snapshot?.lastPrice ?? '--'}</dd>
+                        <dd>{formatPrice(event?.tick?.price ?? snapshot?.lastPrice)}</dd>
                       </div>
                       <div>
                         <dt>成交量</dt>
-                        <dd>{formatCompactNumber(event?.tick?.volume)}</dd>
+                        <dd>{formatTickVolume(event?.tick?.volume)}</dd>
                       </div>
                       <div>
                         <dt>买卖方向</dt>
@@ -1916,11 +1992,11 @@ function App() {
                       </div>
                       <div>
                         <dt>K线区间</dt>
-                        <dd>{event?.kline ? `${event.kline.low} ~ ${event.kline.high}` : '--'}</dd>
+                        <dd>{event?.kline ? `${formatPrice(event.kline.low)} ~ ${formatPrice(event.kline.high)}` : '--'}</dd>
                       </div>
                       <div>
                         <dt>收盘价</dt>
-                        <dd>{event?.kline?.close ?? '--'}</dd>
+                        <dd>{formatPrice(event?.kline?.close)}</dd>
                       </div>
                     </dl>
                   </section>
