@@ -18,6 +18,18 @@ def _to_iso(value: object) -> str | None:
     return value.astimezone(UTC).isoformat()
 
 
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
 def _safe_text(value: object) -> str | None:
     if value is None:
         return None
@@ -141,6 +153,7 @@ class ContentQueryService:
         if content_type in {None, "announcement"}:
             items.extend(await self._fetch_announcements(symbol=symbol, limit=limit, before=before, published_after=published_after, health_map=health_map))
 
+        items = self._filter_items_by_published_after(items, published_after)
         items.sort(key=lambda item: item.get("publishedAt") or "", reverse=True)
         return items[:limit]
 
@@ -396,3 +409,18 @@ class ContentQueryService:
     @staticmethod
     def _lookup_item_health(health_map: dict[tuple[str, str | None], dict[str, object]], lane: str, symbol: str | None) -> dict[str, object]:
         return health_map.get((lane, symbol), health_map.get((lane, None), {}))
+
+    @staticmethod
+    def _filter_items_by_published_after(items: list[dict[str, object]], published_after: datetime | None) -> list[dict[str, object]]:
+        if published_after is None:
+            return items
+
+        filtered_items: list[dict[str, object]] = []
+        for item in items:
+            published_at = _parse_iso_datetime(item.get("publishedAt"))
+            fallback_seen_at = _parse_iso_datetime(item.get("firstSeenAt"))
+            effective_time = published_at or fallback_seen_at
+            if effective_time is None or effective_time < published_after:
+                continue
+            filtered_items.append(item)
+        return filtered_items

@@ -1246,7 +1246,7 @@ function App() {
             <p className="snapshot-subtitle">{meta.join(' · ') || item.symbol || '内容情报'}</p>
           </div>
           <div className="content-card-time">
-            <span>{formatRelativeDateTime(item.firstSeenAt || item.publishedAt)}</span>
+            <span>{formatRelativeDateTime(item.publishedAt || item.firstSeenAt)}</span>
             <span>{formatDateTime(item.publishedAt || item.firstSeenAt)}</span>
           </div>
         </header>
