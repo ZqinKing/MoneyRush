@@ -377,22 +377,34 @@ input {
 .content-panel {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .content-toolbar-row {
   align-items: flex-start;
+  min-width: 0;
 }
 
 .content-toolbar-groups {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
 }
 
 .content-filter-row {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  padding-bottom: 4px;
+}
+
+.content-filter-row .view-tab {
+  flex: 0 0 auto;
 }
 
 .content-status-summary {
@@ -404,17 +416,25 @@ input {
 .content-card {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .content-feed-scroll-area {
   max-height: 1140px;
   overflow-y: auto;
+  overflow-x: hidden;
   padding-right: 8px;
   scrollbar-gutter: stable;
+  min-width: 0;
 }
 
 .content-feed-scroll-area .content-grid {
   align-content: start;
+}
+
+.content-grid {
+  width: 100%;
+  min-width: 0;
 }
 
 .content-card.clickable {
@@ -439,12 +459,20 @@ input {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-width: 0;
+}
+
+.content-card-header > div {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .content-card-header h3 {
   margin: 8px 0 0;
   font-size: 1.04rem;
   line-height: 1.45;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .content-badge-row {
@@ -485,6 +513,9 @@ input {
   margin: 0;
   color: #d9e6ff;
   line-height: 1.7;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .content-card-footer {
@@ -498,6 +529,9 @@ input {
 .content-source {
   color: #8fa6d8;
   font-size: 0.82rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .content-link {
@@ -1310,6 +1344,11 @@ input {
   .content-card-footer {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .content-feed-scroll-area {
+    padding-right: 0;
+    scrollbar-gutter: auto;
   }
 
   .content-card-time {
