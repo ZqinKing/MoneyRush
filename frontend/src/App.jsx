@@ -1404,7 +1404,7 @@ function App() {
             </p>
           </div>
           <div className="detail-meta">
-            <span className="detail-price">{snapshot?.lastPrice ?? '--'}</span>
+            <span className="detail-price">{formatPrice(snapshot?.lastPrice)}</span>
             <span className={snapshot?.changePct > 0 ? 'positive' : snapshot?.changePct < 0 ? 'negative' : ''}>
               {formatSignedPercent(snapshot?.changePct)}
             </span>
