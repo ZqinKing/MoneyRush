@@ -7,7 +7,7 @@ import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 import akshare as ak
 import requests
@@ -16,6 +16,7 @@ from collector.services.tencent_quote_client import TencentQuoteClient
 
 
 logger = logging.getLogger(__name__)
+CHINA_CONTENT_TZ = timezone(timedelta(hours=8))
 SYMBOL_NEWS_SEARCH_URL = "https://search-api-web.eastmoney.com/search/jsonp"
 SYMBOL_NEWS_CALLBACK = "cb"
 SYMBOL_NEWS_HEADERS = {
@@ -40,7 +41,8 @@ def _safe_datetime(value: object) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
+        normalized = value if value.tzinfo else value.replace(tzinfo=CHINA_CONTENT_TZ)
+        return normalized.astimezone(UTC)
 
     text = _safe_text(value)
     if not text:
@@ -58,7 +60,7 @@ def _safe_datetime(value: object) -> datetime | None:
             parsed = datetime.strptime(normalized, fmt)
         except ValueError:
             continue
-        return parsed.replace(tzinfo=UTC)
+        return parsed.replace(tzinfo=CHINA_CONTENT_TZ).astimezone(UTC)
     return None
 
 

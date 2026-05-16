@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import asyncpg
+
+
+CHINA_CONTENT_TZ = timezone(timedelta(hours=8))
 
 
 def _to_iso(value: object) -> str | None:
@@ -13,6 +16,43 @@ def _to_iso(value: object) -> str | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC).isoformat()
     return value.astimezone(UTC).isoformat()
+
+
+def _safe_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _parse_upstream_china_datetime(value: object) -> datetime | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+
+    normalized = text.replace("/", "-").replace("年", "-").replace("月", "-").replace("日", "")
+    candidates = (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%Y%m%d",
+    )
+    for fmt in candidates:
+        try:
+            parsed = datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+        return parsed.replace(tzinfo=CHINA_CONTENT_TZ).astimezone(UTC)
+    return None
+
+
+def _resolve_news_published_at(*, published_at: object, raw_payload: object, provider: object, upstream_source: object) -> str | None:
+    if provider == "akshare" and upstream_source == "eastmoney":
+        payload = _decode_jsonish(raw_payload) or {}
+        repaired = _parse_upstream_china_datetime(payload.get("发布时间") or payload.get("时间"))
+        if repaired is not None:
+            return _to_iso(repaired)
+    return _to_iso(published_at)
 
 
 def _decode_jsonish(value: object) -> dict[str, object] | None:
@@ -214,7 +254,12 @@ class ContentQueryService:
                 "summary": row["summary"] or row["content"],
                 "source": row["upstream_source"],
                 "provider": row["provider"],
-                "publishedAt": _to_iso(row["published_at"]),
+                "publishedAt": _resolve_news_published_at(
+                    published_at=row["published_at"],
+                    raw_payload=row["raw_payload"],
+                    provider=row["provider"],
+                    upstream_source=row["upstream_source"],
+                ),
                 "firstSeenAt": _to_iso(row["first_seen_at"]),
                 "lastSeenAt": _to_iso(row["last_seen_at"]),
                 "url": _sanitize_public_url(row["source_url"]),
