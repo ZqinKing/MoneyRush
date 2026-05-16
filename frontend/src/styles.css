@@ -383,6 +383,12 @@ input {
   align-items: flex-start;
 }
 
+.content-toolbar-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .content-filter-row {
   display: flex;
   flex-wrap: wrap;
@@ -398,6 +404,17 @@ input {
 .content-card {
   display: grid;
   gap: 14px;
+}
+
+.content-feed-scroll-area {
+  max-height: 1140px;
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-gutter: stable;
+}
+
+.content-feed-scroll-area .content-grid {
+  align-content: start;
 }
 
 .content-card.clickable {
@@ -1283,6 +1300,7 @@ input {
 
   .management-meta,
   .submenu-row,
+  .content-toolbar-groups,
   .content-filter-row,
   .content-status-summary {
     width: 100%;

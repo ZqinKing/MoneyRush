@@ -58,6 +58,11 @@ const contentTypeLabels = {
   announcement: '公告',
 };
 
+const contentTimeRangeLabels = {
+  today: '当日',
+  week: '一周',
+};
+
 const contentLaneLabels = {
   'symbol-report': '个股研报',
   'symbol-news': '个股新闻',
@@ -65,13 +70,16 @@ const contentLaneLabels = {
   'market-news': '市场快讯',
 };
 
-function buildContentFeedUrl({ symbol = '', type = 'all', limit = 20 }) {
+function buildContentFeedUrl({ symbol = '', type = 'all', timeRange = 'today', limit = 20 }) {
   const params = new URLSearchParams();
   if (symbol) {
     params.set('symbol', symbol);
   }
   if (type && type !== 'all') {
     params.set('type', type);
+  }
+  if (timeRange) {
+    params.set('time_range', timeRange);
   }
   params.set('limit', String(limit));
   return `${apiBaseUrl}/api/v1/content/items?${params.toString()}`;
@@ -836,6 +844,7 @@ function App() {
   const [detailRequestState, setDetailRequestState] = useState('idle');
   const [detailChartView, setDetailChartView] = useState('intraday');
   const [contentType, setContentType] = useState('all');
+  const [contentTimeRange, setContentTimeRange] = useState('today');
   const [contentSymbolFilter, setContentSymbolFilter] = useState('');
   const [contentFeed, setContentFeed] = useState([]);
   const [contentStatus, setContentStatus] = useState({ jobs: [], latestIngestedAt: null, summary: null });
@@ -924,7 +933,7 @@ function App() {
       setContentRequestState('loading');
       try {
         const [feedResponse, statusResponse] = await Promise.all([
-          fetch(buildContentFeedUrl({ symbol: contentSymbolFilter, type: contentType, limit: 24 })),
+          fetch(buildContentFeedUrl({ symbol: contentSymbolFilter, type: contentType, timeRange: contentTimeRange, limit: 60 })),
           fetch(buildContentStatusUrl(contentSymbolFilter)),
         ]);
         const [feedPayload, statusPayload] = await Promise.all([
@@ -951,7 +960,7 @@ function App() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeView, contentSymbolFilter, contentType]);
+  }, [activeView, contentSymbolFilter, contentTimeRange, contentType]);
 
   const selectedSnapshot = selectedSnapshotSymbol ? snapshots[selectedSnapshotSymbol] : null;
   const selectedDetail = selectedSnapshotSymbol ? snapshotDetails[selectedSnapshotSymbol] : null;
@@ -1271,17 +1280,31 @@ function App() {
         </div>
 
         <div className="submenu-row content-toolbar-row">
-          <div className="submenu-tabs">
-            {Object.entries(contentTypeLabels).map(([value, label]) => (
-              <button
-                key={value}
-                className={contentType === value ? 'view-tab active' : 'view-tab'}
-                type="button"
-                onClick={() => setContentType(value)}
-              >
-                {label}
-              </button>
-            ))}
+          <div className="content-toolbar-groups">
+            <div className="submenu-tabs">
+              {Object.entries(contentTimeRangeLabels).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={contentTimeRange === value ? 'view-tab active' : 'view-tab'}
+                  type="button"
+                  onClick={() => setContentTimeRange(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="submenu-tabs">
+              {Object.entries(contentTypeLabels).map(([value, label]) => (
+                <button
+                  key={value}
+                  className={contentType === value ? 'view-tab active' : 'view-tab'}
+                  type="button"
+                  onClick={() => setContentType(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
           <div className="content-filter-row">
             <button
@@ -1331,8 +1354,10 @@ function App() {
         {contentRequestState === 'loading' ? <p className="status-line">资讯数据加载中...</p> : null}
         {contentRequestState === 'error' ? <p className="status-line">资讯数据加载失败，请稍后重试。</p> : null}
 
-        <div className="content-grid">
-          {contentFeed.length ? contentFeed.map((item) => renderContentCard(item)) : <p className="content-empty-state">当前筛选条件下暂无内容情报。</p>}
+        <div className="content-feed-scroll-area">
+          <div className="content-grid">
+            {contentFeed.length ? contentFeed.map((item) => renderContentCard(item)) : <p className="content-empty-state">当前筛选条件下暂无内容情报。</p>}
+          </div>
         </div>
       </article>
     );
