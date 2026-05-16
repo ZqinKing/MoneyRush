@@ -1379,9 +1379,9 @@ function App() {
     const readableEvents = buildReadableEventItems(events);
     const snapshot = selectedSnapshot || detailPayload?.snapshot || null;
     const previousClose = estimatePreviousClose(snapshot, latestKline, intradayChartPoints);
-    const candleChart = dailyBars.length ? buildCandlestickChartGeometry(dailyBars) : null;
+    const candleChart = dailyBars.length ? buildCandlestickChartGeometry(dailyBars, 860, 248) : null;
     const movingAverageOverlays = candleChart ? buildMovingAverageOverlays(dailyBars, candleChart.candles, candleChart.scaleY) : [];
-    const volumeChart = dailyBars.length ? buildVolumeChartGeometry(dailyBars) : null;
+    const volumeChart = dailyBars.length ? buildVolumeChartGeometry(dailyBars, 860, 84) : null;
     const intradayLineChart = intradayChartPoints.length ? buildLineChartGeometry(intradayChartPoints, 860, 320, previousClose ?? snapshot?.lastPrice ?? null) : null;
     const emptyIntradayChart = !intradayLineChart ? buildEmptyIntradayChartGeometry(previousClose ?? snapshot?.lastPrice) : null;
     const showingIntraday = detailChartView === 'intraday';
@@ -1426,8 +1426,11 @@ function App() {
                 </p>
               </div>
               <div className="chart-summary-badge">
-                <span>最新价 {formatPrice(snapshot?.lastPrice)}</span>
-                <span>{formatSignedPercent(snapshot?.changePct)}</span>
+                <span className="chart-summary-label">最新价</span>
+                <strong className="chart-summary-price">{formatPrice(snapshot?.lastPrice)}</strong>
+                <span className={`chart-summary-change ${snapshot?.changePct > 0 ? 'positive' : snapshot?.changePct < 0 ? 'negative' : ''}`}>
+                  {formatSignedPercent(snapshot?.changePct)}
+                </span>
               </div>
             </div>
 
@@ -1613,7 +1616,7 @@ function App() {
                       <h4>日 K</h4>
                       <span>{dailyBars.length} 根日线</span>
                     </div>
-                    <svg className="kline-chart" viewBox={`0 0 ${candleChart.width} ${candleChart.height}`} role="img" aria-label="日K蜡烛图">
+                    <svg className="kline-chart daily-kline-chart" viewBox={`0 0 ${candleChart.width} ${candleChart.height}`} role="img" aria-label="日K蜡烛图">
                       {candleChart.ticks.map((tick) => (
                         <g key={`${tick.value}`}>
                           <line x1="0" x2={candleChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
@@ -1642,7 +1645,7 @@ function App() {
                       ))}
                     </svg>
                     {volumeChart ? (
-                      <svg className="volume-chart" viewBox={`0 0 ${volumeChart.width} ${volumeChart.height}`} role="img" aria-label="日K成交量柱图">
+                        <svg className="volume-chart daily-volume-chart" viewBox={`0 0 ${volumeChart.width} ${volumeChart.height}`} role="img" aria-label="日K成交量柱图">
                         <line x1="0" x2={volumeChart.width} y1={volumeChart.height - 20} y2={volumeChart.height - 20} className="chart-grid-line" />
                         {volumeChart.items.map((item) => (
                           <rect

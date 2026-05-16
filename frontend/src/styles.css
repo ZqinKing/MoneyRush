@@ -701,17 +701,40 @@ input {
 .chart-summary-badge {
   display: grid;
   justify-items: end;
-  gap: 6px;
+  align-content: center;
+  gap: 4px;
   padding: 10px 12px;
+  min-width: 128px;
+  min-height: 76px;
   border-radius: 14px;
   background: rgba(43, 96, 255, 0.12);
   border: 1px solid rgba(129, 164, 255, 0.2);
   color: #dbe6ff;
 }
 
+.chart-summary-label {
+  color: #8fa6d8;
+  font-size: 0.76rem;
+  line-height: 1;
+}
+
+.chart-summary-price {
+  color: #eff4ff;
+  font-size: 1.35rem;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+}
+
+.chart-summary-change {
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
 .chart-stack {
   display: grid;
   gap: 10px;
+  align-content: start;
 }
 
 .chart-view-tabs {
@@ -757,8 +780,16 @@ input {
   min-height: 320px;
 }
 
+.daily-kline-chart {
+  min-height: 248px;
+}
+
 .volume-chart {
   min-height: 120px;
+}
+
+.daily-volume-chart {
+  min-height: 84px;
 }
 
 .chart-grid-line {
