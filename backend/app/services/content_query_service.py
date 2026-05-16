@@ -130,15 +130,16 @@ class ContentQueryService:
         scope: str | None,
         limit: int,
         before: datetime | None,
+        published_after: datetime | None,
     ) -> list[dict[str, object]]:
         health_map = await self._fetch_lane_health_map(symbol=symbol)
         items: list[dict[str, object]] = []
         if content_type in {None, "report"}:
-            items.extend(await self._fetch_reports(symbol=symbol, limit=limit, before=before, health_map=health_map))
+            items.extend(await self._fetch_reports(symbol=symbol, limit=limit, before=before, published_after=published_after, health_map=health_map))
         if content_type in {None, "news"}:
-            items.extend(await self._fetch_news(symbol=symbol, scope=scope, limit=limit, before=before, health_map=health_map))
+            items.extend(await self._fetch_news(symbol=symbol, scope=scope, limit=limit, before=before, published_after=published_after, health_map=health_map))
         if content_type in {None, "announcement"}:
-            items.extend(await self._fetch_announcements(symbol=symbol, limit=limit, before=before, health_map=health_map))
+            items.extend(await self._fetch_announcements(symbol=symbol, limit=limit, before=before, published_after=published_after, health_map=health_map))
 
         items.sort(key=lambda item: item.get("publishedAt") or "", reverse=True)
         return items[:limit]
@@ -185,7 +186,7 @@ class ContentQueryService:
             "summary": summary,
         }
 
-    async def _fetch_reports(self, *, symbol: str | None, limit: int, before: datetime | None, health_map: dict[tuple[str, str | None], dict[str, object]]) -> list[dict[str, object]]:
+    async def _fetch_reports(self, *, symbol: str | None, limit: int, before: datetime | None, published_after: datetime | None, health_map: dict[tuple[str, str | None], dict[str, object]]) -> list[dict[str, object]]:
         rows = await self._fetch(
             """
             SELECT id, symbol, title, rating, institution, analyst, industry, published_at, first_seen_at, last_seen_at,
@@ -193,11 +194,13 @@ class ContentQueryService:
             FROM stock_research_report
             WHERE ($1::text IS NULL OR symbol = $1)
               AND ($2::timestamptz IS NULL OR published_at < $2)
+              AND ($3::timestamptz IS NULL OR published_at >= $3)
             ORDER BY published_at DESC NULLS LAST, first_seen_at DESC
-            LIMIT $3
+            LIMIT $4
             """,
             symbol,
             before,
+            published_after,
             limit,
         )
         return [
@@ -227,7 +230,7 @@ class ContentQueryService:
             for row in rows
         ]
 
-    async def _fetch_news(self, *, symbol: str | None, scope: str | None, limit: int, before: datetime | None, health_map: dict[tuple[str, str | None], dict[str, object]]) -> list[dict[str, object]]:
+    async def _fetch_news(self, *, symbol: str | None, scope: str | None, limit: int, before: datetime | None, published_after: datetime | None, health_map: dict[tuple[str, str | None], dict[str, object]]) -> list[dict[str, object]]:
         rows = await self._fetch(
             """
             SELECT id, symbol, scope, title, summary, content, article_source, published_at, first_seen_at, last_seen_at,
@@ -236,12 +239,14 @@ class ContentQueryService:
             WHERE ($1::text IS NULL OR symbol = $1)
               AND ($2::text IS NULL OR scope = $2)
               AND ($3::timestamptz IS NULL OR published_at < $3)
+              AND ($4::timestamptz IS NULL OR published_at >= $4)
             ORDER BY published_at DESC NULLS LAST, first_seen_at DESC
-            LIMIT $4
+            LIMIT $5
             """,
             symbol,
             scope,
             before,
+            published_after,
             limit,
         )
         return [
@@ -273,7 +278,7 @@ class ContentQueryService:
             for row in rows
         ]
 
-    async def _fetch_announcements(self, *, symbol: str | None, limit: int, before: datetime | None, health_map: dict[tuple[str, str | None], dict[str, object]]) -> list[dict[str, object]]:
+    async def _fetch_announcements(self, *, symbol: str | None, limit: int, before: datetime | None, published_after: datetime | None, health_map: dict[tuple[str, str | None], dict[str, object]]) -> list[dict[str, object]]:
         rows = await self._fetch(
             """
             SELECT id, symbol, title, announcement_type, published_at, first_seen_at, last_seen_at,
@@ -281,11 +286,13 @@ class ContentQueryService:
             FROM stock_announcement_item
             WHERE ($1::text IS NULL OR symbol = $1)
               AND ($2::timestamptz IS NULL OR published_at < $2)
+              AND ($3::timestamptz IS NULL OR published_at >= $3)
             ORDER BY published_at DESC NULLS LAST, first_seen_at DESC
-            LIMIT $3
+            LIMIT $4
             """,
             symbol,
             before,
+            published_after,
             limit,
         )
         return [
