@@ -251,6 +251,14 @@ class MarketDetailQueryService:
         if latest_trade_day_window is None:
             return []
 
+        persisted_bars = await self._fetch_intraday_bars_from_kline(
+            symbol,
+            trade_day_window=latest_trade_day_window,
+            interval_minutes=interval_minutes,
+        )
+        if persisted_bars:
+            return persisted_bars
+
         day_start_utc, day_end_utc = latest_trade_day_window
         source_priority_rows = await self._fetch(
             """
@@ -346,8 +354,79 @@ class MarketDetailQueryService:
 
         return bars
 
+    async def _fetch_intraday_bars_from_kline(
+        self,
+        symbol: str,
+        *,
+        trade_day_window: tuple[datetime, datetime],
+        interval_minutes: int,
+    ) -> list[dict[str, object]]:
+        day_start_utc, day_end_utc = trade_day_window
+        rows = await self._fetch(
+            """
+            SELECT bucket_ts, open, high, low, close, volume, amount, source
+            FROM stock_kline
+            WHERE symbol = $1
+              AND period = '1m'
+              AND bucket_ts >= $2
+              AND bucket_ts < $3
+            ORDER BY bucket_ts ASC
+            """,
+            symbol,
+            day_start_utc,
+            day_end_utc,
+        )
+        if not rows:
+            return []
+
+        bars: list[dict[str, object]] = []
+        current_bucket: datetime | None = None
+        current_bar: dict[str, object] | None = None
+
+        for row in rows:
+            bucket_ts = row["bucket_ts"]
+            open_price = _to_float(row["open"])
+            high_price = _to_float(row["high"])
+            low_price = _to_float(row["low"])
+            close_price = _to_float(row["close"])
+            volume = _to_int(row["volume"])
+            amount = _to_float(row["amount"])
+            source = row["source"]
+
+            if not isinstance(bucket_ts, datetime) or None in (open_price, high_price, low_price, close_price):
+                continue
+
+            sampled_bucket_ts = self._bucket_intraday_ts(bucket_ts, interval_minutes)
+            if sampled_bucket_ts != current_bucket:
+                current_bucket = sampled_bucket_ts
+                current_bar = {
+                    "bucketTs": _to_iso(sampled_bucket_ts),
+                    "period": f"sampled-{interval_minutes}m",
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "volume": volume or 0,
+                    "amount": amount or 0.0,
+                    "source": source,
+                }
+                bars.append(current_bar)
+                continue
+
+            if current_bar is None:
+                continue
+
+            current_bar["high"] = max(current_bar["high"], high_price)
+            current_bar["low"] = min(current_bar["low"], low_price)
+            current_bar["close"] = close_price
+            current_bar["volume"] += volume or 0
+            current_bar["amount"] += amount or 0.0
+            current_bar["source"] = source
+
+        return bars
+
     async def _latest_intraday_trade_day_window(self, symbol: str) -> tuple[datetime, datetime] | None:
-        row = await self._fetchrow(
+        latest_tick_row = await self._fetchrow(
             """
             SELECT ts
             FROM stock_tick
@@ -357,13 +436,27 @@ class MarketDetailQueryService:
             """,
             symbol,
         )
-        if row is None:
+        latest_kline_row = await self._fetchrow(
+            """
+            SELECT bucket_ts
+            FROM stock_kline
+            WHERE symbol = $1 AND period = '1m'
+            ORDER BY bucket_ts DESC
+            LIMIT 1
+            """,
+            symbol,
+        )
+
+        candidates: list[datetime] = []
+        if latest_tick_row is not None and isinstance(latest_tick_row["ts"], datetime):
+            candidates.append(latest_tick_row["ts"])
+        if latest_kline_row is not None and isinstance(latest_kline_row["bucket_ts"], datetime):
+            candidates.append(latest_kline_row["bucket_ts"])
+
+        if not candidates:
             return None
 
-        latest_ts = row["ts"]
-        if not isinstance(latest_ts, datetime):
-            return None
-
+        latest_ts = max(candidates)
         return self._trade_day_window_for_ts(latest_ts)
 
     async def _fetchrow(self, query: str, *args: object) -> asyncpg.Record | None:

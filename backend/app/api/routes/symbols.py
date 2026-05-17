@@ -56,6 +56,7 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
 
     latest_kline = await query_service.fetch_latest_kline(normalized_symbol, period="1d")
     daily_bars_preview = await query_service.fetch_klines(normalized_symbol, period="1d", limit=30)
+    intraday_minute_bars = await query_service.fetch_intraday_sampled_bars(normalized_symbol, interval_minutes=1)
     intraday_sampled_bars = await query_service.fetch_intraday_sampled_bars(normalized_symbol, interval_minutes=5)
     order_book = await query_service.fetch_best_bid_ask(normalized_symbol)
 
@@ -65,10 +66,12 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
         "latestEvent": latest_event,
         "latestKline": latest_kline,
         "dailyBarsPreview": list(reversed(daily_bars_preview)),
+        "intradayMinuteBars": intraday_minute_bars,
         "intradaySampledBars": intraday_sampled_bars,
         "orderBook": order_book,
         "capabilities": {
-            "supportsIntradayKline": False,
+            "supportsIntradayKline": len(intraday_minute_bars) > 1,
+            "supportsIntradayMinuteBars": len(intraday_minute_bars) > 1,
             "supportsOrderBookDepth5": False,
             "supportsSampledIntradayBars": len(intraday_sampled_bars) > 1,
             "supportsBestBidAsk": any(value is not None for value in order_book.values()),
