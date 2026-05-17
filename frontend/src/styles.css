@@ -872,11 +872,53 @@ input {
   margin: 0;
   font-size: 0.95rem;
   color: #eff4ff;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .chart-section-heading span {
   font-size: 0.82rem;
   color: #8fa6d8;
+}
+
+.intraday-render-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 24px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(157, 180, 255, 0.22);
+  background: rgba(9, 17, 31, 0.9);
+  color: #dbe6ff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.intraday-render-badge-minute {
+  border-color: rgba(90, 215, 165, 0.38);
+  background: rgba(28, 78, 61, 0.36);
+  color: #91f0c5;
+}
+
+.intraday-render-badge-sampled {
+  border-color: rgba(255, 205, 102, 0.34);
+  background: rgba(102, 71, 20, 0.34);
+  color: #ffd98c;
+}
+
+.intraday-render-badge-tick {
+  border-color: rgba(129, 164, 255, 0.36);
+  background: rgba(32, 53, 104, 0.34);
+  color: #bdd0ff;
+}
+
+.intraday-render-badge-empty {
+  border-color: rgba(157, 180, 255, 0.18);
+  background: rgba(6, 11, 22, 0.78);
+  color: #a9b9dd;
 }
 
 .kline-chart,

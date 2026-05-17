@@ -1429,6 +1429,10 @@ function App() {
         : [];
     const fetchedKlines = Array.isArray(selectedDetail?.klines) ? selectedDetail.klines : [];
     const dailyBars = sortBarsAscendingByBucketTs(fetchedKlines.length > previewBars.length ? fetchedKlines : previewBars);
+    const intradayMinuteBars =
+      detailPayload?.intradayMinuteBars && Array.isArray(detailPayload.intradayMinuteBars)
+        ? detailPayload.intradayMinuteBars
+        : [];
     const intradaySampledBars =
       detailPayload?.intradaySampledBars && Array.isArray(detailPayload.intradaySampledBars)
         ? detailPayload.intradaySampledBars
@@ -1450,7 +1454,11 @@ function App() {
         })),
       'bucketTs',
     );
-    const intradayChartPoints = intradaySampledBars.length ? intradaySampledBars : intradayTickPoints;
+    const intradayChartPoints = intradayMinuteBars.length
+      ? intradayMinuteBars
+      : intradaySampledBars.length
+        ? intradaySampledBars
+        : intradayTickPoints;
     const latestKline = dailyBars.length
       ? dailyBars[dailyBars.length - 1]
       : intradayChartPoints.length
@@ -1476,6 +1484,20 @@ function App() {
     const intradayTone = getLineChartTone(intradayLineChart, snapshot?.lastPrice ?? previousClose ?? null);
     const intradayDataDate = getLatestChinaTradeDayValue(intradayChartPoints, 'bucketTs') || latestTickTradeDay;
     const intradayDateLabel = intradayDataDate ? formatDate(intradayDataDate) : null;
+    const intradayDataMode = intradayMinuteBars.length
+      ? 'minute'
+      : intradaySampledBars.length
+        ? 'sampled'
+        : intradayTickPoints.length
+          ? 'tick'
+          : 'empty';
+    const intradayDataModeLabel = intradayDataMode === 'minute'
+      ? '1 分钟精度'
+      : intradayDataMode === 'sampled'
+        ? '5 分钟聚合'
+        : intradayDataMode === 'tick'
+          ? 'Tick 回退'
+          : '暂无数据';
 
     return (
       <div className="detail-layout">
@@ -1507,7 +1529,7 @@ function App() {
                 <h3>{activeChartTitle}</h3>
                 <p className="panel-tip compact">
                   {showingIntraday
-                    ? `默认展示最近一个有成交采样的交易日分时线，并按日内波动自动缩放${intradayDateLabel ? `；当前展示 ${intradayDateLabel} 数据。` : '。'}`
+                    ? `${intradayMinuteBars.length ? '优先展示已入库的 1 分钟精度分时线' : intradaySampledBars.length ? '当前展示 5 分钟聚合分时线' : '当前回退为 Tick 分时线'}，并按日内波动自动缩放${intradayDateLabel ? `；当前展示 ${intradayDateLabel} 数据。` : '。'}`
                     : '日 K 优先展示详情接口返回的 60 根日线，并与当前已入库历史保持一致。'}
                 </p>
               </div>
@@ -1542,8 +1564,11 @@ function App() {
                 {intradayLineChart ? (
                   <div className="chart-section">
                     <div className="chart-section-heading">
-                      <h4>分时线</h4>
-                      <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · 白线价格 / 黄线均价</span>
+                      <h4>
+                        分时线
+                        <span className={`intraday-render-badge intraday-render-badge-${intradayDataMode}`}>{intradayDataModeLabel}</span>
+                      </h4>
+                      <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · {intradayDataModeLabel} · 白线价格 / 黄线均价</span>
                     </div>
                     <svg className={`kline-chart line-chart-surface ${intradayTone}-tone`} viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`} role="img" aria-label="分时采样走势">
                       <defs>
@@ -1663,8 +1688,11 @@ function App() {
                 ) : (
                   <div className="chart-section">
                     <div className="chart-section-heading">
-                      <h4>分时线</h4>
-                      <span>暂无可用分时采样</span>
+                      <h4>
+                        分时线
+                        <span className="intraday-render-badge intraday-render-badge-empty">暂无数据</span>
+                      </h4>
+                      <span>暂无可用精确分时数据</span>
                     </div>
                     <svg className="kline-chart empty-chart" viewBox={`0 0 ${emptyIntradayChart.width} ${emptyIntradayChart.height}`} role="img" aria-label="空白分时走势骨架">
                       {emptyIntradayChart.ticks.map((tick) => (
