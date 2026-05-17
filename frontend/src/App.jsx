@@ -1306,11 +1306,11 @@ function App() {
 
         <div className="submenu-row content-toolbar-row">
           <div className="content-toolbar-groups">
-            <div className="submenu-tabs">
+            <div className="content-switch-group" aria-label="资讯时间范围">
               {Object.entries(contentTimeRangeLabels).map(([value, label]) => (
                 <button
                   key={value}
-                  className={contentTimeRange === value ? 'view-tab active' : 'view-tab'}
+                  className={contentTimeRange === value ? 'content-switch-option active' : 'content-switch-option'}
                   type="button"
                   onClick={() => setContentTimeRange(value)}
                 >
@@ -1318,35 +1318,40 @@ function App() {
                 </button>
               ))}
             </div>
-            <div className="submenu-tabs">
-              {Object.entries(contentTypeLabels).map(([value, label]) => (
-                <button
-                  key={value}
-                  className={contentType === value ? 'view-tab active' : 'view-tab'}
-                  type="button"
-                  onClick={() => setContentType(value)}
-                >
-                  {label}
-                </button>
-              ))}
+            <div className="content-filter-row">
+              <label className="content-symbol-select-label" htmlFor="content-type-filter">
+                内容类型
+              </label>
+              <select
+                id="content-type-filter"
+                className="content-symbol-select"
+                value={contentType}
+                onChange={(event) => setContentType(event.target.value)}
+              >
+                {Object.entries(contentTypeLabels).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
             </div>
-          </div>
-          <div className="content-filter-row">
-            <label className="content-symbol-select-label" htmlFor="content-symbol-filter">
-              股票筛选
-            </label>
-            <select
-              id="content-symbol-filter"
-              className="content-symbol-select"
-              value={contentSymbolFilter}
-              onChange={(event) => setContentSymbolFilter(event.target.value)}
-            >
-              {contentSymbolOptions.map((option) => (
-                <option key={option.value || 'all'} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
+            <div className="content-filter-row">
+              <label className="content-symbol-select-label" htmlFor="content-symbol-filter">
+                股票筛选
+              </label>
+              <select
+                id="content-symbol-filter"
+                className="content-symbol-select"
+                value={contentSymbolFilter}
+                onChange={(event) => setContentSymbolFilter(event.target.value)}
+              >
+                {contentSymbolOptions.map((option) => (
+                  <option key={option.value || 'all'} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
