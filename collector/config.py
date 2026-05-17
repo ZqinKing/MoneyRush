@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     collector_symbol_min_interval_seconds: int = 10
     collector_tencent_enrichment_interval_seconds: int = 600
     collector_vendor_failure_cooldown_seconds: int = 60
+    collector_intraday_history_enabled: bool = True
+    collector_intraday_history_refresh_seconds: int = 1800
+    collector_intraday_history_request_interval_seconds: int = 8
+    collector_intraday_history_request_jitter_seconds: int = 2
+    collector_intraday_history_vendor_cooldown_seconds: int = 3600
     collector_enable_runtime_data_repair: bool = False
     collector_vendor_price_divergence_limit_pct: float = 15.0
     content_collector_enabled: bool = True

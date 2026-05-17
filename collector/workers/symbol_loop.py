@@ -29,6 +29,8 @@ class CollectorWorker:
         self._last_stream_id = "$"
         self._last_collected_at: dict[str, float] = {}
         self._daily_history_synced_for_trade_day: dict[str, str] = {}
+        self._intraday_history_synced_for_trade_day: dict[str, str] = {}
+        self._latest_daily_trade_day_by_symbol: dict[str, date] = {}
         self._postgres_ready = False
 
     async def run(self) -> None:
@@ -58,6 +60,7 @@ class CollectorWorker:
 
         for symbol in active_symbols:
             await self._ensure_daily_history(symbol)
+            await self._ensure_intraday_history(symbol)
             await self._collect_symbol(symbol)
 
     async def _collect_symbol(self, symbol: str) -> None:
@@ -109,6 +112,8 @@ class CollectorWorker:
     def _clear_symbol_runtime_state(self, symbol: str) -> None:
         self._last_collected_at.pop(symbol, None)
         self._daily_history_synced_for_trade_day.pop(symbol, None)
+        self._intraday_history_synced_for_trade_day.pop(symbol, None)
+        self._latest_daily_trade_day_by_symbol.pop(symbol, None)
 
     async def _ensure_daily_history(self, symbol: str) -> None:
         trade_day = datetime.now(CHINA_MARKET_TZ).date().isoformat()
@@ -118,6 +123,9 @@ class CollectorWorker:
         history = await asyncio.to_thread(self._quote_client.fetch_daily_history, symbol, 60)
         if history:
             await self._postgres.persist_kline_history(history)
+            latest_bucket = history[0].get("bucketTs")
+            if isinstance(latest_bucket, datetime):
+                self._latest_daily_trade_day_by_symbol[symbol] = latest_bucket.astimezone(CHINA_MARKET_TZ).date()
             logger.info(
                 "collector backfilled daily kline history",
                 extra={
@@ -128,6 +136,42 @@ class CollectorWorker:
             )
 
         self._daily_history_synced_for_trade_day[symbol] = trade_day
+
+    async def _ensure_intraday_history(self, symbol: str) -> None:
+        if not self._settings.collector_intraday_history_enabled:
+            return
+
+        trade_day_date = self._latest_daily_trade_day_by_symbol.get(symbol)
+        if trade_day_date is None:
+            daily_history = await asyncio.to_thread(self._quote_client.fetch_daily_history, symbol, 1)
+            if not daily_history:
+                return
+            latest_daily_bucket = daily_history[0].get("bucketTs")
+            if not isinstance(latest_daily_bucket, datetime):
+                return
+            trade_day_date = latest_daily_bucket.astimezone(CHINA_MARKET_TZ).date()
+            self._latest_daily_trade_day_by_symbol[symbol] = trade_day_date
+
+        if trade_day_date is None:
+            return
+
+        trade_day = trade_day_date.isoformat()
+        if self._intraday_history_synced_for_trade_day.get(symbol) == trade_day:
+            return
+
+        history = await asyncio.to_thread(self._quote_client.fetch_intraday_history, symbol, trade_day_date)
+        if history:
+            await self._postgres.persist_kline_history(history)
+            logger.info(
+                "collector backfilled intraday kline history",
+                extra={
+                    "symbol": symbol,
+                    "trade_day": trade_day,
+                    "rows": len(history),
+                },
+            )
+
+        self._intraday_history_synced_for_trade_day[symbol] = trade_day
 
     async def _consume_command_stream(self) -> None:
         messages = await self._redis.xread(

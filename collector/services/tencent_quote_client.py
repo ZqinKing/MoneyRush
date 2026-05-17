@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 import logging
+import random
 from time import monotonic
 from urllib.request import urlopen
 
@@ -26,6 +27,12 @@ def _infer_exchange(symbol: str) -> str:
     if symbol.startswith(("5", "6", "9")):
         return "SH"
     return "SZ"
+
+
+def _infer_market_code(symbol: str) -> int:
+    if symbol.startswith(("5", "6", "9")):
+        return 1
+    return 0
 
 
 def _to_float(value: str) -> float | None:
@@ -73,6 +80,40 @@ def _to_utc_day_bucket(value: object) -> datetime | None:
                 return datetime(parsed_date.year, parsed_date.month, parsed_date.day, tzinfo=UTC)
             except ValueError:
                 continue
+    return None
+
+
+def _to_utc_intraday_bucket(value: object, trade_day: date | None = None) -> datetime | None:
+    if isinstance(value, datetime):
+        normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        return normalized.replace(second=0, microsecond=0)
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day, tzinfo=UTC)
+    if isinstance(value, str):
+        for parser in (datetime.fromisoformat,):
+            try:
+                parsed = parser(value)
+                return _to_utc_intraday_bucket(parsed, trade_day=trade_day)
+            except ValueError:
+                continue
+        normalized_value = value.strip()
+        if trade_day is not None:
+            for pattern in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M",
+                "%H:%M:%S",
+                "%H:%M",
+            ):
+                try:
+                    parsed = datetime.strptime(normalized_value, pattern)
+                    local_timestamp = datetime.combine(
+                        trade_day,
+                        parsed.time(),
+                        tzinfo=CHINA_MARKET_TZ,
+                    )
+                    return local_timestamp.astimezone(UTC).replace(second=0, microsecond=0)
+                except ValueError:
+                    continue
     return None
 
 
@@ -389,6 +430,201 @@ class MootdxQuoteClient:
             deduped[item["bucketTs"]] = item
         return [deduped[key] for key in sorted(deduped.keys(), reverse=True)[:limit]]
 
+    def fetch_intraday_history(self, symbol: str, trade_day: date) -> list[dict[str, object]]:
+        client = self._ensure_client()
+        market = _infer_market_code(symbol)
+        day_code = trade_day.strftime("%Y%m%d")
+        frame = self._fetch_minute_frame(client, symbol=symbol, market=market, day_code=day_code)
+        if frame is None or frame.empty:
+            return []
+
+        normalized_frame = frame.copy()
+        if getattr(normalized_frame.index, "name", None) and normalized_frame.index.name not in normalized_frame.columns:
+            normalized_frame = normalized_frame.reset_index()
+
+        records: list[dict[str, object]] = []
+        for row in normalized_frame.to_dict("records"):
+            bucket_ts = self._intraday_bucket_ts(row, trade_day=trade_day)
+            close_price = _to_float(str(row.get("price") if row.get("price") is not None else row.get("close")))
+            open_price = _to_float(str(row.get("open"))) if row.get("open") is not None else close_price
+            high_price = _to_float(str(row.get("high"))) if row.get("high") is not None else close_price
+            low_price = _to_float(str(row.get("low"))) if row.get("low") is not None else close_price
+            volume_lots = _to_int(str(row.get("volume") if row.get("volume") is not None else row.get("vol")))
+            amount = _to_float(str(row.get("amount")))
+            volume = _lots_to_shares(volume_lots)
+
+            if bucket_ts is None or None in (open_price, high_price, low_price, close_price):
+                continue
+
+            records.append(
+                {
+                    "bucketTs": bucket_ts,
+                    "symbol": symbol,
+                    "period": "1m",
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "volume": volume,
+                    "amount": amount,
+                    "source": "mootdx",
+                    "raw": {
+                        **row,
+                        "provider": "mootdx",
+                        "providerVolumeUnit": "lots",
+                        "volumeUnit": "shares",
+                        "tradeDate": day_code,
+                    },
+                }
+            )
+
+        deduped: dict[datetime, dict[str, object]] = {}
+        for item in records:
+            deduped[item["bucketTs"]] = item
+        return [deduped[key] for key in sorted(deduped.keys())]
+
+    @staticmethod
+    def _fetch_minute_frame(client, *, symbol: str, market: int, day_code: str):
+        minutes_method = getattr(client, "minutes", None)
+        if callable(minutes_method):
+            for args, kwargs in (
+                ((), {"symbol": symbol, "market": market, "date": day_code}),
+                ((symbol, market, day_code), {}),
+                ((), {"symbol": symbol, "date": day_code}),
+            ):
+                try:
+                    return minutes_method(*args, **kwargs)
+                except TypeError:
+                    continue
+
+        minute_method = getattr(client, "minute", None)
+        if callable(minute_method):
+            for args, kwargs in (
+                ((), {"symbol": symbol, "market": market, "date": day_code}),
+                ((symbol, market, day_code), {}),
+                ((), {"symbol": symbol, "market": market}),
+            ):
+                try:
+                    return minute_method(*args, **kwargs)
+                except TypeError:
+                    continue
+
+        raise AttributeError("mootdx client does not expose usable minute history methods")
+
+    @classmethod
+    def _intraday_bucket_ts(cls, row: dict[str, object], *, trade_day: date) -> datetime | None:
+        raw_datetime = row.get("datetime")
+        if isinstance(raw_datetime, datetime):
+            normalized = raw_datetime.astimezone(UTC) if raw_datetime.tzinfo is not None else raw_datetime.replace(tzinfo=CHINA_MARKET_TZ).astimezone(UTC)
+            return normalized.replace(second=0, microsecond=0)
+
+        if isinstance(raw_datetime, str):
+            normalized = raw_datetime.strip()
+            for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y%m%d %H:%M:%S", "%Y%m%d %H:%M"):
+                try:
+                    parsed = datetime.strptime(normalized, pattern)
+                    return parsed.replace(tzinfo=CHINA_MARKET_TZ).astimezone(UTC).replace(second=0, microsecond=0)
+                except ValueError:
+                    continue
+
+        raw_time = row.get("time")
+        if raw_time is None:
+            return None
+
+        digits = "".join(character for character in str(raw_time).strip() if character.isdigit())
+        if len(digits) == 3:
+            digits = f"0{digits}"
+        if len(digits) == 4:
+            digits = f"{digits}00"
+        if len(digits) != 6:
+            return None
+
+        local_timestamp = datetime(
+            trade_day.year,
+            trade_day.month,
+            trade_day.day,
+            int(digits[0:2]),
+            int(digits[2:4]),
+            int(digits[4:6]),
+            tzinfo=CHINA_MARKET_TZ,
+        )
+        return local_timestamp.astimezone(UTC).replace(second=0, microsecond=0)
+
+    def fetch_intraday_history(self, symbol: str, trade_day: date | None = None) -> list[dict[str, object]]:
+        client = self._ensure_client()
+        trade_day = trade_day or datetime.now(CHINA_MARKET_TZ).date()
+        day_label = trade_day.strftime("%Y%m%d")
+        market = _infer_market_code(symbol)
+
+        frame = None
+        fetch_attempts = (
+            lambda: client.minutes(symbol=symbol, date=day_label),
+            lambda: client.minutes(symbol, day_label),
+            lambda: client.minute(symbol=symbol, market=0),
+            lambda: client.minute(symbol, 0),
+        )
+        for fetch in fetch_attempts:
+            try:
+                frame = fetch()
+                break
+            except TypeError:
+                continue
+
+        if frame is None or getattr(frame, "empty", False):
+            return []
+
+        normalized_frame = frame.copy() if hasattr(frame, "copy") else frame
+        if getattr(normalized_frame.index, "name", None) and normalized_frame.index.name not in getattr(normalized_frame, "columns", []):
+            normalized_frame = normalized_frame.reset_index()
+
+        records: list[dict[str, object]] = []
+        for row in normalized_frame.to_dict("records"):
+            bucket_ts = _to_utc_intraday_bucket(
+                row.get("datetime")
+                or row.get("date")
+                or row.get("time")
+                or row.get("trade_time"),
+                trade_day=trade_day,
+            )
+            close_price = _to_float(str(row.get("close") if row.get("close") is not None else row.get("price")))
+            if bucket_ts is None or close_price is None:
+                continue
+
+            open_price = _to_float(str(row.get("open") if row.get("open") is not None else close_price)) or close_price
+            high_price = _to_float(str(row.get("high") if row.get("high") is not None else close_price)) or close_price
+            low_price = _to_float(str(row.get("low") if row.get("low") is not None else close_price)) or close_price
+            volume_lots = _to_int(str(row.get("volume") if row.get("volume") is not None else row.get("vol")))
+            volume = _lots_to_shares(volume_lots)
+            amount = _to_float(str(row.get("amount")))
+            if amount is None and volume is not None:
+                amount = round(close_price * volume, 2)
+
+            records.append(
+                {
+                    "bucketTs": bucket_ts,
+                    "symbol": symbol,
+                    "period": "1m",
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "volume": volume,
+                    "amount": amount,
+                    "source": "mootdx",
+                    "raw": {
+                        **row,
+                        "provider": "mootdx",
+                        "providerVolumeUnit": "lots",
+                        "volumeUnit": "shares",
+                    },
+                }
+            )
+
+        deduped: dict[datetime, dict[str, object]] = {}
+        for item in records:
+            deduped[item["bucketTs"]] = item
+        return [deduped[key] for key in sorted(deduped.keys())]
+
     @classmethod
     def _combine_quote_timestamp(cls, servertime: object) -> datetime:
         if not isinstance(servertime, str):
@@ -415,6 +651,8 @@ class MarketQuoteClient:
         self._tencent_cache: dict[str, tuple[TencentQuote, float]] = {}
         self._mootdx_failure_until = 0.0
         self._tencent_failure_until = 0.0
+        self._history_failure_until = 0.0
+        self._last_history_request_at = 0.0
 
     def fetch_quote(self, symbol: str) -> dict[str, dict[str, object]]:
         try:
@@ -444,7 +682,34 @@ class MarketQuoteClient:
         return self._build_market_state(mootdx_quote, tencent_quote)
 
     def fetch_daily_history(self, symbol: str, limit: int = 60) -> list[dict[str, object]]:
-        return self._mootdx_client.fetch_daily_history(symbol, limit=limit)
+        self._wait_for_history_slot()
+        try:
+            return self._mootdx_client.fetch_daily_history(symbol, limit=limit)
+        except Exception:
+            self._history_failure_until = monotonic() + self._settings.collector_intraday_history_vendor_cooldown_seconds
+            raise
+
+    def fetch_intraday_history(self, symbol: str, trade_day: date | None = None) -> list[dict[str, object]]:
+        self._wait_for_history_slot()
+        try:
+            return self._mootdx_client.fetch_intraday_history(symbol, trade_day=trade_day)
+        except Exception:
+            self._history_failure_until = monotonic() + self._settings.collector_intraday_history_vendor_cooldown_seconds
+            raise
+
+    def _wait_for_history_slot(self) -> None:
+        now = monotonic()
+        if now < self._history_failure_until:
+            raise RuntimeError("mootdx history fetch is in cooldown")
+
+        base_interval = float(self._settings.collector_intraday_history_request_interval_seconds)
+        jitter = float(self._settings.collector_intraday_history_request_jitter_seconds)
+        desired_interval = max(base_interval + random.uniform(-jitter, jitter), 0.0)
+        elapsed = now - self._last_history_request_at
+        if elapsed < desired_interval:
+            sleep(desired_interval - elapsed)
+
+        self._last_history_request_at = monotonic()
 
     def _get_mootdx_quote(self, symbol: str) -> MootdxQuote:
         now = monotonic()
