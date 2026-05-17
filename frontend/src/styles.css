@@ -472,7 +472,8 @@ input {
 
 .content-card {
   display: grid;
-  gap: 14px;
+  align-content: start;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -520,12 +521,15 @@ input {
 }
 
 .content-card-header > div {
+  display: grid;
+  align-content: start;
+  gap: 8px;
   flex: 1 1 auto;
   min-width: 0;
 }
 
 .content-card-header h3 {
-  margin: 8px 0 0;
+  margin: 0;
   font-size: 1.04rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
@@ -691,7 +695,7 @@ input {
 }
 
 .snapshot-subtitle {
-  margin: 6px 0 0;
+  margin: 0;
   color: #8fa6d8;
   font-size: 0.82rem;
 }
@@ -1411,12 +1415,25 @@ input {
     align-items: flex-start;
   }
 
+  .content-card {
+    gap: 8px;
+  }
+
+  .content-card-header {
+    gap: 8px;
+  }
+
+  .content-card-header > div {
+    gap: 4px;
+  }
+
   .content-feed-scroll-area {
     padding-right: 0;
     scrollbar-gutter: auto;
   }
 
   .content-card-time {
+    gap: 2px;
     justify-items: start;
     text-align: left;
   }
