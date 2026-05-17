@@ -93,6 +93,28 @@ def _sanitize_public_url(value: object) -> str | None:
     return text
 
 
+def _strip_summary_title_prefix(*, title: object, summary: object) -> str | None:
+    normalized_summary = _safe_text(summary)
+    if not normalized_summary:
+        return None
+
+    normalized_title = _safe_text(title)
+    if not normalized_title:
+        return normalized_summary
+
+    bracketed_prefix = f"【{normalized_title}】"
+    if normalized_summary.startswith(bracketed_prefix):
+        stripped_summary = normalized_summary[len(bracketed_prefix):].strip()
+        return stripped_summary or normalized_summary
+
+    plain_prefix = f"{normalized_title}："
+    if normalized_summary.startswith(plain_prefix):
+        stripped_summary = normalized_summary[len(plain_prefix):].strip()
+        return stripped_summary or normalized_summary
+
+    return normalized_summary
+
+
 def _public_lane_error(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -269,7 +291,7 @@ class ContentQueryService:
                 "type": "news",
                 "scope": row["scope"],
                 "title": row["title"],
-                "summary": row["summary"] or row["content"],
+                "summary": _strip_summary_title_prefix(title=row["title"], summary=row["summary"] or row["content"]),
                 "source": row["upstream_source"],
                 "provider": row["provider"],
                 "publishedAt": _resolve_news_published_at(
