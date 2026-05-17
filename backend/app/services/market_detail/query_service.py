@@ -247,7 +247,11 @@ class MarketDetailQueryService:
         if interval_minutes < 1:
             raise ValueError("interval_minutes must be >= 1")
 
-        day_start_utc, day_end_utc = self._current_trade_day_window()
+        latest_trade_day_window = await self._latest_intraday_trade_day_window(symbol)
+        if latest_trade_day_window is None:
+            return []
+
+        day_start_utc, day_end_utc = latest_trade_day_window
         source_priority_rows = await self._fetch(
             """
             SELECT source, COUNT(*) AS row_count, MAX(ts) AS last_ts
@@ -342,6 +346,26 @@ class MarketDetailQueryService:
 
         return bars
 
+    async def _latest_intraday_trade_day_window(self, symbol: str) -> tuple[datetime, datetime] | None:
+        row = await self._fetchrow(
+            """
+            SELECT ts
+            FROM stock_tick
+            WHERE symbol = $1
+            ORDER BY ts DESC
+            LIMIT 1
+            """,
+            symbol,
+        )
+        if row is None:
+            return None
+
+        latest_ts = row["ts"]
+        if not isinstance(latest_ts, datetime):
+            return None
+
+        return self._trade_day_window_for_ts(latest_ts)
+
     async def _fetchrow(self, query: str, *args: object) -> asyncpg.Record | None:
         if self._pool is None:
             raise RuntimeError("MarketDetailQueryService must be connected before use")
@@ -358,6 +382,13 @@ class MarketDetailQueryService:
     def _current_trade_day_window() -> tuple[datetime, datetime]:
         now_local = datetime.now(CHINA_MARKET_TZ)
         day_start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+        day_end_local = day_start_local + timedelta(days=1)
+        return day_start_local.astimezone(UTC), day_end_local.astimezone(UTC)
+
+    @staticmethod
+    def _trade_day_window_for_ts(ts: datetime) -> tuple[datetime, datetime]:
+        local_ts = ts.astimezone(CHINA_MARKET_TZ)
+        day_start_local = local_ts.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end_local = day_start_local + timedelta(days=1)
         return day_start_local.astimezone(UTC), day_end_local.astimezone(UTC)
 

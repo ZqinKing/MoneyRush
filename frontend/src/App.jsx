@@ -238,6 +238,14 @@ function formatDateTime(value) {
   return new Date(value).toLocaleString('zh-CN', { hour12: false, timeZone: 'Asia/Shanghai' });
 }
 
+function formatDate(value) {
+  if (!value) {
+    return '--';
+  }
+
+  return new Date(value).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
 function formatPlainNumber(value) {
   if (typeof value !== 'number') {
     return '--';
@@ -353,6 +361,28 @@ function isSameChinaTradeDay(value, referenceValue = new Date()) {
   };
 
   return toChinaDay(date) === toChinaDay(reference);
+}
+
+function getLatestChinaTradeDayValue(items, key) {
+  if (!Array.isArray(items) || !items.length) {
+    return null;
+  }
+
+  let latestItem = null;
+  let latestTime = Number.NEGATIVE_INFINITY;
+
+  items.forEach((item) => {
+    const rawValue = item?.[key];
+    const parsedTime = rawValue ? new Date(rawValue).getTime() : Number.NaN;
+    if (Number.isNaN(parsedTime) || parsedTime <= latestTime) {
+      return;
+    }
+
+    latestItem = item;
+    latestTime = parsedTime;
+  });
+
+  return latestItem?.[key] ?? null;
 }
 
 function buildAxisLabels(items, maxLabels = 6, getLabel = (item) => item?.label ?? '') {
@@ -1404,9 +1434,10 @@ function App() {
         ? detailPayload.intradaySampledBars
         : [];
     const ticks = dedupeTicks(selectedDetail?.ticks || []);
+    const latestTickTradeDay = getLatestChinaTradeDayValue(ticks, 'ts');
     const intradayTickPoints = sortItemsAscendingByTime(
       ticks
-        .filter((tick) => isSameChinaTradeDay(tick?.ts))
+        .filter((tick) => isSameChinaTradeDay(tick?.ts, latestTickTradeDay || new Date()))
         .map((tick) => ({
           bucketTs: tick.ts,
           close: tick.price,
@@ -1443,6 +1474,8 @@ function App() {
     const dailyAxisLabels = buildAxisLabels(candleChart?.candles || [], 6, (item) => item?.label || '');
     const recentTicks = sortItemsAscendingByTime(ticks, 'ts').slice(-12).reverse();
     const intradayTone = getLineChartTone(intradayLineChart, snapshot?.lastPrice ?? previousClose ?? null);
+    const intradayDataDate = getLatestChinaTradeDayValue(intradayChartPoints, 'bucketTs') || latestTickTradeDay;
+    const intradayDateLabel = intradayDataDate ? formatDate(intradayDataDate) : null;
 
     return (
       <div className="detail-layout">
@@ -1474,7 +1507,7 @@ function App() {
                 <h3>{activeChartTitle}</h3>
                 <p className="panel-tip compact">
                   {showingIntraday
-                    ? '默认展示当前交易日分时线，并按日内波动自动缩放；若今日无成交采样，将显示空白分时骨架。'
+                    ? `默认展示最近一个有成交采样的交易日分时线，并按日内波动自动缩放${intradayDateLabel ? `；当前展示 ${intradayDateLabel} 数据。` : '。'}`
                     : '日 K 优先展示详情接口返回的 60 根日线，并与当前已入库历史保持一致。'}
                 </p>
               </div>
@@ -1510,7 +1543,7 @@ function App() {
                   <div className="chart-section">
                     <div className="chart-section-heading">
                       <h4>分时线</h4>
-                      <span>{intradayChartPoints.length} 个点位 · 白线价格 / 黄线均价</span>
+                      <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · 白线价格 / 黄线均价</span>
                     </div>
                     <svg className={`kline-chart line-chart-surface ${intradayTone}-tone`} viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`} role="img" aria-label="分时采样走势">
                       <defs>
@@ -1631,7 +1664,7 @@ function App() {
                   <div className="chart-section">
                     <div className="chart-section-heading">
                       <h4>分时线</h4>
-                      <span>今日暂无成交采样</span>
+                      <span>暂无可用分时采样</span>
                     </div>
                     <svg className="kline-chart empty-chart" viewBox={`0 0 ${emptyIntradayChart.width} ${emptyIntradayChart.height}`} role="img" aria-label="空白分时走势骨架">
                       {emptyIntradayChart.ticks.map((tick) => (
@@ -1657,7 +1690,7 @@ function App() {
                     <div className="chart-axis-row">
                       {emptyIntradayChart.timeMarks.map((item) => <span key={item.label}>{item.label}</span>)}
                     </div>
-                    <p className="panel-tip compact">当前交易日数据库里还没有可聚合的分时采样点。</p>
+                    <p className="panel-tip compact">数据库中还没有可聚合的历史分时采样点。</p>
                   </div>
                 )}
               </div>
@@ -1853,6 +1886,7 @@ function App() {
                 <table className="detail-table">
                   <thead>
                     <tr>
+                      <th>日期</th>
                       <th>时间</th>
                       <th>价格</th>
                       <th>成交量</th>
@@ -1863,6 +1897,7 @@ function App() {
                   <tbody>
                     {recentTicks.map((tick, index) => (
                       <tr key={`${tick.ts}-${tick.price}-${index}`}>
+                        <td>{formatDate(tick.ts)}</td>
                         <td>{formatTime(tick.ts)}</td>
                         <td>{formatPrice(tick.price)}</td>
                         <td>{formatTickVolume(tick.volume)}</td>
