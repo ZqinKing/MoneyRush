@@ -394,17 +394,33 @@ input {
 
 .content-filter-row {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  min-width: 0;
-  max-width: 100%;
-  overflow-x: auto;
-  overscroll-behavior-x: contain;
-  padding-bottom: 4px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: min(280px, 100%);
 }
 
-.content-filter-row .view-tab {
-  flex: 0 0 auto;
+.content-symbol-select-label {
+  color: #8fa6d8;
+  font-size: 0.82rem;
+}
+
+.content-symbol-select {
+  width: min(320px, 100%);
+  min-height: 42px;
+  border-radius: 14px;
+  border: 1px solid rgba(129, 164, 255, 0.22);
+  padding: 10px 14px;
+  background: rgba(6, 11, 22, 0.82);
+  color: #d9e6ff;
+  outline: none;
+  transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+}
+
+.content-symbol-select:hover,
+.content-symbol-select:focus-visible {
+  border-color: rgba(129, 164, 255, 0.44);
+  box-shadow: 0 0 0 3px rgba(44, 107, 255, 0.12);
 }
 
 .content-status-summary {

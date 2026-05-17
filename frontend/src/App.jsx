@@ -146,6 +146,15 @@ function getLaneStatusTone(job) {
   return 'healthy';
 }
 
+function buildContentSymbolLabel(symbol, snapshot) {
+  if (!symbol) {
+    return '全市场';
+  }
+
+  const companyName = typeof snapshot?.companyName === 'string' ? snapshot.companyName.trim() : '';
+  return companyName ? `${companyName} (${symbol})` : symbol;
+}
+
 function serializeIdentityValue(value) {
   if (Array.isArray(value)) {
     return `[${value.map((item) => serializeIdentityValue(item)).join(',')}]`;
@@ -964,6 +973,22 @@ function App() {
 
   const selectedSnapshot = selectedSnapshotSymbol ? snapshots[selectedSnapshotSymbol] : null;
   const selectedDetail = selectedSnapshotSymbol ? snapshotDetails[selectedSnapshotSymbol] : null;
+  const contentSymbolOptions = useMemo(
+    () => [
+      { value: '', label: '全市场' },
+      ...activeSymbols.map((currentSymbol) => ({
+        value: currentSymbol,
+        label: buildContentSymbolLabel(currentSymbol, snapshots[currentSymbol]),
+      })),
+    ],
+    [activeSymbols, snapshots],
+  );
+
+  useEffect(() => {
+    if (contentSymbolFilter && !activeSymbols.includes(contentSymbolFilter)) {
+      setContentSymbolFilter('');
+    }
+  }, [activeSymbols, contentSymbolFilter]);
 
   useEffect(() => {
     if (!selectedSnapshotSymbol) {
@@ -1307,23 +1332,21 @@ function App() {
             </div>
           </div>
           <div className="content-filter-row">
-            <button
-              className={!contentSymbolFilter ? 'view-tab active' : 'view-tab'}
-              type="button"
-              onClick={() => setContentSymbolFilter('')}
+            <label className="content-symbol-select-label" htmlFor="content-symbol-filter">
+              股票筛选
+            </label>
+            <select
+              id="content-symbol-filter"
+              className="content-symbol-select"
+              value={contentSymbolFilter}
+              onChange={(event) => setContentSymbolFilter(event.target.value)}
             >
-              全市场
-            </button>
-            {activeSymbols.map((item) => (
-              <button
-                key={item}
-                className={contentSymbolFilter === item ? 'view-tab active' : 'view-tab'}
-                type="button"
-                onClick={() => setContentSymbolFilter(item)}
-              >
-                {item}
-              </button>
-            ))}
+              {contentSymbolOptions.map((option) => (
+                <option key={option.value || 'all'} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </div>
         </div>
 
