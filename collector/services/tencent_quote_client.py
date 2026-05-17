@@ -4,7 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 import logging
 import random
-from time import monotonic
+from time import monotonic, sleep
 from urllib.request import urlopen
 
 from mootdx.quotes import Quotes
@@ -558,10 +558,13 @@ class MootdxQuoteClient:
 
         frame = None
         fetch_attempts = (
+            lambda: client.minutes(symbol=symbol, market=market, date=day_label),
+            lambda: client.minutes(symbol, market, day_label),
             lambda: client.minutes(symbol=symbol, date=day_label),
-            lambda: client.minutes(symbol, day_label),
-            lambda: client.minute(symbol=symbol, market=0),
-            lambda: client.minute(symbol, 0),
+            lambda: client.minute(symbol=symbol, market=market, date=day_label),
+            lambda: client.minute(symbol, market, day_label),
+            lambda: client.minute(symbol=symbol, market=market),
+            lambda: client.minute(symbol, market),
         )
         for fetch in fetch_attempts:
             try:
@@ -578,12 +581,15 @@ class MootdxQuoteClient:
             normalized_frame = normalized_frame.reset_index()
 
         records: list[dict[str, object]] = []
-        for row in normalized_frame.to_dict("records"):
+        rows = normalized_frame.to_dict("records")
+        synthesized_timeline = self._build_intraday_timeline(trade_day=trade_day, length=len(rows))
+        for index, row in enumerate(rows):
             bucket_ts = _to_utc_intraday_bucket(
                 row.get("datetime")
                 or row.get("date")
                 or row.get("time")
-                or row.get("trade_time"),
+                or row.get("trade_time")
+                or synthesized_timeline[index],
                 trade_day=trade_day,
             )
             close_price = _to_float(str(row.get("close") if row.get("close") is not None else row.get("price")))
@@ -624,6 +630,31 @@ class MootdxQuoteClient:
         for item in records:
             deduped[item["bucketTs"]] = item
         return [deduped[key] for key in sorted(deduped.keys())]
+
+    @staticmethod
+    def _build_intraday_timeline(*, trade_day: date, length: int) -> list[str]:
+        if length <= 0:
+            return []
+
+        morning_start = datetime(trade_day.year, trade_day.month, trade_day.day, 9, 30, tzinfo=CHINA_MARKET_TZ)
+        morning_minutes = 120
+        afternoon_start = datetime(trade_day.year, trade_day.month, trade_day.day, 13, 0, tzinfo=CHINA_MARKET_TZ)
+        afternoon_minutes = 120
+
+        timeline: list[str] = []
+        for offset in range(morning_minutes):
+            timeline.append((morning_start + timedelta(minutes=offset)).strftime("%H:%M:%S"))
+        for offset in range(afternoon_minutes):
+            timeline.append((afternoon_start + timedelta(minutes=offset)).strftime("%H:%M:%S"))
+
+        if length <= len(timeline):
+            return timeline[:length]
+
+        last_timestamp = afternoon_start + timedelta(minutes=afternoon_minutes - 1)
+        while len(timeline) < length:
+            last_timestamp += timedelta(minutes=1)
+            timeline.append(last_timestamp.strftime("%H:%M:%S"))
+        return timeline
 
     @classmethod
     def _combine_quote_timestamp(cls, servertime: object) -> datetime:

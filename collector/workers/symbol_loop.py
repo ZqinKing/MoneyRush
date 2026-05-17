@@ -162,6 +162,7 @@ class CollectorWorker:
         history = await asyncio.to_thread(self._quote_client.fetch_intraday_history, symbol, trade_day_date)
         if history:
             await self._postgres.persist_kline_history(history)
+            self._intraday_history_synced_for_trade_day[symbol] = trade_day
             logger.info(
                 "collector backfilled intraday kline history",
                 extra={
@@ -170,8 +171,14 @@ class CollectorWorker:
                     "rows": len(history),
                 },
             )
-
-        self._intraday_history_synced_for_trade_day[symbol] = trade_day
+        else:
+            logger.warning(
+                "collector intraday kline backfill returned no rows",
+                extra={
+                    "symbol": symbol,
+                    "trade_day": trade_day,
+                },
+            )
 
     async def _consume_command_stream(self) -> None:
         messages = await self._redis.xread(
