@@ -37,7 +37,7 @@ def _safe_text(value: object) -> str | None:
     return text or None
 
 
-def _safe_datetime(value: object) -> datetime | None:
+def _safe_datetime(value: object, *, anchor: datetime | None = None) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -61,6 +61,22 @@ def _safe_datetime(value: object) -> datetime | None:
         except ValueError:
             continue
         return parsed.replace(tzinfo=CHINA_CONTENT_TZ).astimezone(UTC)
+
+    time_only_formats = ("%H:%M:%S", "%H:%M")
+    for fmt in time_only_formats:
+        try:
+            parsed_time = datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+        anchor_dt = anchor or datetime.now(UTC)
+        anchor_china = anchor_dt.astimezone(CHINA_CONTENT_TZ)
+        parsed = anchor_china.replace(
+            hour=parsed_time.hour,
+            minute=parsed_time.minute,
+            second=parsed_time.second,
+            microsecond=0,
+        )
+        return parsed.astimezone(UTC)
     return None
 
 
@@ -113,7 +129,7 @@ class AkshareContentClient:
             title = _safe_text(row.get("研报名称"))
             if not title:
                 continue
-            published_at = _safe_datetime(row.get("日期") or row.get("发布日期"))
+            published_at = _safe_datetime(row.get("日期") or row.get("发布日期"), anchor=fetched_at)
             items.append(
                 {
                     "symbol": symbol,
@@ -175,7 +191,7 @@ class AkshareContentClient:
             if keyword and accepted_keywords and keyword not in accepted_keywords:
                 logger.warning("skip mismatched stock news item", extra={"symbol": symbol, "keyword": keyword, "title": title})
                 continue
-            published_at = _safe_datetime(row.get("发布时间") or row.get("时间"))
+            published_at = _safe_datetime(row.get("发布时间") or row.get("时间"), anchor=fetched_at)
             source_url = _safe_text(row.get("新闻链接") or row.get("链接"))
             items.append(
                 {
@@ -319,7 +335,7 @@ class AkshareContentClient:
                 title = _safe_text(row.get("公告标题") or row.get("标题"))
                 if not title:
                     continue
-                published_at = _safe_datetime(row.get("公告时间") or row.get("公告日期") or row.get("时间"))
+                published_at = _safe_datetime(row.get("公告时间") or row.get("公告日期") or row.get("时间"), anchor=fetched_at)
                 pdf_url = _safe_text(row.get("公告链接") or row.get("PDF链接") or row.get("链接") or row.get("网址"))
                 dedupe_key = _dedupe_key("announcement", symbol, title, published_at, pdf_url)
                 if dedupe_key in seen_keys:
@@ -370,7 +386,7 @@ class AkshareContentClient:
             title = _safe_text(row.get("标题"))
             if not title:
                 continue
-            published_at = _safe_datetime(row.get("时间") or row.get("发布时间"))
+            published_at = _safe_datetime(row.get("时间") or row.get("发布时间"), anchor=fetched_at)
             source_url = _safe_text(row.get("链接"))
             items.append(
                 {
