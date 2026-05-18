@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
@@ -8,6 +10,7 @@ from app.services.normalize.market_payloads import normalize_symbol_input
 
 
 router = APIRouter(prefix="/symbols", tags=["symbols"])
+CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 
 
 class ActivateSymbolRequest(BaseModel):
@@ -25,6 +28,36 @@ def _validate_limit(limit: int) -> int:
     if limit < 1 or limit > 200:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be between 1 and 200")
     return limit
+
+
+def _parse_iso_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _is_same_china_trade_day(left: object, right: object) -> bool:
+    left_ts = _parse_iso_datetime(left)
+    right_ts = _parse_iso_datetime(right)
+    if left_ts is None or right_ts is None:
+        return False
+    return left_ts.astimezone(CHINA_MARKET_TZ).date() == right_ts.astimezone(CHINA_MARKET_TZ).date()
+
+
+def _filter_intraday_bars_for_reference_day(
+    bars: list[dict[str, object]],
+    *,
+    reference_ts: object,
+) -> list[dict[str, object]]:
+    if not bars or reference_ts is None:
+        return []
+    return [bar for bar in bars if _is_same_china_trade_day(bar.get("bucketTs"), reference_ts)]
 
 
 @router.get("/active")
@@ -59,6 +92,20 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
     intraday_minute_bars = await query_service.fetch_intraday_sampled_bars(normalized_symbol, interval_minutes=1)
     intraday_sampled_bars = await query_service.fetch_intraday_sampled_bars(normalized_symbol, interval_minutes=5)
     order_book = await query_service.fetch_best_bid_ask(normalized_symbol)
+
+    reference_intraday_ts = (
+        (snapshot or {}).get("updatedAt")
+        or (latest_event or {}).get("generatedAt")
+        or (latest_kline or {}).get("bucketTs")
+    )
+    intraday_minute_bars = _filter_intraday_bars_for_reference_day(
+        intraday_minute_bars,
+        reference_ts=reference_intraday_ts,
+    )
+    intraday_sampled_bars = _filter_intraday_bars_for_reference_day(
+        intraday_sampled_bars,
+        reference_ts=reference_intraday_ts,
+    )
 
     return {
         "symbol": normalized_symbol,

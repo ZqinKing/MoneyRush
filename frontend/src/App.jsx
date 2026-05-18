@@ -246,6 +246,22 @@ function formatDate(value) {
   return new Date(value).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
 }
 
+function getChinaTradeDayKey(value) {
+  if (!value) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const chinaDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
+  const month = `${chinaDate.getUTCMonth() + 1}`.padStart(2, '0');
+  const day = `${chinaDate.getUTCDate()}`.padStart(2, '0');
+  return `${chinaDate.getUTCFullYear()}-${month}-${day}`;
+}
+
 function formatPlainNumber(value) {
   if (typeof value !== 'number') {
     return '--';
@@ -1003,6 +1019,7 @@ function App() {
 
   const selectedSnapshot = selectedSnapshotSymbol ? snapshots[selectedSnapshotSymbol] : null;
   const selectedDetail = selectedSnapshotSymbol ? snapshotDetails[selectedSnapshotSymbol] : null;
+  const selectedSnapshotTradeDay = getChinaTradeDayKey(selectedSnapshot?.updatedAt);
   const contentSymbolOptions = useMemo(
     () => [
       { value: '', label: '全市场' },
@@ -1027,8 +1044,10 @@ function App() {
 
     let cancelled = false;
 
-    async function loadDetails() {
-      setDetailRequestState('loading');
+    async function loadDetails({ keepReadyState = false } = {}) {
+      if (!keepReadyState) {
+        setDetailRequestState('loading');
+      }
 
       try {
         const [detailResponse, ticksResponse, eventsResponse, klineResponse] = await Promise.all([
@@ -1071,11 +1090,15 @@ function App() {
     }
 
     loadDetails();
+    const intervalId = window.setInterval(() => {
+      loadDetails({ keepReadyState: true });
+    }, 60000);
 
     return () => {
       cancelled = true;
+      window.clearInterval(intervalId);
     };
-  }, [selectedSnapshotSymbol]);
+  }, [apiBaseUrl, selectedSnapshotSymbol, selectedSnapshotTradeDay]);
 
   function removeSymbolFromState(symbolToRemove) {
     setActiveSymbols((current) => current.filter((item) => item !== symbolToRemove));
