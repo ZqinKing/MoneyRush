@@ -70,7 +70,7 @@ const contentLaneLabels = {
   'market-news': '市场快讯',
 };
 
-function buildContentFeedUrl({ symbol = '', type = 'all', timeRange = 'today', limit = 20 }) {
+function buildContentFeedUrl({ symbol = '', type = 'all', timeRange = 'today', limit = 20, before = '' }) {
   const params = new URLSearchParams();
   if (symbol) {
     params.set('symbol', symbol);
@@ -80,6 +80,9 @@ function buildContentFeedUrl({ symbol = '', type = 'all', timeRange = 'today', l
   }
   if (timeRange) {
     params.set('time_range', timeRange);
+  }
+  if (before) {
+    params.set('before', before);
   }
   params.set('limit', String(limit));
   return `${apiBaseUrl}/api/v1/content/items?${params.toString()}`;
@@ -194,6 +197,22 @@ function dedupeEvents(events) {
   const seen = new Set();
   return events.filter((event) => {
     const identity = [event?.ts, event?.eventType, event?.source, serializeIdentityValue(event?.payload ?? null)].join('|');
+    if (seen.has(identity)) {
+      return false;
+    }
+    seen.add(identity);
+    return true;
+  });
+}
+
+function dedupeContentItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  const seen = new Set();
+  return items.filter((item) => {
+    const identity = `${item?.type || 'content'}-${item?.id || item?.publishedAt || item?.firstSeenAt || item?.title || ''}`;
     if (seen.has(identity)) {
       return false;
     }
@@ -1092,22 +1111,53 @@ function App() {
     }
 
     let cancelled = false;
+    const pageSize = 100;
 
     async function loadContent() {
       setContentRequestState('loading');
       try {
-        const [feedResponse, statusResponse] = await Promise.all([
-          fetch(buildContentFeedUrl({ symbol: contentSymbolFilter, type: contentType, timeRange: contentTimeRange, limit: 60 })),
+        const [firstFeedResponse, statusResponse] = await Promise.all([
+          fetch(buildContentFeedUrl({ symbol: contentSymbolFilter, type: contentType, timeRange: contentTimeRange, limit: pageSize })),
           fetch(buildContentStatusUrl(contentSymbolFilter)),
         ]);
-        const [feedPayload, statusPayload] = await Promise.all([
-          parseJsonOrThrow(feedResponse, 'content feed fetch failed'),
+        const [firstFeedPayload, statusPayload] = await Promise.all([
+          parseJsonOrThrow(firstFeedResponse, 'content feed fetch failed'),
           parseJsonOrThrow(statusResponse, 'content status fetch failed'),
         ]);
         if (cancelled) {
           return;
         }
-        setContentFeed(Array.isArray(feedPayload.items) ? feedPayload.items : []);
+
+        let nextFeed = Array.isArray(firstFeedPayload.items) ? firstFeedPayload.items : [];
+        if (contentTimeRange === 'today') {
+          const seenBefore = new Set();
+          let cursor = nextFeed.length ? (nextFeed[nextFeed.length - 1]?.publishedAt || nextFeed[nextFeed.length - 1]?.firstSeenAt || '') : '';
+
+          while (!cancelled && cursor && nextFeed.length % pageSize === 0 && !seenBefore.has(cursor)) {
+            seenBefore.add(cursor);
+            const pageResponse = await fetch(
+              buildContentFeedUrl({
+                symbol: contentSymbolFilter,
+                type: contentType,
+                timeRange: contentTimeRange,
+                limit: pageSize,
+                before: cursor,
+              }),
+            );
+            const pagePayload = await parseJsonOrThrow(pageResponse, 'content feed fetch failed');
+            const pageItems = Array.isArray(pagePayload.items) ? pagePayload.items : [];
+            if (!pageItems.length) {
+              break;
+            }
+            nextFeed = dedupeContentItems([...nextFeed, ...pageItems]);
+            if (pageItems.length < pageSize) {
+              break;
+            }
+            cursor = pageItems[pageItems.length - 1]?.publishedAt || pageItems[pageItems.length - 1]?.firstSeenAt || '';
+          }
+        }
+
+        setContentFeed(nextFeed);
         setContentStatus(statusPayload && typeof statusPayload === 'object' ? statusPayload : { jobs: [], latestIngestedAt: null, summary: null });
         setContentRequestState('ready');
       } catch {
