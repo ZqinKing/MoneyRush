@@ -488,7 +488,14 @@ function estimatePreviousClose(snapshot, latestKline, intradaySampledBars) {
   return null;
 }
 
-function getChinaSessionPosition(value) {
+const CHINA_TRADING_SESSION = {
+  morningOpen: 9 * 60 + 30,
+  morningClose: 11 * 60 + 30,
+  afternoonOpen: 13 * 60,
+  afternoonClose: 15 * 60,
+};
+
+function getChinaTradingMinute(value) {
   if (!value) {
     return null;
   }
@@ -499,41 +506,143 @@ function getChinaSessionPosition(value) {
   }
 
   const chinaDate = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-  const minutes = chinaDate.getUTCHours() * 60
+  return chinaDate.getUTCHours() * 60
     + chinaDate.getUTCMinutes()
     + chinaDate.getUTCSeconds() / 60
     + chinaDate.getUTCMilliseconds() / 60000;
+}
 
-  const morningOpen = 9 * 60 + 30;
-  const morningClose = 11 * 60 + 30;
-  const afternoonOpen = 13 * 60;
-  const afternoonClose = 15 * 60;
+function formatChinaMinuteLabel(totalMinutes) {
+  if (typeof totalMinutes !== 'number' || Number.isNaN(totalMinutes)) {
+    return '--:--';
+  }
 
-  if (minutes < morningOpen || minutes > afternoonClose) {
+  const normalizedMinutes = Math.max(0, Math.round(totalMinutes));
+  const hours = `${Math.floor(normalizedMinutes / 60)}`.padStart(2, '0');
+  const minutes = `${normalizedMinutes % 60}`.padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function buildLinearTimeMarks(startMinute, endMinute, maxMarks = 6) {
+  if (typeof startMinute !== 'number' || typeof endMinute !== 'number') {
+    return [];
+  }
+
+  if (Math.abs(endMinute - startMinute) < 0.01) {
+    return [{ label: formatChinaMinuteLabel(startMinute), x: 0 }];
+  }
+
+  const markCount = Math.min(maxMarks, Math.max(2, Math.round(endMinute - startMinute) + 1));
+  const lastIndex = markCount - 1;
+
+  return Array.from({ length: markCount }, (_, index) => {
+    const progress = lastIndex === 0 ? 0 : index / lastIndex;
+    const minuteValue = startMinute + (endMinute - startMinute) * progress;
+    return {
+      label: formatChinaMinuteLabel(minuteValue),
+      x: progress,
+    };
+  }).filter((mark, index, marks) => index === 0 || mark.label !== marks[index - 1].label);
+}
+
+function buildDynamicIntradayTimeScale(points, width) {
+  const minuteValues = points
+    .map((point) => getChinaTradingMinute(point?.bucketTs))
+    .filter((value) => typeof value === 'number' && value >= CHINA_TRADING_SESSION.morningOpen && value <= CHINA_TRADING_SESSION.afternoonClose);
+
+  if (!minuteValues.length) {
     return null;
   }
 
-  if (minutes <= morningClose) {
+  const coversMorning = minuteValues.some((value) => value <= CHINA_TRADING_SESSION.morningClose);
+  const coversAfternoon = minuteValues.some((value) => value >= CHINA_TRADING_SESSION.afternoonOpen);
+  if (coversMorning && coversAfternoon) {
+    return null;
+  }
+
+  const segmentStart = coversAfternoon ? CHINA_TRADING_SESSION.afternoonOpen : CHINA_TRADING_SESSION.morningOpen;
+  const segmentEnd = coversAfternoon ? CHINA_TRADING_SESSION.afternoonClose : CHINA_TRADING_SESSION.morningClose;
+  const minMinute = Math.max(Math.min(...minuteValues), segmentStart);
+  const maxMinute = Math.min(Math.max(...minuteValues), segmentEnd);
+  const rawSpan = Math.max(maxMinute - minMinute, 0);
+  const minimumVisibleSpan = rawSpan < 1 ? 2 : Math.min(Math.max(rawSpan * 1.4, 4), segmentEnd - segmentStart);
+  const preferredCenter = (minMinute + maxMinute) / 2;
+  let domainStart = preferredCenter - minimumVisibleSpan / 2;
+  let domainEnd = preferredCenter + minimumVisibleSpan / 2;
+
+  if (domainStart < segmentStart) {
+    domainEnd = Math.min(segmentEnd, domainEnd + (segmentStart - domainStart));
+    domainStart = segmentStart;
+  }
+  if (domainEnd > segmentEnd) {
+    domainStart = Math.max(segmentStart, domainStart - (domainEnd - segmentEnd));
+    domainEnd = segmentEnd;
+  }
+
+  const visibleSpan = Math.max(domainEnd - domainStart, 1);
+  const marks = buildLinearTimeMarks(domainStart, domainEnd).map((mark) => ({
+    label: mark.label,
+    x: mark.x * width,
+  }));
+
+  return {
+    gapStart: null,
+    gapEnd: null,
+    marks,
+    positionToX: (position) => {
+      if (!position || typeof position.minutes !== 'number') {
+        return null;
+      }
+
+      const clampedMinute = Math.min(Math.max(position.minutes, domainStart), domainEnd);
+      return ((clampedMinute - domainStart) / visibleSpan) * width;
+    },
+  };
+}
+
+function getChinaSessionPosition(value) {
+  if (!value) {
+    return null;
+  }
+
+  const minutes = getChinaTradingMinute(value);
+  if (minutes === null) {
+    return null;
+  }
+
+  if (minutes < CHINA_TRADING_SESSION.morningOpen || minutes > CHINA_TRADING_SESSION.afternoonClose) {
+    return null;
+  }
+
+  if (minutes <= CHINA_TRADING_SESSION.morningClose) {
     return {
       segment: 'morning',
-      progress: (minutes - morningOpen) / (morningClose - morningOpen),
+      minutes,
+      progress: (minutes - CHINA_TRADING_SESSION.morningOpen) / (CHINA_TRADING_SESSION.morningClose - CHINA_TRADING_SESSION.morningOpen),
     };
   }
 
-  if (minutes >= afternoonOpen) {
+  if (minutes >= CHINA_TRADING_SESSION.afternoonOpen) {
     return {
       segment: 'afternoon',
-      progress: (minutes - afternoonOpen) / (afternoonClose - afternoonOpen),
+      minutes,
+      progress: (minutes - CHINA_TRADING_SESSION.afternoonOpen) / (CHINA_TRADING_SESSION.afternoonClose - CHINA_TRADING_SESSION.afternoonOpen),
     };
   }
 
   return {
     segment: 'break',
+    minutes,
     progress: 0,
   };
 }
 
-function buildIntradayTimeScale(width, gapWidth = 26) {
+function buildIntradayTimeScale(width, points = [], gapWidth = 26) {
+  const dynamicScale = Array.isArray(points) && points.length ? buildDynamicIntradayTimeScale(points, width) : null;
+  if (dynamicScale) {
+    return dynamicScale;
+  }
+
   const morningWidth = (width - gapWidth) / 2;
   const afternoonStart = morningWidth + gapWidth;
 
@@ -747,7 +856,7 @@ function buildLineChartGeometry(points, width = 860, height = 320, referencePric
   const topPadding = 18;
   const bottomPadding = 26;
   const usableHeight = height - topPadding - bottomPadding;
-  const timeScale = buildIntradayTimeScale(width);
+  const timeScale = buildIntradayTimeScale(width, points);
 
   const scaleY = (value) => topPadding + ((maxValue - value) / range) * usableHeight;
   const fallbackStep = points.length > 1 ? width / (points.length - 1) : 0;
@@ -1502,6 +1611,7 @@ function App() {
     const showingIntraday = detailChartView === 'intraday';
     const activeChartTitle = showingIntraday ? '分时走势' : '日 K 走势';
     const intradayAxisLabels = intradayLineChart?.timeMarks || [];
+    const showIntradayLunchBreak = typeof intradayLineChart?.lunchBreakStartX === 'number' && typeof intradayLineChart?.lunchBreakEndX === 'number';
     const dailyAxisLabels = buildAxisLabels(candleChart?.candles || [], 6, (item) => item?.label || '');
     const recentTicks = sortItemsAscendingByTime(ticks, 'ts').slice(-12).reverse();
     const intradayTone = getLineChartTone(intradayLineChart, snapshot?.lastPrice ?? previousClose ?? null);
@@ -1631,21 +1741,25 @@ function App() {
                           <text x="6" y={intradayLineChart.baselineY - 6} className="chart-axis-label baseline-label">昨收 {formatPrice(intradayLineChart.previousClose)}</text>
                         </g>
                       ) : null}
-                      <rect
-                        x={intradayLineChart.lunchBreakStartX}
-                        y="0"
-                        width={Math.max(intradayLineChart.lunchBreakEndX - intradayLineChart.lunchBreakStartX, 0)}
-                        height={intradayLineChart.height}
-                        className="lunch-break-mask"
-                      />
-                      <text
-                        x={(intradayLineChart.lunchBreakStartX + intradayLineChart.lunchBreakEndX) / 2}
-                        y="18"
-                        textAnchor="middle"
-                        className="chart-axis-label lunch-break-label"
-                      >
-                        午间休市
-                      </text>
+                      {showIntradayLunchBreak ? (
+                        <>
+                          <rect
+                            x={intradayLineChart.lunchBreakStartX}
+                            y="0"
+                            width={Math.max(intradayLineChart.lunchBreakEndX - intradayLineChart.lunchBreakStartX, 0)}
+                            height={intradayLineChart.height}
+                            className="lunch-break-mask"
+                          />
+                          <text
+                            x={(intradayLineChart.lunchBreakStartX + intradayLineChart.lunchBreakEndX) / 2}
+                            y="18"
+                            textAnchor="middle"
+                            className="chart-axis-label lunch-break-label"
+                          >
+                            午间休市
+                          </text>
+                        </>
+                      ) : null}
                       <polygon points={intradayLineChart.area} className="line-chart-area" />
                       {intradayLineChart.averagePolyline ? <polyline points={intradayLineChart.averagePolyline} className="line-chart-average-path" /> : null}
                       <polyline points={intradayLineChart.polyline} className="line-chart-path line-chart-path-glow" />
