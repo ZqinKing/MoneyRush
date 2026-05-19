@@ -485,6 +485,20 @@ function formatSignedPriceDelta(value) {
   return `${sign}${value.toFixed(2)}`;
 }
 
+function findNearestPoint(points, targetX) {
+  if (!Array.isArray(points) || !points.length || typeof targetX !== 'number') {
+    return null;
+  }
+
+  return points.reduce((best, point) => {
+    if (!best) {
+      return point;
+    }
+
+    return Math.abs(point.x - targetX) < Math.abs(best.x - targetX) ? point : best;
+  }, null);
+}
+
 function estimatePreviousClose(snapshot, latestKline, intradaySampledBars) {
   if (typeof snapshot?.lastPrice === 'number' && typeof snapshot?.changePct === 'number' && snapshot.changePct > -100) {
     const divisor = 1 + snapshot.changePct / 100;
@@ -736,6 +750,8 @@ function buildMovingAverageOverlays(bars, candles, scaleY) {
   }).filter((item) => item.points.length >= 2);
 }
 
+const INTRADAY_RIGHT_AXIS_WIDTH = 168;
+
 function buildCandlestickChartGeometry(bars, width = 860, height = 320) {
   if (!Array.isArray(bars) || bars.length === 0) {
     return null;
@@ -835,7 +851,7 @@ function buildVolumeChartGeometry(bars, width = 860, height = 120) {
   return { width, height, items, maxVolume };
 }
 
-function buildLineChartGeometry(points, width = 860, height = 320, referencePrice = null) {
+function buildLineChartGeometry(points, width = 860, height = 320, referencePrice = null, rightAxisWidth = INTRADAY_RIGHT_AXIS_WIDTH) {
   if (!Array.isArray(points) || points.length === 0) {
     return null;
   }
@@ -875,19 +891,20 @@ function buildLineChartGeometry(points, width = 860, height = 320, referencePric
   const topPadding = 18;
   const bottomPadding = 26;
   const usableHeight = height - topPadding - bottomPadding;
-  const timeScale = buildIntradayTimeScale(width, points);
+  const plotWidth = Math.max(width - rightAxisWidth, 1);
+  const timeScale = buildIntradayTimeScale(plotWidth, points);
 
   const scaleY = (value) => topPadding + ((maxValue - value) / range) * usableHeight;
-  const fallbackStep = points.length > 1 ? width / (points.length - 1) : 0;
+  const fallbackStep = points.length > 1 ? plotWidth / (points.length - 1) : 0;
   const minimumStep = fallbackStep > 0 ? Math.min(fallbackStep * 0.12, 0.9) : 0.6;
   let previousX = null;
 
   const chartPoints = points.map((point, index) => {
     const mappedX = timeScale.positionToX(getChinaSessionPosition(point.bucketTs));
-    const fallbackX = points.length > 1 ? fallbackStep * index : width / 2;
+    const fallbackX = points.length > 1 ? fallbackStep * index : plotWidth / 2;
     const rawX = mappedX ?? fallbackX;
     const x = previousX !== null && rawX <= previousX
-      ? Math.min(previousX + minimumStep, width)
+      ? Math.min(previousX + minimumStep, plotWidth)
       : rawX;
 
     previousX = x;
@@ -895,6 +912,7 @@ function buildLineChartGeometry(points, width = 860, height = 320, referencePric
     return {
       x,
       y: scaleY(point.close),
+      bucketTs: point.bucketTs,
       label: formatTime(point.bucketTs),
       close: point.close,
       volume: point.volume,
@@ -903,7 +921,7 @@ function buildLineChartGeometry(points, width = 860, height = 320, referencePric
   });
 
   const polyline = chartPoints.map((point) => `${point.x},${point.y}`).join(' ');
-  const area = `0,${height - bottomPadding} ${polyline} ${width},${height - bottomPadding}`;
+  const area = `0,${height - bottomPadding} ${polyline} ${plotWidth},${height - bottomPadding}`;
   let cumulativeAmount = 0;
   let cumulativeVolume = 0;
   const averagePoints = chartPoints
@@ -941,6 +959,13 @@ function buildLineChartGeometry(points, width = 860, height = 320, referencePric
   return {
     width,
     height,
+    plotWidth,
+    rightAxisWidth,
+    rightAxisLabelX: {
+      price: width - 8,
+      delta: width - 60,
+      percent: width - 112,
+    },
     chartPoints,
     averagePolyline: averagePoints,
     polyline,
@@ -991,13 +1016,20 @@ function buildEmptyIntradayChartGeometry(referencePrice, width = 860, height = 3
   const topPadding = 18;
   const bottomPadding = 26;
   const usableHeight = height - topPadding - bottomPadding;
-  const timeScale = buildIntradayTimeScale(width);
+  const plotWidth = Math.max(width - INTRADAY_RIGHT_AXIS_WIDTH, 1);
+  const timeScale = buildIntradayTimeScale(plotWidth);
 
   const scaleY = (value) => topPadding + ((maxValue - value) / (maxValue - minValue || 1)) * usableHeight;
 
   return {
     width,
     height,
+    plotWidth,
+    rightAxisWidth: INTRADAY_RIGHT_AXIS_WIDTH,
+    rightAxisLabelX: {
+      price: width - 8,
+      percent: width - 112,
+    },
     ticks: [maxValue, midValue, minValue].map((value) => ({
       value,
       y: scaleY(value),
@@ -1026,6 +1058,7 @@ function App() {
   const [snapshotDetails, setSnapshotDetails] = useState({});
   const [detailRequestState, setDetailRequestState] = useState('idle');
   const [detailChartView, setDetailChartView] = useState('intraday');
+  const [intradayHoverPoint, setIntradayHoverPoint] = useState(null);
   const [contentType, setContentType] = useState('all');
   const [contentTimeRange, setContentTimeRange] = useState('today');
   const [contentSymbolFilter, setContentSymbolFilter] = useState('');
@@ -1258,6 +1291,10 @@ function App() {
       window.clearInterval(intervalId);
     };
   }, [apiBaseUrl, selectedSnapshotSymbol, selectedSnapshotTradeDay]);
+
+  useEffect(() => {
+    setIntradayHoverPoint(null);
+  }, [selectedSnapshotSymbol, detailChartView]);
 
   function removeSymbolFromState(symbolToRemove) {
     setActiveSymbols((current) => current.filter((item) => item !== symbolToRemove));
@@ -1681,6 +1718,32 @@ function App() {
         : intradayDataMode === 'tick'
           ? 'Tick 回退'
           : '暂无数据';
+    const intradayHoverSummary = showingIntraday && intradayLineChart && intradayHoverPoint
+      ? {
+          time: formatTime(intradayHoverPoint.bucketTs),
+          price: formatPrice(intradayHoverPoint.close),
+          delta: typeof intradayLineChart.previousClose === 'number' ? intradayHoverPoint.close - intradayLineChart.previousClose : null,
+          percent: typeof intradayLineChart.previousClose === 'number' && intradayLineChart.previousClose !== 0
+            ? ((intradayHoverPoint.close - intradayLineChart.previousClose) / intradayLineChart.previousClose) * 100
+            : null,
+        }
+      : null;
+    const handleIntradayHoverMove = (event) => {
+      if (!intradayLineChart) {
+        return;
+      }
+
+      const rect = event.currentTarget.getBoundingClientRect();
+      if (!rect.width || !rect.height) {
+        return;
+      }
+
+      const localX = event.clientX - rect.left;
+      const clampedPlotPx = Math.max(0, Math.min(localX, rect.width));
+      const svgX = (clampedPlotPx / rect.width) * intradayLineChart.plotWidth;
+      setIntradayHoverPoint(findNearestPoint(intradayLineChart.chartPoints, svgX));
+    };
+    const handleIntradayHoverLeave = () => setIntradayHoverPoint(null);
 
     return (
       <div className="detail-layout">
@@ -1717,11 +1780,38 @@ function App() {
                 </p>
               </div>
               <div className="chart-summary-badge">
-                <span className="chart-summary-label">最新价</span>
-                <strong className="chart-summary-price">{formatPrice(snapshot?.lastPrice)}</strong>
-                <span className={`chart-summary-change ${snapshot?.changePct > 0 ? 'positive' : snapshot?.changePct < 0 ? 'negative' : ''}`}>
-                  {formatSignedPercent(snapshot?.changePct)}
-                </span>
+                {showingIntraday ? (
+                  intradayHoverSummary ? (
+                    <div className="chart-summary-hover-state">
+                      <span className="chart-summary-label chart-summary-time">{intradayHoverSummary.time}</span>
+                      <strong className="chart-summary-price">{intradayHoverSummary.price}</strong>
+                      <div className="chart-summary-hover-metrics">
+                        <span className={`chart-summary-change ${intradayHoverSummary.delta > 0 ? 'positive' : intradayHoverSummary.delta < 0 ? 'negative' : ''}`}>
+                          {formatSignedPriceDelta(intradayHoverSummary.delta)}
+                        </span>
+                        <span className={`chart-summary-change ${intradayHoverSummary.percent > 0 ? 'positive' : intradayHoverSummary.percent < 0 ? 'negative' : ''}`}>
+                          {formatSignedPercent(intradayHoverSummary.percent)}
+                        </span>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <span className="chart-summary-label">最新价</span>
+                      <strong className="chart-summary-price">{formatPrice(snapshot?.lastPrice)}</strong>
+                      <span className={`chart-summary-change ${snapshot?.changePct > 0 ? 'positive' : snapshot?.changePct < 0 ? 'negative' : ''}`}>
+                        {formatSignedPercent(snapshot?.changePct)}
+                      </span>
+                    </>
+                  )
+                ) : (
+                  <>
+                    <span className="chart-summary-label">最新价</span>
+                    <strong className="chart-summary-price">{formatPrice(snapshot?.lastPrice)}</strong>
+                    <span className={`chart-summary-change ${snapshot?.changePct > 0 ? 'positive' : snapshot?.changePct < 0 ? 'negative' : ''}`}>
+                      {formatSignedPercent(snapshot?.changePct)}
+                    </span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -1753,7 +1843,19 @@ function App() {
                       </h4>
                       <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · {intradayDataModeLabel} · 白线价格 / 黄线均价</span>
                     </div>
-                    <svg className={`kline-chart line-chart-surface ${intradayTone}-tone`} viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`} role="img" aria-label="分时采样走势">
+                    <div
+                      className="chart-interaction-layer"
+                      onMouseMove={handleIntradayHoverMove}
+                      onMouseLeave={handleIntradayHoverLeave}
+                      onPointerMove={handleIntradayHoverMove}
+                      onPointerLeave={handleIntradayHoverLeave}
+                    >
+                    <svg
+                      className={`kline-chart line-chart-surface ${intradayTone}-tone`}
+                      viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`}
+                      role="img"
+                      aria-label="分时采样走势"
+                    >
                       <defs>
                         <linearGradient id="intradayAreaGradient" x1="0" y1="0" x2="0" y2="1">
                           <stop offset="0%" className="line-chart-area-stop start" />
@@ -1773,21 +1875,22 @@ function App() {
                       </defs>
                       {intradayLineChart.ticks.map((tick) => (
                         <g key={`${tick.value}`}>
-                          <line x1="0" x2={intradayLineChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
-                          <text x={intradayLineChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label chart-axis-price-label">
+                          <line x1="0" x2={intradayLineChart.plotWidth} y1={tick.y} y2={tick.y} className="chart-grid-line" />
+                          <text x={intradayLineChart.rightAxisLabelX.price} y={tick.y - 4} textAnchor="end" className="chart-axis-label chart-axis-price-label">
                             {tick.value.toFixed(2)}
                           </text>
-                          <text x={intradayLineChart.width - 72} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.delta > 0 ? 'axis-positive' : tick.delta < 0 ? 'axis-negative' : ''}`}>
+                          <text x={intradayLineChart.rightAxisLabelX.delta} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.delta > 0 ? 'axis-positive' : tick.delta < 0 ? 'axis-negative' : ''}`}>
                             {formatSignedPriceDelta(tick.delta)}
                           </text>
-                          <text x={intradayLineChart.width - 136} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.percent > 0 ? 'axis-positive' : tick.percent < 0 ? 'axis-negative' : ''}`}>
+                          <text x={intradayLineChart.rightAxisLabelX.percent} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.percent > 0 ? 'axis-positive' : tick.percent < 0 ? 'axis-negative' : ''}`}>
                             {formatSignedAxisPercent(tick.percent)}
                           </text>
                         </g>
                       ))}
+                      <line x1={intradayLineChart.plotWidth} x2={intradayLineChart.plotWidth} y1="0" y2={intradayLineChart.height} className="chart-axis-divider" />
                       {intradayLineChart.baselineY !== null ? (
                         <g>
-                          <line x1="0" x2={intradayLineChart.width} y1={intradayLineChart.baselineY} y2={intradayLineChart.baselineY} className="empty-chart-guide" />
+                          <line x1="0" x2={intradayLineChart.plotWidth} y1={intradayLineChart.baselineY} y2={intradayLineChart.baselineY} className="empty-chart-guide" />
                           <text x="6" y={intradayLineChart.baselineY - 6} className="chart-axis-label baseline-label">昨收 {formatPrice(intradayLineChart.previousClose)}</text>
                         </g>
                       ) : null}
@@ -1815,12 +1918,12 @@ function App() {
                       <polyline points={intradayLineChart.polyline} className="line-chart-path line-chart-path-glow" />
                       <polyline points={intradayLineChart.polyline} className="line-chart-path" />
                       {intradayLineChart.highPoint ? (
-                        <text x={Math.min(intradayLineChart.highPoint.x + 8, intradayLineChart.width - 70)} y={Math.max(intradayLineChart.highPoint.y - 10, 18)} className="chart-extrema-label">
+                        <text x={Math.min(intradayLineChart.highPoint.x + 8, intradayLineChart.plotWidth - 70)} y={Math.max(intradayLineChart.highPoint.y - 10, 18)} className="chart-extrema-label">
                           高 {formatPrice(intradayLineChart.highPoint.close)}
                         </text>
                       ) : null}
                       {intradayLineChart.lowPoint ? (
-                        <text x={Math.min(intradayLineChart.lowPoint.x + 8, intradayLineChart.width - 70)} y={Math.min(intradayLineChart.lowPoint.y + 18, intradayLineChart.height - 10)} className="chart-extrema-label">
+                        <text x={Math.min(intradayLineChart.lowPoint.x + 8, intradayLineChart.plotWidth - 70)} y={Math.min(intradayLineChart.lowPoint.y + 18, intradayLineChart.height - 10)} className="chart-extrema-label">
                           低 {formatPrice(intradayLineChart.lowPoint.close)}
                         </text>
                       ) : null}
@@ -1828,27 +1931,17 @@ function App() {
                         <g>
                           <line
                             x1="0"
-                            x2={intradayLineChart.width}
+                            x2={intradayLineChart.plotWidth}
                             y1={intradayLineChart.latestPoint.y}
                             y2={intradayLineChart.latestPoint.y}
                             className="current-price-guide"
                           />
-                          <rect
-                            x={intradayLineChart.width - 82}
-                            y={Math.max(intradayLineChart.latestPoint.y - 13, 4)}
-                            width="76"
-                            height="22"
-                            rx="10"
-                            className="current-price-badge"
-                          />
-                          <text
-                            x={intradayLineChart.width - 44}
-                            y={Math.max(intradayLineChart.latestPoint.y + 2, 18)}
-                            textAnchor="middle"
-                            className="current-price-badge-text"
-                          >
-                            {formatPrice(intradayLineChart.latestPoint.close)}
-                          </text>
+                        </g>
+                      ) : null}
+                      {intradayHoverSummary ? (
+                        <g>
+                          <line x1={intradayHoverPoint.x} x2={intradayHoverPoint.x} y1="0" y2={intradayLineChart.height} className="chart-hover-crosshair" />
+                          <circle cx={intradayHoverPoint.x} cy={intradayHoverPoint.y} r="4.6" className="chart-hover-point" />
                         </g>
                       ) : null}
                       {intradayLineChart.chartPoints.length ? (
@@ -1860,7 +1953,12 @@ function App() {
                         />
                       ) : null}
                     </svg>
-                    <div className="chart-axis-row">
+                      <div
+                        className="chart-hover-overlay"
+                        style={{ width: `${(intradayLineChart.plotWidth / intradayLineChart.width) * 100}%` }}
+                      />
+                    </div>
+                    <div className="chart-axis-row intraday-axis-row" style={{ width: `${(intradayLineChart.plotWidth / intradayLineChart.width) * 100}%` }}>
                       {intradayAxisLabels.map((item) => <span key={item.label}>{item.label}</span>)}
                     </div>
                     <div className="intraday-legend-row">
@@ -1884,15 +1982,16 @@ function App() {
                     <svg className="kline-chart empty-chart" viewBox={`0 0 ${emptyIntradayChart.width} ${emptyIntradayChart.height}`} role="img" aria-label="空白分时走势骨架">
                       {emptyIntradayChart.ticks.map((tick) => (
                         <g key={`${tick.value}-${tick.y}`}>
-                          <line x1="0" x2={emptyIntradayChart.width} y1={tick.y} y2={tick.y} className="chart-grid-line" />
-                          <text x={emptyIntradayChart.width - 6} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
+                          <line x1="0" x2={emptyIntradayChart.plotWidth} y1={tick.y} y2={tick.y} className="chart-grid-line" />
+                          <text x={emptyIntradayChart.rightAxisLabelX.price} y={tick.y - 4} textAnchor="end" className="chart-axis-label">
                             {tick.label}
                           </text>
-                          <text x={emptyIntradayChart.width - 64} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.percent > 0 ? 'axis-positive' : tick.percent < 0 ? 'axis-negative' : ''}`}>
+                          <text x={emptyIntradayChart.rightAxisLabelX.percent} y={tick.y - 4} textAnchor="end" className={`chart-axis-label ${tick.percent > 0 ? 'axis-positive' : tick.percent < 0 ? 'axis-negative' : ''}`}>
                             {formatSignedAxisPercent(tick.percent)}
                           </text>
                         </g>
                       ))}
+                      <line x1={emptyIntradayChart.plotWidth} x2={emptyIntradayChart.plotWidth} y1="0" y2={emptyIntradayChart.height} className="chart-axis-divider" />
                       <rect
                         x={emptyIntradayChart.lunchBreakStartX}
                         y="0"
@@ -1900,9 +1999,9 @@ function App() {
                         height={emptyIntradayChart.height}
                         className="lunch-break-mask"
                       />
-                      <line x1="0" x2={emptyIntradayChart.width} y1={emptyIntradayChart.guideY} y2={emptyIntradayChart.guideY} className="empty-chart-guide" />
+                      <line x1="0" x2={emptyIntradayChart.plotWidth} y1={emptyIntradayChart.guideY} y2={emptyIntradayChart.guideY} className="empty-chart-guide" />
                     </svg>
-                    <div className="chart-axis-row">
+                    <div className="chart-axis-row intraday-axis-row" style={{ width: `${(emptyIntradayChart.plotWidth / emptyIntradayChart.width) * 100}%` }}>
                       {emptyIntradayChart.timeMarks.map((item) => <span key={item.label}>{item.label}</span>)}
                     </div>
                     <p className="panel-tip compact">数据库中还没有可聚合的历史分时采样点。</p>

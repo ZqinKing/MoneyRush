@@ -843,6 +843,24 @@ input {
   line-height: 1;
 }
 
+.chart-summary-hover-state {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+
+.chart-summary-time {
+  font-size: 0.82rem;
+  letter-spacing: 0.04em;
+  color: #bdd0ff;
+}
+
+.chart-summary-hover-metrics {
+  display: inline-flex;
+  gap: 10px;
+  align-items: center;
+}
+
 .chart-stack {
   display: grid;
   gap: 10px;
@@ -858,6 +876,18 @@ input {
 .chart-section {
   display: grid;
   gap: 10px;
+}
+
+.chart-interaction-layer {
+  position: relative;
+}
+
+.chart-hover-overlay {
+  position: absolute;
+  inset: 0 auto 0 0;
+  height: 100%;
+  cursor: crosshair;
+  z-index: 2;
 }
 
 .chart-section-heading {
@@ -961,6 +991,20 @@ input {
   font-weight: 600;
 }
 
+.chart-hover-crosshair {
+  stroke: rgba(239, 244, 255, 0.34);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+  vector-effect: non-scaling-stroke;
+}
+
+.chart-hover-point {
+  fill: #f8fbff;
+  stroke: rgba(255, 209, 102, 0.95);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
 .axis-positive {
   fill: #ff8a8a;
 }
@@ -1057,18 +1101,6 @@ input {
   stroke-dasharray: 4 4;
 }
 
-.current-price-badge {
-  fill: rgba(4, 8, 16, 0.92);
-  stroke: rgba(129, 164, 255, 0.28);
-  stroke-width: 1;
-}
-
-.current-price-badge-text {
-  fill: #eff4ff;
-  font-size: 11px;
-  font-weight: 700;
-}
-
 .ma-line {
   fill: none;
   stroke-width: 1.8;
@@ -1154,6 +1186,15 @@ input {
   color: #8fa6d8;
   font-size: 0.78rem;
   padding: 0 4px;
+}
+
+.intraday-axis-row {
+  max-width: 100%;
+}
+
+.chart-axis-divider {
+  stroke: rgba(157, 180, 255, 0.14);
+  stroke-width: 1;
 }
 
 .intraday-legend-row {
