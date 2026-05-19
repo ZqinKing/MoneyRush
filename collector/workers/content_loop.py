@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from html import unescape
 from datetime import UTC, datetime, timedelta
 
 from redis.asyncio import Redis
@@ -11,6 +13,14 @@ from collector.services.persistence import PostgresStore
 
 
 logger = logging.getLogger(__name__)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _sanitize_news_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = _TAG_RE.sub("", unescape(str(value))).replace("\xa0", " ").strip()
+    return text or None
 
 
 class ContentCollectorWorker:
@@ -189,9 +199,9 @@ class ContentCollectorWorker:
                     {
                         "symbol": item.get("symbol"),
                         "scope": item["scope"],
-                        "title": item["title"],
-                        "summary": item.get("summary"),
-                        "content": item.get("content"),
+                        "title": _sanitize_news_text(item["title"]) or item["title"],
+                        "summary": _sanitize_news_text(item.get("summary")),
+                        "content": _sanitize_news_text(item.get("content")),
                         "article_source": item.get("articleSource"),
                         "published_at": item.get("publishedAt"),
                         "first_seen_at": item["firstSeenAt"],
