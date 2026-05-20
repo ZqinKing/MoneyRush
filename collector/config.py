@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     collector_vendor_price_divergence_limit_pct: float = 15.0
     content_collector_enabled: bool = True
     content_collector_poll_interval_seconds: int = 5
+    content_collector_batch_size: int = 3
     content_fetch_min_interval_seconds: int = 10
     content_fetch_jitter_seconds: int = 2
     content_fetch_cooldown_base_seconds: int = 1800
@@ -38,6 +39,20 @@ class Settings(BaseSettings):
     content_report_backfill_days: int = 365
     content_announcement_backfill_pages: int = 5
     content_news_backfill_max_items: int = 100
+    content_news_detail_fetch_max_items: int = 5
+    content_news_detail_fetch_max_age_seconds: int = 1800
+    content_ai_summary_enabled: bool = False
+    content_ai_summary_base_url: str | None = None
+    content_ai_summary_api_key: str | None = None
+    content_ai_summary_model: str | None = None
+    content_ai_summary_timeout_seconds: int = 45
+    content_ai_summary_max_retries: int = 2
+    content_ai_summary_temperature: float = 0.0
+    content_ai_summary_max_completion_tokens: int = 8192
+    content_ai_summary_max_input_chars: int = 131072
+    content_ai_summary_min_content_length: int = 180
+    content_ai_summary_max_news_age_seconds: int = 1800
+    content_ai_summary_prompt_version: str = "v1"
 
 
 @lru_cache(maxsize=1)

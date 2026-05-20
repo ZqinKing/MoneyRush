@@ -1524,7 +1524,7 @@ function App() {
             <span>{formatDateTime(item.publishedAt || item.firstSeenAt)}</span>
           </div>
         </header>
-        <p className="content-card-summary">{item.summary || '当前仅同步到标题与基础元信息。'}</p>
+        <p className="content-card-summary">{item.aiSummary || item.summary || '当前仅同步到标题与基础元信息。'}</p>
         <div className="content-card-footer">
           <span className="content-source">{item.provider || '--'} · {item.source || '--'}</span>
           {item.url ? (

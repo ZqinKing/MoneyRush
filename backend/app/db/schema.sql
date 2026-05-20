@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS stock_news_item (
     first_seen_at TIMESTAMPTZ NOT NULL,
     last_seen_at TIMESTAMPTZ NOT NULL,
     source_url TEXT,
+    ai_summary TEXT,
     provider TEXT NOT NULL DEFAULT 'akshare',
     upstream_source TEXT NOT NULL,
     dedupe_key TEXT NOT NULL UNIQUE,

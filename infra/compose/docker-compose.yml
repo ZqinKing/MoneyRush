@@ -85,6 +85,9 @@ services:
       context: ../..
       dockerfile: infra/docker/collector.Dockerfile
     command: ["python", "-m", "collector.content_main"]
+    env_file:
+      - path: ../../.env
+        required: false
     environment:
       REDIS_URL: redis://redis:6379/0
       POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}

@@ -132,6 +132,7 @@ class PostgresStore:
                     first_seen_at TIMESTAMPTZ NOT NULL,
                     last_seen_at TIMESTAMPTZ NOT NULL,
                     source_url TEXT,
+                    ai_summary TEXT,
                     provider TEXT NOT NULL DEFAULT 'akshare',
                     upstream_source TEXT NOT NULL,
                     dedupe_key TEXT NOT NULL UNIQUE,
@@ -147,6 +148,9 @@ class PostgresStore:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS stock_news_item_symbol_first_seen_idx ON stock_news_item (symbol, first_seen_at DESC)"
+            )
+            await connection.execute(
+                "ALTER TABLE stock_news_item ADD COLUMN IF NOT EXISTS ai_summary TEXT"
             )
             await connection.execute(
                 """
@@ -869,6 +873,7 @@ class PostgresStore:
                 _coerce_utc_datetime(item["first_seen_at"], field_name="news.first_seen_at"),
                 _coerce_utc_datetime(item["last_seen_at"], field_name="news.last_seen_at"),
                 item.get("source_url"),
+                item.get("ai_summary"),
                 item.get("provider", "akshare"),
                 item["upstream_source"],
                 item["dedupe_key"],
@@ -891,12 +896,13 @@ class PostgresStore:
                     first_seen_at,
                     last_seen_at,
                     source_url,
+                    ai_summary,
                     provider,
                     upstream_source,
                     dedupe_key,
                     raw_payload
                 ) VALUES (
-                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb
                 )
                 ON CONFLICT (dedupe_key) DO UPDATE SET
                     title = EXCLUDED.title,
@@ -906,12 +912,56 @@ class PostgresStore:
                     published_at = EXCLUDED.published_at,
                     last_seen_at = EXCLUDED.last_seen_at,
                     source_url = EXCLUDED.source_url,
+                    ai_summary = COALESCE(EXCLUDED.ai_summary, stock_news_item.ai_summary),
                     provider = EXCLUDED.provider,
                     upstream_source = EXCLUDED.upstream_source,
                     raw_payload = EXCLUDED.raw_payload
                 """,
                 rows,
             )
+
+    async def update_news_ai_summaries(self, items: list[dict[str, str]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return
+
+        rows = [
+            (
+                item["dedupe_key"],
+                item["ai_summary"],
+            )
+            for item in items
+        ]
+
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                UPDATE stock_news_item
+                SET ai_summary = $2
+                WHERE dedupe_key = $1
+                  AND ai_summary IS DISTINCT FROM $2
+                """,
+                rows,
+            )
+
+    async def fetch_news_ai_summary_state(self, dedupe_keys: list[str]) -> dict[str, str | None]:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not dedupe_keys:
+            return {}
+
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT dedupe_key, ai_summary
+                FROM stock_news_item
+                WHERE dedupe_key = ANY($1::text[])
+                """,
+                dedupe_keys,
+            )
+
+        return {str(row["dedupe_key"]): row["ai_summary"] for row in rows}
 
     async def upsert_announcement_items(self, items: list[dict[str, object]]) -> None:
         if self._pool is None:
