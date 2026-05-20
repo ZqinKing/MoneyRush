@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import random
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import akshare as ak
 import requests
+from bs4 import BeautifulSoup
 
 from collector.services.tencent_quote_client import TencentQuoteClient
 
@@ -24,6 +26,11 @@ SYMBOL_NEWS_HEADERS = {
     "Accept": "*/*",
     "Referer": "https://so.eastmoney.com/news/",
 }
+SYMBOL_NEWS_ARTICLE_HEADERS = {
+    **SYMBOL_NEWS_HEADERS,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
+_ARTICLE_BODY_TAG_IDS_RE = re.compile(r"^(stock|quote|bk|bkquote)_")
 
 
 class UpstreamContentFetchError(RuntimeError):
@@ -35,6 +42,16 @@ def _safe_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _clean_article_paragraph_text(paragraph) -> str | None:
+    for tag in paragraph.select("script, style, .em_media"):
+        tag.decompose()
+    for tag in paragraph.find_all(attrs={"id": _ARTICLE_BODY_TAG_IDS_RE}):
+        tag.unwrap()
+    for tag in paragraph.find_all(attrs={"class": "em_stock_key_common"}):
+        tag.unwrap()
+    return _safe_text(paragraph.get_text(" ", strip=True).replace("\xa0", " "))
 
 
 def _safe_datetime(value: object, *, anchor: datetime | None = None) -> datetime | None:
@@ -199,7 +216,8 @@ class AkshareContentClient:
                     "scope": "symbol",
                     "title": title,
                     "summary": _safe_text(row.get("新闻内容") or row.get("摘要")),
-                    "content": _safe_text(row.get("新闻内容") or row.get("内容")),
+                    "content": _safe_text(row.get("内容")),
+                    "aiSummary": None,
                     "articleSource": _safe_text(row.get("文章来源") or row.get("新闻来源") or row.get("来源")),
                     "publishedAt": published_at or fetched_at,
                     "firstSeenAt": fetched_at,
@@ -213,7 +231,64 @@ class AkshareContentClient:
             )
 
         max_items = max(self._settings.content_news_backfill_max_items, 1)
-        return FetchResult(items=items[:max_items], upstream_source="eastmoney", fetched_at=fetched_at)
+        items = items[:max_items]
+        detail_fetch_max_items = max(getattr(self._settings, "content_news_detail_fetch_max_items", 0), 0)
+        detail_fetch_max_age_seconds = max(getattr(self._settings, "content_news_detail_fetch_max_age_seconds", 0), 0)
+        detail_fetch_count = 0
+        for item in items:
+            if item.get("content"):
+                continue
+            published_at = item.get("publishedAt")
+            if not isinstance(published_at, datetime):
+                continue
+            if detail_fetch_max_items and detail_fetch_count >= detail_fetch_max_items:
+                continue
+            if detail_fetch_max_age_seconds and (fetched_at - published_at).total_seconds() > detail_fetch_max_age_seconds:
+                continue
+            source_url = _safe_text(item.get("sourceUrl"))
+            if not source_url:
+                continue
+            try:
+                detail_content = self._fetch_eastmoney_article_content(source_url)
+            except Exception as exc:
+                logger.warning("eastmoney article detail fetch failed", extra={"symbol": symbol, "url": source_url, "error": str(exc)})
+                continue
+            if detail_content:
+                item["content"] = detail_content
+                raw_payload = item.get("rawPayload")
+                if isinstance(raw_payload, dict):
+                    raw_payload["内容"] = detail_content
+                detail_fetch_count += 1
+
+        return FetchResult(items=items, upstream_source="eastmoney", fetched_at=fetched_at)
+
+    def _fetch_eastmoney_article_content(self, source_url: str) -> str | None:
+        self._sleep_for_rate_limit()
+        response = requests.get(
+            source_url,
+            headers=SYMBOL_NEWS_ARTICLE_HEADERS,
+            timeout=20,
+        )
+        response.raise_for_status()
+        response.encoding = response.encoding or response.apparent_encoding or "utf-8"
+        soup = BeautifulSoup(response.text, "html.parser")
+        body = soup.select_one("#ContentBody")
+        if body is None:
+            raise UpstreamContentFetchError(f"missing ContentBody for article {source_url}")
+
+        paragraphs: list[str] = []
+        for paragraph in body.select("p"):
+            text = _clean_article_paragraph_text(paragraph)
+            if not text:
+                continue
+            if text.startswith("（文章来源："):
+                continue
+            paragraphs.append(text)
+
+        if not paragraphs:
+            text = _safe_text(body.get_text("\n", strip=True))
+            return text
+        return "\n\n".join(paragraphs)
 
     def _fetch_symbol_news_records(self, keyword: str) -> list[dict[str, object]]:
         self._sleep_for_rate_limit()
