@@ -10,6 +10,7 @@ from app.services.normalize.market_payloads import normalize_symbol_input
 
 router = APIRouter(prefix="/content", tags=["content"])
 CHINA_TZ = timezone(timedelta(hours=8))
+CONTENT_ITEMS_CACHE_VERSION = "v5"
 
 
 def _normalize_optional_symbol(symbol: str | None) -> str | None:
@@ -97,7 +98,16 @@ async def content_items(
     query_service = request.app.state.content_query_service
     settings = request.app.state.settings
 
-    cache_key = _cache_key("items", normalized_symbol, normalized_type, normalized_scope, normalized_time_range, validated_limit, before)
+    cache_key = _cache_key(
+        "items",
+        CONTENT_ITEMS_CACHE_VERSION,
+        normalized_symbol,
+        normalized_type,
+        normalized_scope,
+        normalized_time_range,
+        validated_limit,
+        before,
+    )
     cached = await redis_store.get_content_feed_cache(cache_key)
     if cached is not None:
         return cached

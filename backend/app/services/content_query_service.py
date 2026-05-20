@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import UTC, datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -115,6 +116,46 @@ def _strip_summary_title_prefix(*, title: object, summary: object) -> str | None
     return normalized_summary
 
 
+def _normalize_news_text_for_comparison(*, title: object, value: object) -> str | None:
+    normalized = _strip_summary_title_prefix(title=title, summary=value)
+    if not normalized:
+        return None
+    normalized = re.sub(r"</?em>", "", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized or None
+
+
+def _collapse_duplicate_news_content(
+    *,
+    title: object,
+    summary: object,
+    content: object,
+    raw_payload: object,
+    provider: object,
+    upstream_source: object,
+    scope: object,
+) -> str | None:
+    payload = _decode_jsonish(raw_payload) or {}
+    if provider == "akshare" and upstream_source == "eastmoney" and scope == "symbol":
+        search_snippet = _safe_text(payload.get("新闻内容"))
+        upstream_full_content = _safe_text(payload.get("内容"))
+        if search_snippet and not upstream_full_content:
+            return None
+
+    normalized_content = _strip_summary_title_prefix(title=title, summary=content)
+    if not normalized_content:
+        return None
+
+    normalized_summary = _normalize_news_text_for_comparison(title=title, value=summary)
+    comparable_content = _normalize_news_text_for_comparison(title=title, value=normalized_content)
+    if normalized_summary == normalized_content:
+        return None
+    if normalized_summary == comparable_content:
+        return None
+
+    return normalized_content
+
+
 def _public_lane_error(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -144,6 +185,93 @@ class ContentQueryService:
     async def connect(self) -> None:
         if self._pool is None:
             self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
+            await self._ensure_runtime_schema_compatibility()
+
+    async def _ensure_runtime_schema_compatibility(self) -> None:
+        if self._pool is None:
+            raise RuntimeError("ContentQueryService must be connected before schema compatibility checks")
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_research_report (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    rating TEXT,
+                    institution TEXT,
+                    analyst TEXT,
+                    industry TEXT,
+                    published_at TIMESTAMPTZ,
+                    first_seen_at TIMESTAMPTZ NOT NULL,
+                    last_seen_at TIMESTAMPTZ NOT NULL,
+                    source_url TEXT,
+                    provider TEXT NOT NULL DEFAULT 'akshare',
+                    upstream_source TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+                """
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_news_item (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol TEXT,
+                    scope TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT,
+                    content TEXT,
+                    article_source TEXT,
+                    published_at TIMESTAMPTZ,
+                    first_seen_at TIMESTAMPTZ NOT NULL,
+                    last_seen_at TIMESTAMPTZ NOT NULL,
+                    source_url TEXT,
+                    ai_summary TEXT,
+                    provider TEXT NOT NULL DEFAULT 'akshare',
+                    upstream_source TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+                """
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS stock_announcement_item (
+                    id BIGSERIAL PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    announcement_type TEXT,
+                    published_at TIMESTAMPTZ,
+                    first_seen_at TIMESTAMPTZ NOT NULL,
+                    last_seen_at TIMESTAMPTZ NOT NULL,
+                    pdf_url TEXT,
+                    provider TEXT NOT NULL DEFAULT 'akshare',
+                    upstream_source TEXT NOT NULL,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+                """
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS content_fetch_checkpoint (
+                    lane TEXT NOT NULL,
+                    symbol TEXT NOT NULL DEFAULT '',
+                    cursor JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    next_due_at TIMESTAMPTZ NOT NULL,
+                    cooldown_until TIMESTAMPTZ,
+                    last_success_at TIMESTAMPTZ,
+                    last_attempt_at TIMESTAMPTZ,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT,
+                    PRIMARY KEY (lane, symbol)
+                )
+                """
+            )
+            await connection.execute(
+                "ALTER TABLE stock_news_item ADD COLUMN IF NOT EXISTS ai_summary TEXT"
+            )
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -269,7 +397,7 @@ class ContentQueryService:
         rows = await self._fetch(
             """
             SELECT id, symbol, scope, title, summary, content, article_source, published_at, first_seen_at, last_seen_at,
-                   source_url, provider, upstream_source, raw_payload
+                   source_url, ai_summary, provider, upstream_source, raw_payload
             FROM stock_news_item
             WHERE ($1::text IS NULL OR symbol = $1)
               AND ($2::text IS NULL OR scope = $2)
@@ -284,34 +412,54 @@ class ContentQueryService:
             published_after,
             limit,
         )
-        return [
-            {
-                "id": row["id"],
-                "symbol": row["symbol"],
-                "type": "news",
-                "scope": row["scope"],
-                "title": row["title"],
-                "summary": _strip_summary_title_prefix(title=row["title"], summary=row["summary"] or row["content"]),
-                "source": row["upstream_source"],
-                "provider": row["provider"],
-                "publishedAt": _resolve_news_published_at(
-                    published_at=row["published_at"],
-                    raw_payload=row["raw_payload"],
-                    provider=row["provider"],
-                    upstream_source=row["upstream_source"],
-                ),
-                "firstSeenAt": _to_iso(row["first_seen_at"]),
-                "lastSeenAt": _to_iso(row["last_seen_at"]),
-                "url": _sanitize_public_url(row["source_url"]),
-                "stale": bool(self._lookup_item_health(health_map, "market-news" if row["scope"] == "market" else "symbol-news", None if row["scope"] == "market" else row["symbol"]).get("isStale", False)),
-                "details": {
-                    "articleSource": row["article_source"],
-                    "content": row["content"],
-                    "rawPayload": _decode_jsonish(row["raw_payload"]) or {},
-                },
-            }
-            for row in rows
-        ]
+        items: list[dict[str, object]] = []
+        for row in rows:
+            raw_payload = _decode_jsonish(row["raw_payload"]) or {}
+            summary = _strip_summary_title_prefix(title=row["title"], summary=row["summary"] or row["content"])
+            details_content = _collapse_duplicate_news_content(
+                title=row["title"],
+                summary=summary,
+                content=row["content"],
+                raw_payload=raw_payload,
+                provider=row["provider"],
+                upstream_source=row["upstream_source"],
+                scope=row["scope"],
+            )
+            items.append(
+                {
+                    "id": row["id"],
+                    "symbol": row["symbol"],
+                    "type": "news",
+                    "scope": row["scope"],
+                    "title": row["title"],
+                    "summary": summary,
+                    "aiSummary": row["ai_summary"],
+                    "source": row["upstream_source"],
+                    "provider": row["provider"],
+                    "publishedAt": _resolve_news_published_at(
+                        published_at=row["published_at"],
+                        raw_payload=row["raw_payload"],
+                        provider=row["provider"],
+                        upstream_source=row["upstream_source"],
+                    ),
+                    "firstSeenAt": _to_iso(row["first_seen_at"]),
+                    "lastSeenAt": _to_iso(row["last_seen_at"]),
+                    "url": _sanitize_public_url(row["source_url"]),
+                    "stale": bool(
+                        self._lookup_item_health(
+                            health_map,
+                            "market-news" if row["scope"] == "market" else "symbol-news",
+                            None if row["scope"] == "market" else row["symbol"],
+                        ).get("isStale", False)
+                    ),
+                    "details": {
+                        "articleSource": row["article_source"],
+                        "content": details_content,
+                        "rawPayload": raw_payload,
+                    },
+                }
+            )
+        return items
 
     async def _fetch_announcements(self, *, symbol: str | None, limit: int, before: datetime | None, published_after: datetime | None, health_map: dict[tuple[str, str | None], dict[str, object]]) -> list[dict[str, object]]:
         rows = await self._fetch(
@@ -405,6 +553,7 @@ class ContentQueryService:
         now = datetime.now(UTC)
         lane = str(row["lane"])
         refresh_seconds = max(int(self._lane_refresh_seconds.get(lane, 1800)), 60)
+        overdue_grace_seconds = max(min(refresh_seconds // 2, 1800), 300)
         last_success_at = row["last_success_at"]
         last_attempt_at = row["last_attempt_at"]
         cooldown_until = row["cooldown_until"]
@@ -414,7 +563,11 @@ class ContentQueryService:
             last_success_at is None or (last_attempt_at is not None and last_attempt_at >= last_success_at)
         )
         is_cooling_down = isinstance(cooldown_until, datetime) and cooldown_until > now
-        is_overdue = isinstance(next_due_at, datetime) and next_due_at <= now and not is_cooling_down
+        is_overdue = (
+            isinstance(next_due_at, datetime)
+            and (now - next_due_at).total_seconds() > overdue_grace_seconds
+            and not is_cooling_down
+        )
         stale_by_age = isinstance(last_success_at, datetime) and (now - last_success_at).total_seconds() > refresh_seconds * 2
         has_public_error = bool(_public_lane_error(row["last_error"]))
         has_never_run_but_not_due = last_success_at is None and isinstance(next_due_at, datetime) and next_due_at > now
