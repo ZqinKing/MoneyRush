@@ -156,6 +156,68 @@ def _collapse_duplicate_news_content(
     return normalized_content
 
 
+def _news_item_dedupe_key(item: dict[str, object]) -> tuple[str, str, str] | None:
+    if item.get("type") != "news":
+        return None
+    source = _safe_text(item.get("url"))
+    title = _safe_text(item.get("title"))
+    published_at = _safe_text(item.get("publishedAt"))
+    if source:
+        return ("url", source, "")
+    if title:
+        return ("title", title, published_at or "")
+    return None
+
+
+def _item_sort_timestamp(item: dict[str, object]) -> datetime:
+    published_at = _parse_iso_datetime(item.get("publishedAt"))
+    if published_at is not None:
+        return published_at
+    first_seen_at = _parse_iso_datetime(item.get("firstSeenAt"))
+    if first_seen_at is not None:
+        return first_seen_at
+    return datetime.min.replace(tzinfo=UTC)
+
+
+def _select_preferred_news_item(current: dict[str, object], candidate: dict[str, object]) -> dict[str, object]:
+    current_scope = str(current.get("scope") or "")
+    candidate_scope = str(candidate.get("scope") or "")
+    if current_scope != candidate_scope:
+        if current_scope == "market":
+            return candidate
+        if candidate_scope == "market":
+            return current
+
+    current_ai = bool(_safe_text(current.get("aiSummary")))
+    candidate_ai = bool(_safe_text(candidate.get("aiSummary")))
+    if current_ai != candidate_ai:
+        return candidate if candidate_ai else current
+
+    current_detail = bool(_safe_text((current.get("details") or {}).get("content") if isinstance(current.get("details"), dict) else None))
+    candidate_detail = bool(_safe_text((candidate.get("details") or {}).get("content") if isinstance(candidate.get("details"), dict) else None))
+    if current_detail != candidate_detail:
+        return candidate if candidate_detail else current
+
+    return candidate if _item_sort_timestamp(candidate) >= _item_sort_timestamp(current) else current
+
+
+def _collapse_feed_news_duplicates(items: list[dict[str, object]]) -> list[dict[str, object]]:
+    deduped: list[dict[str, object]] = []
+    news_index: dict[tuple[str, str, str], int] = {}
+    for item in items:
+        dedupe_key = _news_item_dedupe_key(item)
+        if dedupe_key is None:
+            deduped.append(item)
+            continue
+        existing_index = news_index.get(dedupe_key)
+        if existing_index is None:
+            news_index[dedupe_key] = len(deduped)
+            deduped.append(item)
+            continue
+        deduped[existing_index] = _select_preferred_news_item(deduped[existing_index], item)
+    return deduped
+
+
 def _public_lane_error(value: object) -> str | None:
     if not isinstance(value, str):
         return None
@@ -303,6 +365,7 @@ class ContentQueryService:
         if content_type in {None, "announcement"}:
             items.extend(await self._fetch_announcements(symbol=symbol, limit=limit, before=before, published_after=published_after, health_map=health_map))
 
+        items = _collapse_feed_news_duplicates(items)
         items = self._filter_items_by_published_after(items, published_after)
         items.sort(key=lambda item: item.get("publishedAt") or "", reverse=True)
         return items[:limit]

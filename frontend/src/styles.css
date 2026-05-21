@@ -543,6 +543,7 @@ input {
 }
 
 .content-type-badge,
+.content-ai-badge,
 .content-scope-badge,
 .content-health-badge {
   display: inline-flex;
@@ -553,6 +554,14 @@ input {
   background: rgba(43, 96, 255, 0.1);
   color: #dbe6ff;
   font-size: 0.78rem;
+}
+
+.content-ai-badge {
+  border-color: rgba(118, 242, 207, 0.3);
+  background: rgba(33, 142, 111, 0.18);
+  color: #8ff7d9;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .content-health-badge.stale {

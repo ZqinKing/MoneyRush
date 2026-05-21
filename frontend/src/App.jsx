@@ -1513,6 +1513,7 @@ function App() {
           <div>
             <div className="content-badge-row">
               <span className="content-type-badge">{contentTypeLabels[item.type] || '资讯'}</span>
+              {item.aiSummary ? <span className="content-ai-badge">AI摘要</span> : null}
               {item.scope === 'market' ? <span className="content-scope-badge">市场</span> : null}
               {item.stale ? <span className="content-health-badge stale">待刷新</span> : null}
             </div>
