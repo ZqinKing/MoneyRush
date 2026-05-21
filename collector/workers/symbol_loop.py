@@ -28,6 +28,9 @@ class CollectorWorker:
         self._quote_client = MarketQuoteClient(settings)
         self._last_stream_id = "$"
         self._last_collected_at: dict[str, float] = {}
+        self._last_market_state_identity: dict[str, tuple[object, ...]] = {}
+        self._symbol_poll_interval_seconds: dict[str, float] = {}
+        self._unchanged_quote_counts: dict[str, int] = {}
         self._daily_history_synced_for_trade_day: dict[str, str] = {}
         self._intraday_history_synced_for_trade_day: dict[str, str] = {}
         self._latest_daily_trade_day_by_symbol: dict[str, date] = {}
@@ -70,11 +73,37 @@ class CollectorWorker:
 
         now = monotonic()
         last_collected_at = self._last_collected_at.get(symbol)
-        if last_collected_at is not None and now - last_collected_at < self._settings.collector_symbol_min_interval_seconds:
+        min_interval_seconds = self._symbol_poll_interval_seconds.get(
+            symbol,
+            float(self._settings.collector_symbol_min_interval_seconds),
+        )
+        if last_collected_at is not None and now - last_collected_at < min_interval_seconds:
             return
 
         self._last_collected_at[symbol] = now
         market_state = await asyncio.to_thread(self._quote_client.fetch_quote, symbol)
+        market_state_identity = self._market_state_identity(market_state)
+        previous_identity = self._last_market_state_identity.get(symbol)
+
+        if market_state_identity == previous_identity:
+            unchanged_quote_count = self._unchanged_quote_counts.get(symbol, 0) + 1
+            self._unchanged_quote_counts[symbol] = unchanged_quote_count
+            self._symbol_poll_interval_seconds[symbol] = self._next_symbol_poll_interval_seconds(unchanged_quote_count)
+            logger.info(
+                "collector skipped unchanged market state",
+                extra={
+                    "symbol": symbol,
+                    "unchanged_quote_count": unchanged_quote_count,
+                    "next_poll_interval_seconds": self._symbol_poll_interval_seconds[symbol],
+                    "updated_at": market_state["snapshot"].get("updatedAt"),
+                    "source": market_state["snapshot"].get("source"),
+                },
+            )
+            return
+
+        self._last_market_state_identity[symbol] = market_state_identity
+        self._unchanged_quote_counts[symbol] = 0
+        self._symbol_poll_interval_seconds[symbol] = float(self._settings.collector_symbol_min_interval_seconds)
         await self._postgres.persist_market_state(
             snapshot=market_state["snapshot"],
             tick=market_state["tick"],
@@ -111,9 +140,44 @@ class CollectorWorker:
 
     def _clear_symbol_runtime_state(self, symbol: str) -> None:
         self._last_collected_at.pop(symbol, None)
+        self._last_market_state_identity.pop(symbol, None)
+        self._symbol_poll_interval_seconds.pop(symbol, None)
+        self._unchanged_quote_counts.pop(symbol, None)
         self._daily_history_synced_for_trade_day.pop(symbol, None)
         self._intraday_history_synced_for_trade_day.pop(symbol, None)
         self._latest_daily_trade_day_by_symbol.pop(symbol, None)
+
+    def _market_state_identity(self, market_state: dict[str, dict[str, object]]) -> tuple[object, ...]:
+        snapshot = market_state.get("snapshot") or {}
+        tick = market_state.get("tick") or {}
+        kline = market_state.get("kline") or {}
+        event = market_state.get("event") or {}
+        return (
+            snapshot.get("updatedAt"),
+            snapshot.get("lastPrice"),
+            snapshot.get("changePct"),
+            snapshot.get("source"),
+            tick.get("volume"),
+            tick.get("amount"),
+            tick.get("side"),
+            kline.get("open"),
+            kline.get("high"),
+            kline.get("low"),
+            kline.get("close"),
+            kline.get("volume"),
+            kline.get("amount"),
+            event.get("type"),
+        )
+
+    def _next_symbol_poll_interval_seconds(self, unchanged_quote_count: int) -> float:
+        threshold = max(int(self._settings.collector_unchanged_quote_backoff_threshold), 1)
+        if unchanged_quote_count < threshold:
+            return float(self._settings.collector_symbol_min_interval_seconds)
+
+        base_seconds = max(int(self._settings.collector_unchanged_quote_backoff_base_seconds), self._settings.collector_symbol_min_interval_seconds)
+        max_seconds = max(int(self._settings.collector_unchanged_quote_backoff_max_seconds), base_seconds)
+        exponent = unchanged_quote_count - threshold
+        return float(min(base_seconds * (2 ** exponent), max_seconds))
 
     async def _ensure_daily_history(self, symbol: str) -> None:
         trade_day = datetime.now(CHINA_MARKET_TZ).date().isoformat()

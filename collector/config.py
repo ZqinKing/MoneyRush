@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     market_events_stream_key: str = "moneyrush:market:events"
     collector_poll_interval_seconds: int = 5
     collector_symbol_min_interval_seconds: int = 10
+    collector_unchanged_quote_backoff_threshold: int = 2
+    collector_unchanged_quote_backoff_base_seconds: int = 30
+    collector_unchanged_quote_backoff_max_seconds: int = 300
     collector_tencent_enrichment_interval_seconds: int = 600
     collector_vendor_failure_cooldown_seconds: int = 60
     collector_intraday_history_enabled: bool = True
