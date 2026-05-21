@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import asyncpg
 
@@ -38,6 +39,42 @@ def _normalize_kline_bucket_ts(bucket_ts: object, period: object) -> datetime:
     return normalized_bucket_ts
 
 
+def _to_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (float, int, Decimal)):
+        return float(value)
+    return None
+
+
+def _to_int(value: object) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, Decimal):
+        return int(value)
+    if isinstance(value, float):
+        return int(value)
+    return None
+
+
+def _decode_jsonish(value: object) -> dict[str, object] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return decoded if isinstance(decoded, dict) else None
+    return None
+
+
 class PostgresStore:
     def __init__(self, dsn: str, *, enable_runtime_data_repair: bool = False) -> None:
         self._dsn = dsn
@@ -54,6 +91,13 @@ class PostgresStore:
             raise RuntimeError("PostgresStore must be connected before schema initialization")
 
         async with self._pool.acquire() as connection:
+            exact_duplicate_cleanup = await self._dedupe_exact_market_rows(connection)
+            if any(exact_duplicate_cleanup.values()):
+                logger.warning("collector removed exact duplicate market rows", extra=exact_duplicate_cleanup)
+
+            await connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS stock_tick_identity_idx ON stock_tick (symbol, ts, source, price, COALESCE(volume, -1), COALESCE(amount, -1), COALESCE(side, ''))"
+            )
             await connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS stock_event (
@@ -70,6 +114,9 @@ class PostgresStore:
             )
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS stock_event_symbol_ts_idx ON stock_event (symbol, ts DESC)"
+            )
+            await connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS stock_event_identity_idx ON stock_event (symbol, ts, event_type, source, payload)"
             )
             await connection.execute(
                 """
@@ -218,6 +265,55 @@ class PostgresStore:
                 repairs = await self._repair_runtime_data(connection)
                 if any(repairs.values()):
                     logger.warning("collector repaired persisted market data", extra=repairs)
+
+    async def _dedupe_exact_market_rows(self, connection: asyncpg.Connection) -> dict[str, int]:
+        removed_tick_duplicates = await connection.fetchval(
+            """
+            WITH ranked AS (
+                SELECT ctid,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ts, symbol, price, volume, amount, side, source
+                           ORDER BY ctid
+                       ) AS duplicate_rank
+                FROM stock_tick
+            ), deleted AS (
+                DELETE FROM stock_tick
+                WHERE ctid IN (
+                    SELECT ctid
+                    FROM ranked
+                    WHERE duplicate_rank > 1
+                )
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM deleted
+            """
+        )
+        removed_event_duplicates = await connection.fetchval(
+            """
+            WITH ranked AS (
+                SELECT ctid,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ts, symbol, event_type, source, payload
+                           ORDER BY ctid
+                       ) AS duplicate_rank
+                FROM stock_event
+            ), deleted AS (
+                DELETE FROM stock_event
+                WHERE ctid IN (
+                    SELECT ctid
+                    FROM ranked
+                    WHERE duplicate_rank > 1
+                )
+                RETURNING 1
+            )
+            SELECT COUNT(*)::int FROM deleted
+            """
+        )
+
+        return {
+            "removed_tick_duplicates": removed_tick_duplicates or 0,
+            "removed_event_duplicates": removed_event_duplicates or 0,
+        }
 
     async def _repair_runtime_data(self, connection: asyncpg.Connection) -> dict[str, int]:
         repaired_ticks = await connection.fetchval(
@@ -442,9 +538,17 @@ class PostgresStore:
 
         tick_ts = _coerce_utc_datetime(tick["ts"], field_name="tick.ts")
         kline_bucket_ts = _normalize_kline_bucket_ts(kline["bucketTs"], kline["period"])
+        event_payload_json = json.dumps(event)
 
         async with self._pool.acquire() as connection:
             async with connection.transaction():
+                await connection.execute(
+                    """
+                    SELECT pg_advisory_xact_lock(hashtextextended($1, 0))
+                    """,
+                    tick["symbol"],
+                )
+
                 await connection.execute(
                     """
                     INSERT INTO stock_profile (symbol, name, exchange, updated_at)
@@ -502,20 +606,63 @@ class PostgresStore:
                     json.dumps(snapshot),
                 )
 
-                await connection.execute(
+                latest_tick_row = await connection.fetchrow(
                     """
-                    INSERT INTO stock_tick (ts, symbol, price, volume, amount, side, source, raw)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                    SELECT price, volume, amount, side, source
+                    FROM stock_tick
+                    WHERE symbol = $1
+                    ORDER BY ts DESC
+                    LIMIT 1
                     """,
-                    tick_ts,
                     tick["symbol"],
-                    tick["price"],
-                    tick["volume"],
-                    tick["amount"],
-                    tick["side"],
-                    tick["source"],
-                    json.dumps(tick["raw"]),
                 )
+                latest_event_row = await connection.fetchrow(
+                    """
+                    SELECT event_type, source, payload
+                    FROM stock_event
+                    WHERE symbol = $1
+                    ORDER BY ts DESC
+                    LIMIT 1
+                    """,
+                    event["symbol"],
+                )
+
+                latest_tick_matches = False
+                if latest_tick_row is not None:
+                    latest_tick_matches = (
+                        _to_float(latest_tick_row["price"]) == _to_float(tick["price"])
+                        and _to_int(latest_tick_row["volume"]) == _to_int(tick["volume"])
+                        and _to_float(latest_tick_row["amount"]) == _to_float(tick["amount"])
+                        and latest_tick_row["side"] == tick["side"]
+                        and latest_tick_row["source"] == tick["source"]
+                    )
+
+                if not latest_tick_matches:
+                    await connection.execute(
+                        """
+                        INSERT INTO stock_tick (ts, symbol, price, volume, amount, side, source, raw)
+                        SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM stock_tick
+                            WHERE ts = $1
+                              AND symbol = $2
+                              AND price IS NOT DISTINCT FROM $3
+                              AND volume IS NOT DISTINCT FROM $4
+                              AND amount IS NOT DISTINCT FROM $5
+                              AND side IS NOT DISTINCT FROM $6
+                              AND source = $7
+                        )
+                        """,
+                        tick_ts,
+                        tick["symbol"],
+                        tick["price"],
+                        tick["volume"],
+                        tick["amount"],
+                        tick["side"],
+                        tick["source"],
+                        json.dumps(tick["raw"]),
+                    )
 
                 await connection.execute(
                     """
@@ -557,17 +704,47 @@ class PostgresStore:
                     json.dumps(kline["raw"]),
                 )
 
-                await connection.execute(
-                    """
-                    INSERT INTO stock_event (ts, symbol, event_type, source, payload)
-                    VALUES ($1, $2, $3, $4, $5::jsonb)
-                    """,
-                    tick_ts,
-                    event["symbol"],
-                    event["type"],
-                    snapshot["source"],
-                    json.dumps(event),
-                )
+                latest_event_matches = False
+                if latest_event_row is not None:
+                    latest_event_payload = _decode_jsonish(latest_event_row["payload"]) or {}
+                    latest_event_tick = latest_event_payload.get("tick") if isinstance(latest_event_payload.get("tick"), dict) else {}
+                    current_event_tick = event.get("tick") if isinstance(event.get("tick"), dict) else {}
+                    latest_event_kline = latest_event_payload.get("kline") if isinstance(latest_event_payload.get("kline"), dict) else {}
+                    current_event_kline = event.get("kline") if isinstance(event.get("kline"), dict) else {}
+
+                    latest_event_matches = (
+                        latest_event_row["event_type"] == event["type"]
+                        and latest_event_row["source"] == snapshot["source"]
+                        and _to_float(latest_event_tick.get("price")) == _to_float(current_event_tick.get("price"))
+                        and _to_int(latest_event_tick.get("volume")) == _to_int(current_event_tick.get("volume"))
+                        and latest_event_tick.get("side") == current_event_tick.get("side")
+                        and latest_event_kline.get("period") == current_event_kline.get("period")
+                        and _to_float(latest_event_kline.get("close")) == _to_float(current_event_kline.get("close"))
+                        and _to_float(latest_event_kline.get("high")) == _to_float(current_event_kline.get("high"))
+                        and _to_float(latest_event_kline.get("low")) == _to_float(current_event_kline.get("low"))
+                    )
+
+                if not latest_event_matches:
+                    await connection.execute(
+                        """
+                        INSERT INTO stock_event (ts, symbol, event_type, source, payload)
+                        SELECT $1, $2, $3, $4, $5::jsonb
+                        WHERE NOT EXISTS (
+                            SELECT 1
+                            FROM stock_event
+                            WHERE ts = $1
+                              AND symbol = $2
+                              AND event_type = $3
+                              AND source = $4
+                              AND payload = $5::jsonb
+                        )
+                        """,
+                        tick_ts,
+                        event["symbol"],
+                        event["type"],
+                        snapshot["source"],
+                        event_payload_json,
+                    )
 
     async def persist_kline_history(self, klines: list[dict[str, object]]) -> None:
         if self._pool is None:

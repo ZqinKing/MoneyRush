@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS stock_tick (
 SELECT create_hypertable('stock_tick', 'ts', if_not_exists => TRUE, migrate_data => TRUE);
 
 CREATE INDEX IF NOT EXISTS stock_tick_symbol_ts_idx ON stock_tick (symbol, ts DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS stock_tick_identity_idx
+    ON stock_tick (symbol, ts, source, price, COALESCE(volume, -1), COALESCE(amount, -1), COALESCE(side, ''));
 
 CREATE TABLE IF NOT EXISTS stock_event (
     ts TIMESTAMPTZ NOT NULL,
@@ -48,6 +50,8 @@ CREATE TABLE IF NOT EXISTS stock_event (
 SELECT create_hypertable('stock_event', 'ts', if_not_exists => TRUE, migrate_data => TRUE);
 
 CREATE INDEX IF NOT EXISTS stock_event_symbol_ts_idx ON stock_event (symbol, ts DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS stock_event_identity_idx
+    ON stock_event (symbol, ts, event_type, source, payload);
 
 CREATE TABLE IF NOT EXISTS symbol_command_log (
     ts TIMESTAMPTZ NOT NULL,
