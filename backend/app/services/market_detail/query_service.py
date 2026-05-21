@@ -54,8 +54,31 @@ def _decode_jsonish(value: object) -> dict[str, object] | None:
     return None
 
 
+def _safe_ratio(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return numerator / denominator
+
+
 def _event_identity(payload: dict[str, object]) -> str:
     return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+
+def _event_summary_identity(payload: dict[str, object]) -> tuple[object, ...] | None:
+    tick = payload.get("tick") if isinstance(payload.get("tick"), dict) else None
+    kline = payload.get("kline") if isinstance(payload.get("kline"), dict) else None
+    if tick is None and kline is None:
+        return None
+
+    return (
+        _to_float(tick.get("price")) if tick else None,
+        _to_int(tick.get("volume")) if tick else None,
+        tick.get("side") if tick else None,
+        kline.get("period") if kline else None,
+        _to_float(kline.get("close")) if kline else None,
+        _to_float(kline.get("high")) if kline else None,
+        _to_float(kline.get("low")) if kline else None,
+    )
 
 
 def _expanded_unique_scan_limit(limit: int) -> int:
@@ -223,6 +246,121 @@ class MarketDetailQueryService:
                 break
 
         return items
+
+    async def fetch_event_summary(self, symbol: str) -> dict[str, object]:
+        day_start_utc, day_end_utc = self._current_trade_day_window()
+        rows = await self._fetch(
+            """
+            SELECT ts, payload
+            FROM stock_event
+            WHERE symbol = $1
+              AND ts >= $2
+              AND ts < $3
+            ORDER BY ts ASC
+            """,
+            symbol,
+            day_start_utc,
+            day_end_utc,
+        )
+
+        event_count = 0
+        buy_count = 0
+        sell_count = 0
+        directed_count = 0
+        previous_distinct_price: float | None = None
+        latest_price: float | None = None
+        latest_volume: int | None = None
+        latest_event_ts: str | None = None
+        latest_jump_pct: float | None = None
+        previous_event_identity: tuple[object, ...] | None = None
+
+        for row in rows:
+            payload = _decode_jsonish(row["payload"]) or {}
+            tick = payload.get("tick") if isinstance(payload.get("tick"), dict) else {}
+            side = tick.get("side") if isinstance(tick, dict) else None
+            price = _to_float(tick.get("price")) if isinstance(tick, dict) else None
+            volume = _to_int(tick.get("volume")) if isinstance(tick, dict) else None
+            event_identity = _event_summary_identity(payload)
+
+            if event_identity != previous_event_identity:
+                event_count += 1
+                if side == "buy":
+                    buy_count += 1
+                    directed_count += 1
+                elif side == "sell":
+                    sell_count += 1
+                    directed_count += 1
+                previous_event_identity = event_identity
+
+            if price is not None:
+                if latest_price is None:
+                    latest_price = price
+                elif price != latest_price:
+                    previous_distinct_price = latest_price
+                    latest_price = price
+
+            if volume is not None:
+                latest_volume = volume
+
+            latest_event_ts = _to_iso(row["ts"])
+
+        history_rows = await self._fetch(
+            """
+            SELECT bucket_ts, volume
+            FROM stock_kline
+            WHERE symbol = $1
+              AND period = '1d'
+              AND volume IS NOT NULL
+            ORDER BY bucket_ts DESC
+            LIMIT 40
+            """,
+            symbol,
+        )
+
+        history_volumes: list[int] = []
+        for row in history_rows:
+            bucket_ts = row["bucket_ts"]
+            volume = _to_int(row["volume"])
+            if not isinstance(bucket_ts, datetime) or volume is None:
+                continue
+            if day_start_utc <= bucket_ts < day_end_utc:
+                continue
+            history_volumes.append(volume)
+            if len(history_volumes) >= 20:
+                break
+
+        average_daily_volume = sum(history_volumes) / len(history_volumes) if history_volumes else None
+        volume_ratio = None
+        if average_daily_volume and average_daily_volume > 0 and latest_volume is not None:
+            volume_ratio = latest_volume / average_daily_volume
+
+        if latest_price is not None and previous_distinct_price is not None and previous_distinct_price != 0:
+            latest_jump_pct = ((latest_price - previous_distinct_price) / previous_distinct_price) * 100
+
+        absolute_jump_pct = abs(latest_jump_pct) if isinstance(latest_jump_pct, float) else None
+        if absolute_jump_pct is not None and absolute_jump_pct > 5:
+            jump_severity = "critical"
+        elif absolute_jump_pct is not None and absolute_jump_pct > 3:
+            jump_severity = "high"
+        else:
+            jump_severity = "normal"
+
+        return {
+            "symbol": symbol,
+            "tradeDay": self._trade_day_label(day_start_utc),
+            "eventCountToday": event_count,
+            "buyCount": buy_count,
+            "sellCount": sell_count,
+            "buyRatio": _safe_ratio(buy_count, directed_count),
+            "sellRatio": _safe_ratio(sell_count, directed_count),
+            "latestPrice": latest_price,
+            "latestVolume": latest_volume,
+            "averageDailyVolume20": average_daily_volume,
+            "volumeRatio": volume_ratio,
+            "latestPriceJumpPct": latest_jump_pct,
+            "jumpSeverity": jump_severity,
+            "latestEventTs": latest_event_ts,
+        }
 
     async def fetch_best_bid_ask(self, symbol: str) -> dict[str, object]:
         row = await self._fetchrow(
@@ -484,6 +622,11 @@ class MarketDetailQueryService:
         day_start_local = local_ts.replace(hour=0, minute=0, second=0, microsecond=0)
         day_end_local = day_start_local + timedelta(days=1)
         return day_start_local.astimezone(UTC), day_end_local.astimezone(UTC)
+
+    @staticmethod
+    def _trade_day_label(day_start_utc: datetime) -> str:
+        local_day = day_start_utc.astimezone(CHINA_MARKET_TZ)
+        return local_day.date().isoformat()
 
     @staticmethod
     def _bucket_intraday_ts(ts: datetime, interval_minutes: int) -> datetime:

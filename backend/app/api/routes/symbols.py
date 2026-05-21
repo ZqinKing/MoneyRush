@@ -73,6 +73,19 @@ async def active_snapshots(request: Request) -> dict[str, dict[str, object]]:
     return {"snapshots": await redis_store.get_symbol_snapshots(symbols)}
 
 
+@router.get("/event-summaries")
+async def active_event_summaries(request: Request) -> dict[str, dict[str, object]]:
+    redis_store = request.app.state.redis_store
+    query_service = request.app.state.market_detail_query_service
+    symbols = await redis_store.get_active_symbols()
+
+    summaries: dict[str, dict[str, object]] = {}
+    for symbol in symbols:
+        summaries[symbol] = await query_service.fetch_event_summary(symbol)
+
+    return {"summaries": summaries}
+
+
 @router.get("/{symbol}/detail")
 async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
     normalized_symbol = _normalize_symbol_or_422(symbol)
