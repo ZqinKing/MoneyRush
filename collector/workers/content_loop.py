@@ -46,6 +46,18 @@ class ContentCollectorWorker:
         self._ai_summary_backfill_tasks: set[asyncio.Task[None]] = set()
         self._ai_summary_backfill_semaphore = asyncio.Semaphore(1)
 
+    async def _clear_content_caches(self) -> None:
+        cursor = 0
+        patterns = ("moneyrush:content:feed:*", "moneyrush:content:status:*")
+        for pattern in patterns:
+            cursor = 0
+            while True:
+                cursor, keys = await self._redis.scan(cursor=cursor, match=pattern, count=100)
+                if keys:
+                    await self._redis.delete(*keys)
+                if cursor == 0:
+                    break
+
     async def run(self) -> None:
         if not self._settings.content_collector_enabled:
             logger.info("content collector disabled")
@@ -302,6 +314,7 @@ class ContentCollectorWorker:
             generated = await asyncio.to_thread(self._generate_ai_summaries, items)
             if generated:
                 await self._postgres.update_news_ai_summaries(generated)
+                await self._clear_content_caches()
 
     def _generate_ai_summaries(self, items: list[dict[str, object]]) -> list[dict[str, str]]:
         summaries: list[dict[str, str]] = []
