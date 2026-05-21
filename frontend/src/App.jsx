@@ -96,6 +96,10 @@ function buildContentStatusUrl(symbol = '') {
   return `${apiBaseUrl}/api/v1/content/status?${params.toString()}`;
 }
 
+function buildEventSummariesUrl() {
+  return `${apiBaseUrl}/api/v1/symbols/event-summaries`;
+}
+
 async function parseJsonOrThrow(response, fallbackMessage) {
   if (!response.ok) {
     throw new Error(fallbackMessage);
@@ -344,6 +348,45 @@ function formatTurnoverAmount(value) {
   }
 
   return `${formatCompactNumber(value)}元`;
+}
+
+function formatRatioMultiple(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  return `${value.toFixed(value >= 10 ? 1 : 2)}×均量`;
+}
+
+function formatPercentFromRatio(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  return `${Math.round(value * 100)}%`;
+}
+
+function getJumpSeverityClass(severity) {
+  if (severity === 'critical') {
+    return 'event-card-critical';
+  }
+  if (severity === 'high') {
+    return 'event-card-high';
+  }
+  return '';
+}
+
+function getVolumeToneClass(ratio) {
+  if (typeof ratio !== 'number') {
+    return '';
+  }
+  if (ratio >= 1.5) {
+    return 'positive';
+  }
+  if (ratio <= 0.7) {
+    return 'negative';
+  }
+  return '';
 }
 
 function getConnectionStatusLabel(value) {
@@ -1065,6 +1108,9 @@ function App() {
   const [contentFeed, setContentFeed] = useState([]);
   const [contentStatus, setContentStatus] = useState({ jobs: [], latestIngestedAt: null, summary: null });
   const [contentRequestState, setContentRequestState] = useState('idle');
+  const [eventSummaries, setEventSummaries] = useState({});
+  const [eventSummaryRequestState, setEventSummaryRequestState] = useState('idle');
+  const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
   const eventCards = useMemo(
@@ -1077,10 +1123,11 @@ function App() {
             symbol: currentSymbol,
             snapshot: snapshots[currentSymbol],
             event: eventPayload?.events?.[currentSymbol] || null,
+            summary: eventSummaries[currentSymbol] || null,
           };
         })
-        .filter((item) => item.snapshot || item.event),
-    [activeSymbols, messages, snapshots],
+        .filter((item) => item.snapshot || item.event || item.summary),
+    [activeSymbols, eventSummaries, messages, snapshots],
   );
 
   useEffect(() => {
@@ -1208,6 +1255,44 @@ function App() {
       window.clearInterval(intervalId);
     };
   }, [activeView, contentSymbolFilter, contentTimeRange, contentType]);
+
+  useEffect(() => {
+    if (activeView !== 'events') {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadEventSummaries({ keepReadyState = false } = {}) {
+      if (!keepReadyState) {
+        setEventSummaryRequestState('loading');
+      }
+
+      try {
+        const response = await fetch(buildEventSummariesUrl());
+        const payload = await parseJsonOrThrow(response, 'event summaries fetch failed');
+        if (cancelled) {
+          return;
+        }
+        setEventSummaries(payload?.summaries && typeof payload.summaries === 'object' ? payload.summaries : {});
+        setEventSummaryRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setEventSummaryRequestState('error');
+        }
+      }
+    }
+
+    loadEventSummaries();
+    const intervalId = window.setInterval(() => {
+      loadEventSummaries({ keepReadyState: true });
+    }, 45000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeSymbolsKey, activeView]);
 
   const selectedSnapshot = selectedSnapshotSymbol ? snapshots[selectedSnapshotSymbol] : null;
   const selectedDetail = selectedSnapshotSymbol ? snapshotDetails[selectedSnapshotSymbol] : null;
@@ -2391,13 +2476,26 @@ function App() {
             <div className="section-heading">
               <div>
                 <h2>实时事件</h2>
-                <p className="panel-tip compact">按标的查看最近一条结构化事件，避免原始流消息干扰主看板。</p>
+                <p className="panel-tip compact">按标的聚合今日事件强度、量能变化与资金方向；跳变按最近两次不同价格之间的最后一步变化计算。</p>
+              </div>
+              <div className="event-status-slot" aria-live="polite">
+                <span
+                  className={[
+                    'symbol-count-badge',
+                    'event-status-badge',
+                    'warning',
+                    eventSummaryRequestState === 'error' ? 'visible' : 'hidden',
+                  ].filter(Boolean).join(' ')}
+                  aria-hidden={eventSummaryRequestState !== 'error'}
+                >
+                  事件统计加载失败
+                </span>
               </div>
             </div>
             <div className="event-grid">
               {eventCards.length ? (
-                eventCards.map(({ symbol: currentSymbol, snapshot, event }) => (
-                  <section className="event-card" key={currentSymbol}>
+                eventCards.map(({ symbol: currentSymbol, snapshot, event, summary }) => (
+                  <section className={`event-card ${getJumpSeverityClass(summary?.jumpSeverity)}`.trim()} key={currentSymbol}>
                     <header>
                       <div>
                         <strong>{snapshot?.companyName || event?.companyName || '待识别公司'}</strong>
@@ -2405,16 +2503,36 @@ function App() {
                           {currentSymbol} · {snapshot?.exchange || event?.exchange || '--'}
                         </p>
                       </div>
-                      <span>{formatTime(event?.generatedAt || snapshot?.updatedAt)}</span>
+                      <span>{formatTime(summary?.latestEventTs || event?.generatedAt || snapshot?.updatedAt)}</span>
                     </header>
+                    <div className="event-card-topline">
+                      <span className="event-summary-chip">今日事件记录 {formatPlainNumber(summary?.eventCountToday ?? 0)} 条</span>
+                      {typeof summary?.latestPriceJumpPct === 'number' ? (
+                        <span className={`event-jump-badge ${getJumpSeverityClass(summary?.jumpSeverity)}`.trim()}>
+                          最新一步 {formatSignedPercent(summary.latestPriceJumpPct)}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="event-ratio-block">
+                      <div className="event-ratio-labels">
+                        <span>买盘 {formatPercentFromRatio(summary?.buyRatio)}</span>
+                        <span>卖盘 {formatPercentFromRatio(summary?.sellRatio)}</span>
+                      </div>
+                      <div className="event-ratio-track" aria-hidden="true">
+                        <span className="event-ratio-fill buy" style={{ width: `${Math.max(0, Math.min((summary?.buyRatio ?? 0) * 100, 100))}%` }} />
+                      </div>
+                    </div>
                     <dl>
                       <div>
                         <dt>最新价</dt>
-                        <dd>{formatPrice(event?.tick?.price ?? snapshot?.lastPrice)}</dd>
+                        <dd>{formatPrice(summary?.latestPrice ?? event?.tick?.price ?? snapshot?.lastPrice)}</dd>
                       </div>
                       <div>
                         <dt>成交量</dt>
-                        <dd>{formatTickVolume(event?.tick?.volume)}</dd>
+                        <dd className={getVolumeToneClass(summary?.volumeRatio)}>
+                          {formatTickVolume(summary?.latestVolume ?? event?.tick?.volume)}
+                          {typeof summary?.volumeRatio === 'number' ? ` (${formatRatioMultiple(summary.volumeRatio)})` : ''}
+                        </dd>
                       </div>
                       <div>
                         <dt>买卖方向</dt>
