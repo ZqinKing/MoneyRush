@@ -51,6 +51,13 @@ const connectionStateLabels = {
   error: '连接异常',
 };
 
+const marketStatusLabels = {
+  trading: '交易中',
+  break: '休市中',
+  closed: '已收盘',
+  disconnected: '连接断开',
+};
+
 const contentTypeLabels = {
   all: '全部',
   report: '研报',
@@ -100,6 +107,10 @@ function buildEventSummariesUrl() {
   return `${apiBaseUrl}/api/v1/symbols/event-summaries`;
 }
 
+function buildMarketOverviewUrl() {
+  return `${apiBaseUrl}/api/v1/market/overview`;
+}
+
 async function parseJsonOrThrow(response, fallbackMessage) {
   if (!response.ok) {
     throw new Error(fallbackMessage);
@@ -128,6 +139,53 @@ function formatRelativeDateTime(value) {
   }
   const diffDays = Math.round(diffHours / 24);
   return `${diffDays} 天前`;
+}
+
+function formatAgeLabel(value) {
+  if (!value) {
+    return '等待首个快照';
+  }
+
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return '时间未知';
+  }
+
+  const ageSeconds = Math.max(Math.floor((Date.now() - timestamp) / 1000), 0);
+  if (ageSeconds < 5) {
+    return '刚更新';
+  }
+  if (ageSeconds < 60) {
+    return `${ageSeconds} 秒前更新`;
+  }
+
+  const ageMinutes = Math.floor(ageSeconds / 60);
+  if (ageMinutes < 60) {
+    return `${ageMinutes} 分钟前更新`;
+  }
+
+  const ageHours = Math.floor(ageMinutes / 60);
+  return `${ageHours} 小时前更新`;
+}
+
+function getFreshnessTone(updatedAt) {
+  if (!updatedAt) {
+    return 'muted';
+  }
+
+  const timestamp = new Date(updatedAt).getTime();
+  if (Number.isNaN(timestamp)) {
+    return 'muted';
+  }
+
+  const ageSeconds = Math.max(Math.floor((Date.now() - timestamp) / 1000), 0);
+  if (ageSeconds > 60) {
+    return 'critical';
+  }
+  if (ageSeconds > 30) {
+    return 'warning';
+  }
+  return 'fresh';
 }
 
 function getContentItemMeta(item) {
@@ -391,6 +449,23 @@ function getVolumeToneClass(ratio) {
 
 function getConnectionStatusLabel(value) {
   return connectionStateLabels[value] || '状态未知';
+}
+
+function getMarketStatusLabel(value) {
+  return marketStatusLabels[value] || '状态未知';
+}
+
+function getMarketStatusTone(value) {
+  if (value === 'trading') {
+    return 'success';
+  }
+  if (value === 'break') {
+    return 'pending';
+  }
+  if (value === 'disconnected') {
+    return 'error';
+  }
+  return 'neutral';
 }
 
 function formatAxisDate(value) {
@@ -1095,6 +1170,9 @@ function App() {
   const [activeSymbols, setActiveSymbols] = useState([]);
   const [snapshots, setSnapshots] = useState({});
   const [messages, setMessages] = useState([]);
+  const [marketStatus, setMarketStatus] = useState('closed');
+  const [marketStatusUpdatedAt, setMarketStatusUpdatedAt] = useState(null);
+  const [marketOverview, setMarketOverview] = useState({ indexes: [], generatedAt: null });
   const [activeView, setActiveView] = useState('overview');
   const [controlView, setControlView] = useState('activate');
   const [selectedSnapshotSymbol, setSelectedSnapshotSymbol] = useState(null);
@@ -1102,6 +1180,9 @@ function App() {
   const [detailRequestState, setDetailRequestState] = useState('idle');
   const [detailChartView, setDetailChartView] = useState('intraday');
   const [intradayHoverPoint, setIntradayHoverPoint] = useState(null);
+  const [overviewSearchQuery, setOverviewSearchQuery] = useState('');
+  const [overviewSortKey, setOverviewSortKey] = useState('marketCap');
+  const [overviewSortDirection, setOverviewSortDirection] = useState('desc');
   const [contentType, setContentType] = useState('all');
   const [contentTimeRange, setContentTimeRange] = useState('today');
   const [contentSymbolFilter, setContentSymbolFilter] = useState('');
@@ -1154,6 +1235,12 @@ function App() {
         if (payload.snapshots && typeof payload.snapshots === 'object') {
           setSnapshots(payload.snapshots);
         }
+        if (typeof payload.marketStatus === 'string') {
+          setMarketStatus(payload.marketStatus);
+        }
+        if (typeof payload.serverGeneratedAt === 'string' && payload.serverGeneratedAt) {
+          setMarketStatusUpdatedAt(payload.serverGeneratedAt);
+        }
         setMessages((current) => [payload, ...current].slice(0, 20));
       } catch {
         setMessages((current) => [{ type: 'parse_error', raw: event.data }, ...current].slice(0, 20));
@@ -1164,6 +1251,45 @@ function App() {
       socket.close();
     };
   }, [wsUrl]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMarketOverview() {
+      try {
+        const response = await fetch(buildMarketOverviewUrl());
+        const payload = await parseJsonOrThrow(response, 'market overview fetch failed');
+        if (cancelled) {
+          return;
+        }
+
+        setMarketOverview({
+          indexes: Array.isArray(payload?.indexes) ? payload.indexes : [],
+          generatedAt: typeof payload?.generatedAt === 'string' ? payload.generatedAt : null,
+          breadth: payload?.breadth && typeof payload.breadth === 'object' ? payload.breadth : null,
+        });
+
+        if (typeof payload?.marketStatus === 'string') {
+          setMarketStatus(payload.marketStatus);
+        }
+        if (typeof payload?.serverGeneratedAt === 'string' && payload.serverGeneratedAt) {
+          setMarketStatusUpdatedAt(payload.serverGeneratedAt);
+        }
+      } catch {
+        if (!cancelled) {
+          setMarketOverview((current) => current || { indexes: [], generatedAt: null, breadth: null });
+        }
+      }
+    }
+
+    loadMarketOverview();
+    const intervalId = window.setInterval(loadMarketOverview, 30000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, []);
 
   useEffect(() => {
     fetch(`${apiBaseUrl}/api/v1/symbols/snapshots`)
@@ -1307,6 +1433,50 @@ function App() {
     ],
     [activeSymbols, snapshots],
   );
+
+  const overviewItems = useMemo(() => {
+    const normalizedQuery = overviewSearchQuery.trim().toLowerCase();
+
+    return activeSymbols
+      .filter((currentSymbol) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+
+        const snapshot = snapshots[currentSymbol];
+        const companyName = typeof snapshot?.companyName === 'string' ? snapshot.companyName.toLowerCase() : '';
+        return currentSymbol.toLowerCase().includes(normalizedQuery) || companyName.includes(normalizedQuery);
+      })
+      .sort((leftSymbol, rightSymbol) => {
+        const leftSnapshot = snapshots[leftSymbol];
+        const rightSnapshot = snapshots[rightSymbol];
+        const leftValue = leftSnapshot?.[overviewSortKey];
+        const rightValue = rightSnapshot?.[overviewSortKey];
+
+        const leftComparable = typeof leftValue === 'number' ? leftValue : Number.NEGATIVE_INFINITY;
+        const rightComparable = typeof rightValue === 'number' ? rightValue : Number.NEGATIVE_INFINITY;
+
+        if (leftComparable === rightComparable) {
+          return leftSymbol.localeCompare(rightSymbol, 'zh-Hans-CN');
+        }
+
+        return overviewSortDirection === 'asc'
+          ? leftComparable - rightComparable
+          : rightComparable - leftComparable;
+      });
+  }, [activeSymbols, overviewSearchQuery, overviewSortDirection, overviewSortKey, snapshots]);
+
+  const overviewLastUpdatedAt = useMemo(() => {
+    const timestamps = activeSymbols
+      .map((currentSymbol) => snapshots[currentSymbol]?.updatedAt)
+      .filter((value) => typeof value === 'string' && value);
+
+    if (!timestamps.length) {
+      return null;
+    }
+
+    return timestamps.sort().at(-1) || null;
+  }, [activeSymbols, snapshots]);
 
   useEffect(() => {
     if (contentSymbolFilter && !activeSymbols.includes(contentSymbolFilter)) {
@@ -1473,9 +1643,11 @@ function App() {
   }
 
   function renderOverviewCard(item, snapshot) {
+    const freshnessTone = getFreshnessTone(snapshot?.updatedAt);
+
     return (
       <section
-        className="snapshot-card clickable"
+        className={`snapshot-card clickable freshness-${freshnessTone}`}
         key={item}
         role="button"
         tabIndex={0}
@@ -1494,7 +1666,10 @@ function App() {
               {item} · {snapshot?.exchange || '--'}
             </p>
           </div>
-          <span>{snapshot?.source || '等待采集'}</span>
+          <div className="snapshot-header-side">
+            <span>{snapshot?.source || '等待采集'}</span>
+            <span className={`freshness-chip ${freshnessTone}`}>{formatAgeLabel(snapshot?.updatedAt)}</span>
+          </div>
         </header>
         <div className="snapshot-metric">{formatPrice(snapshot?.lastPrice)}</div>
         <dl>
@@ -1519,6 +1694,10 @@ function App() {
           <div>
             <dt>涨停 / 跌停</dt>
             <dd>{snapshot ? `${snapshot.limitUp} / ${snapshot.limitDown}` : '--'}</dd>
+          </div>
+          <div>
+            <dt>更新时间</dt>
+            <dd>{formatTime(snapshot?.updatedAt)}</dd>
           </div>
         </dl>
       </section>
@@ -1567,6 +1746,88 @@ function App() {
           </button>
         </div>
       </article>
+    );
+  }
+
+  function renderMarketOverviewBar() {
+    if (!Array.isArray(marketOverview.indexes) || !marketOverview.indexes.length) {
+      return null;
+    }
+
+    const breadth = marketOverview?.breadth && typeof marketOverview.breadth === 'object' ? marketOverview.breadth : null;
+    const breadthSource = typeof breadth?.source === 'string' ? breadth.source : 'unknown';
+    const breadthIsDegraded = Boolean(breadth?.degraded);
+    const advanceCount = typeof breadth?.advanceCount === 'number' ? breadth.advanceCount : null;
+    const declineCount = typeof breadth?.declineCount === 'number' ? breadth.declineCount : null;
+    const totalWidth = typeof advanceCount === 'number' && typeof declineCount === 'number' ? advanceCount + declineCount : 0;
+    const advanceRatio = totalWidth > 0 ? (advanceCount / totalWidth) * 100 : 0;
+    const declineRatio = totalWidth > 0 ? (declineCount / totalWidth) * 100 : 0;
+
+    return (
+      <div className="market-overview-bar">
+        <div className="market-overview-header">
+          <div>
+            <p className="eyebrow">市场概览</p>
+            <p className="panel-tip compact">独立指数链路提供大盘状态，不占用个股监控采集循环。</p>
+          </div>
+          <div className="market-overview-meta">
+            <span className={`status-line ${getMarketStatusTone(connectionState === 'connected' ? marketStatus : 'disconnected')}`}>
+              市场状态：{getMarketStatusLabel(connectionState === 'connected' ? marketStatus : 'disconnected')}
+            </span>
+            <span className="symbol-count-badge">状态时间 {marketStatusUpdatedAt ? formatTime(marketStatusUpdatedAt) : '--:--:--'}</span>
+          </div>
+        </div>
+        <div className="market-index-grid">
+          {marketOverview.indexes.map((item) => (
+            <article className="market-index-card" key={item.code || item.symbol || item.name}>
+              <div>
+                <strong>{item.name || item.symbol || '--'}</strong>
+                <p className="snapshot-subtitle">{item.code || '--'}</p>
+              </div>
+              <div className="market-index-metric">{formatPrice(item.lastPrice)}</div>
+              <div className="market-index-meta-row">
+                <span className={item.changePct > 0 ? 'positive' : item.changePct < 0 ? 'negative' : ''}>
+                  {formatSignedPercent(item.changePct)}
+                </span>
+                <span className={item.changeAmount > 0 ? 'positive' : item.changeAmount < 0 ? 'negative' : ''}>
+                  {typeof item.changeAmount === 'number' ? `${item.changeAmount > 0 ? '+' : ''}${item.changeAmount.toFixed(2)}` : '--'}
+                </span>
+              </div>
+            </article>
+          ))}
+        </div>
+        <div className="market-breadth-panel">
+          {breadth ? (
+            <>
+              <div className="market-breadth-summary" aria-hidden="true">
+                <div className="market-breadth-side rise">
+                  <span className="market-breadth-label">上涨</span>
+                  <strong>{breadth.advanceCount ?? '--'}</strong>
+                </div>
+                <div className="market-breadth-side fall">
+                  <span className="market-breadth-label">下跌</span>
+                  <strong>{breadth.declineCount ?? '--'}</strong>
+                </div>
+              </div>
+              <div className="market-breadth-track" aria-label="上涨下跌对抗条">
+                <div className="market-breadth-segment rise" style={{ width: `${advanceRatio}%` }} />
+                <div className="market-breadth-segment fall" style={{ width: `${declineRatio}%` }} />
+              </div>
+              <div className="market-breadth-footnote">
+                <span className="market-breadth-chip flat">平盘 {breadth.flatCount ?? '--'}</span>
+                <span className="market-breadth-chip">涨停 {breadth.limitUpCount ?? '--'}</span>
+                <span className="market-breadth-chip">跌停 {breadth.limitDownCount ?? '--'}</span>
+                <span className="market-breadth-chip muted">样本 {breadth.sampleSize ?? '--'}</span>
+                <span className={`market-breadth-chip ${breadthIsDegraded ? 'warning' : 'muted'}`}>
+                  {breadthIsDegraded ? '降级样本' : `来源 ${breadthSource}`}
+                </span>
+              </div>
+            </>
+          ) : (
+            <span className="market-breadth-chip muted">暂无市场广度数据</span>
+          )}
+        </div>
+      </div>
     );
   }
 
@@ -2394,20 +2655,68 @@ function App() {
               renderDetailView()
             ) : (
               <>
-                <div className="section-heading">
+                {renderMarketOverviewBar()}
+                <div className="section-heading overview-heading">
                   <div>
                     <h2>快照总览</h2>
                     <p className="panel-tip compact">按标的汇总最新价格、涨跌幅和关键估值指标，点击卡片可查看详情。</p>
                   </div>
+                  <div className="overview-heading-meta">
+                    <span className="symbol-count-badge">监控中 {activeSymbols.length}</span>
+                    <span className="symbol-count-badge">最近更新 {overviewLastUpdatedAt ? formatRelativeDateTime(overviewLastUpdatedAt) : '--'}</span>
+                    <span className={`status-line ${getMarketStatusTone(connectionState === 'connected' ? marketStatus : 'disconnected')}`}>
+                      市场状态：{getMarketStatusLabel(connectionState === 'connected' ? marketStatus : 'disconnected')}
+                    </span>
+                    <span className="symbol-count-badge">状态时间 {marketStatusUpdatedAt ? formatTime(marketStatusUpdatedAt) : '--:--:--'}</span>
+                  </div>
+                </div>
+                <div className="overview-toolbar">
+                  <div className="content-filter-row overview-search-row">
+                    <label className="content-symbol-select-label" htmlFor="overview-search-input">
+                      搜索标的
+                    </label>
+                    <input
+                      id="overview-search-input"
+                      className="overview-search-input"
+                      value={overviewSearchQuery}
+                      onChange={(event) => setOverviewSearchQuery(event.target.value)}
+                      placeholder="搜索股票代码/名称"
+                    />
+                  </div>
+                  <div className="content-filter-row overview-sort-row">
+                    <label className="content-symbol-select-label" htmlFor="overview-sort-select">
+                      排序方式
+                    </label>
+                    <div className="overview-sort-controls">
+                      <select
+                        id="overview-sort-select"
+                        className="content-symbol-select"
+                        value={overviewSortKey}
+                        onChange={(event) => setOverviewSortKey(event.target.value)}
+                      >
+                        <option value="marketCap">总市值</option>
+                        <option value="changePct">涨跌幅</option>
+                        <option value="turnoverRate">换手率</option>
+                        <option value="lastPrice">最新价</option>
+                      </select>
+                      <button
+                        type="button"
+                        className="view-tab overview-sort-toggle"
+                        onClick={() => setOverviewSortDirection((current) => (current === 'desc' ? 'asc' : 'desc'))}
+                      >
+                        {overviewSortDirection === 'desc' ? '降序' : '升序'}
+                      </button>
+                    </div>
+                  </div>
                 </div>
                 <div className="snapshot-grid">
-                  {activeSymbols.length ? (
-                    activeSymbols.map((item) => {
+                  {overviewItems.length ? (
+                    overviewItems.map((item) => {
                       const snapshot = snapshots[item];
                       return renderOverviewCard(item, snapshot);
                     })
                   ) : (
-                    <p>尚未生成快照数据。</p>
+                    <p>{activeSymbols.length ? '当前筛选条件下没有匹配标的。' : '尚未生成快照数据。'}</p>
                   )}
                 </div>
               </>
