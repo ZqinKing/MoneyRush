@@ -8,6 +8,7 @@ import asyncpg
 
 
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
+INTRADAY_EXPECTED_BUCKET_COUNT = 240
 
 
 def _to_float(value: object) -> float | None:
@@ -38,6 +39,16 @@ def _to_iso(value: object) -> str | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC).isoformat()
     return value.astimezone(UTC).isoformat()
+
+
+def _parse_iso_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _decode_jsonish(value: object) -> dict[str, object] | None:
@@ -381,7 +392,13 @@ class MarketDetailQueryService:
             "askVolume1": _to_int(raw.get("askVolume1")) if raw else None,
         }
 
-    async def fetch_intraday_sampled_bars(self, symbol: str, *, interval_minutes: int = 5) -> list[dict[str, object]]:
+    async def fetch_intraday_sampled_bars(
+        self,
+        symbol: str,
+        *,
+        interval_minutes: int = 5,
+        allow_tick_fallback: bool = True,
+    ) -> list[dict[str, object]]:
         if interval_minutes < 1:
             raise ValueError("interval_minutes must be >= 1")
 
@@ -396,6 +413,9 @@ class MarketDetailQueryService:
         )
         if persisted_bars:
             return persisted_bars
+
+        if not allow_tick_fallback:
+            return []
 
         day_start_utc, day_end_utc = latest_trade_day_window
         source_priority_rows = await self._fetch(
@@ -491,6 +511,81 @@ class MarketDetailQueryService:
                 previous_amount = amount
 
         return bars
+
+    async def fetch_intraday_completeness(
+        self,
+        symbol: str,
+        *,
+        reference_ts: object = None,
+        reconciliation_seconds: int = 0,
+    ) -> dict[str, object]:
+        reference_dt = reference_ts if isinstance(reference_ts, datetime) else _parse_iso_timestamp(reference_ts)
+        trade_day_window = (
+            self._trade_day_window_for_ts(reference_dt)
+            if isinstance(reference_dt, datetime)
+            else await self._latest_intraday_trade_day_window(symbol)
+        )
+
+        if trade_day_window is None:
+            return {
+                "tradeDay": None,
+                "expectedFinalBucketTs": None,
+                "lastBucketTs": None,
+                "expectedBucketCount": INTRADAY_EXPECTED_BUCKET_COUNT,
+                "actualBucketCount": 0,
+                "missingBucketCount": INTRADAY_EXPECTED_BUCKET_COUNT,
+                "isComplete": False,
+                "isFinal": True,
+                "status": "unavailable",
+                "source": None,
+            }
+
+        day_start_utc, day_end_utc = trade_day_window
+        rows = await self._fetch(
+            """
+            SELECT bucket_ts, source
+            FROM stock_kline
+            WHERE symbol = $1
+              AND period = '1m'
+              AND bucket_ts >= $2
+              AND bucket_ts < $3
+            ORDER BY bucket_ts ASC
+            """,
+            symbol,
+            day_start_utc,
+            day_end_utc,
+        )
+
+        trade_day_label = self._trade_day_label(day_start_utc)
+        expected_buckets = self._expected_intraday_bucket_set(day_start_utc)
+        actual_buckets = {
+            row["bucket_ts"]
+            for row in rows
+            if isinstance(row["bucket_ts"], datetime)
+        }
+        actual_count = len(actual_buckets)
+        missing_count = max(len(expected_buckets) - len(actual_buckets), 0)
+        expected_final_bucket = max(expected_buckets) if expected_buckets else None
+        last_bucket = max(actual_buckets) if actual_buckets else None
+        is_complete = expected_buckets.issubset(actual_buckets) if expected_buckets else False
+        status = self._resolve_intraday_status(
+            trade_day_window=trade_day_window,
+            is_complete=is_complete,
+            has_rows=bool(actual_buckets),
+            reconciliation_seconds=reconciliation_seconds,
+        )
+        return {
+            "tradeDay": trade_day_label,
+            "expectedFinalBucketTs": _to_iso(expected_final_bucket),
+            "lastBucketTs": _to_iso(last_bucket),
+            "expectedBucketCount": len(expected_buckets),
+            "actualBucketCount": actual_count,
+            "missingBucketCount": missing_count,
+            "isComplete": is_complete,
+            "isFinal": status != "pending",
+            "status": status,
+            "source": rows[-1]["source"] if rows else None,
+        }
 
     async def _fetch_intraday_bars_from_kline(
         self,
@@ -634,6 +729,42 @@ class MarketDetailQueryService:
         bucket_minute = (local_ts.minute // interval_minutes) * interval_minutes
         bucket_local = local_ts.replace(minute=bucket_minute, second=0, microsecond=0)
         return bucket_local.astimezone(UTC)
+
+    @staticmethod
+    def _expected_intraday_bucket_set(day_start_utc: datetime) -> set[datetime]:
+        local_day = day_start_utc.astimezone(CHINA_MARKET_TZ)
+        morning_start = local_day.replace(hour=9, minute=30, second=0, microsecond=0)
+        afternoon_start = local_day.replace(hour=13, minute=0, second=0, microsecond=0)
+        buckets = {
+            (morning_start + timedelta(minutes=offset)).astimezone(UTC)
+            for offset in range(120)
+        }
+        buckets.update(
+            (afternoon_start + timedelta(minutes=offset)).astimezone(UTC)
+            for offset in range(120)
+        )
+        return buckets
+
+    @staticmethod
+    def _resolve_intraday_status(
+        *,
+        trade_day_window: tuple[datetime, datetime],
+        is_complete: bool,
+        has_rows: bool,
+        reconciliation_seconds: int,
+    ) -> str:
+        if is_complete:
+            return "complete"
+        if not has_rows:
+            return "unavailable"
+
+        now_local = datetime.now(CHINA_MARKET_TZ)
+        trade_day_local = trade_day_window[0].astimezone(CHINA_MARKET_TZ)
+        close_local = trade_day_local.replace(hour=15, minute=0, second=0, microsecond=0)
+        reconciliation_end_local = close_local + timedelta(seconds=max(reconciliation_seconds, 0))
+        if now_local.date() == trade_day_local.date() and now_local <= reconciliation_end_local:
+            return "pending"
+        return "incomplete"
 
     @staticmethod
     def _serialize_kline_row(row: asyncpg.Record | None) -> dict[str, object] | None:
