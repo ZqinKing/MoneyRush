@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     market_snapshot_key_prefix: str = "moneyrush:snapshot"
     market_event_key_prefix: str = "moneyrush:event"
     market_events_stream_key: str = "moneyrush:market:events"
+    market_overview_cache_key: str = "moneyrush:market:overview"
     collector_poll_interval_seconds: int = 5
     collector_symbol_min_interval_seconds: int = 10
     collector_unchanged_quote_backoff_threshold: int = 2
@@ -39,6 +40,15 @@ class Settings(BaseSettings):
     content_news_refresh_seconds: int = 1800
     content_announcement_refresh_seconds: int = 7200
     content_market_news_refresh_seconds: int = 900
+    market_overview_collector_enabled: bool = True
+    market_overview_refresh_seconds: int = 30
+    market_overview_tencent_fallback_enabled: bool = True
+    market_overview_tencent_refresh_seconds: int = 120
+    market_overview_tencent_failure_cooldown_seconds: int = 180
+    market_overview_legu_breadth_enabled: bool = True
+    market_overview_legu_breadth_refresh_seconds: int = 300
+    market_overview_legu_breadth_timeout_seconds: int = 10
+    market_overview_legu_breadth_failure_cooldown_seconds: int = 600
     content_report_backfill_days: int = 365
     content_announcement_backfill_pages: int = 5
     content_news_backfill_max_items: int = 100

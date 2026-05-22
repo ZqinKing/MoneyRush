@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     market_snapshot_key_prefix: str = "moneyrush:snapshot"
     market_event_key_prefix: str = "moneyrush:event"
     market_events_stream_key: str = "moneyrush:market:events"
+    market_overview_cache_key: str = "moneyrush:market:overview"
     ws_heartbeat_interval_seconds: int = 2
     content_query_cache_ttl_seconds: int = 120
     content_feed_cache_key_prefix: str = "moneyrush:content:feed"

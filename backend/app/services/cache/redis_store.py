@@ -15,6 +15,7 @@ class RedisStore:
         market_snapshot_key_prefix: str,
         market_event_key_prefix: str,
         market_events_stream_key: str,
+        market_overview_cache_key: str = "moneyrush:market:overview",
         content_feed_cache_key_prefix: str = "moneyrush:content:feed",
         content_status_cache_key_prefix: str = "moneyrush:content:status",
     ) -> None:
@@ -24,6 +25,7 @@ class RedisStore:
         self._market_snapshot_key_prefix = market_snapshot_key_prefix
         self._market_event_key_prefix = market_event_key_prefix
         self._market_events_stream_key = market_events_stream_key
+        self._market_overview_cache_key = market_overview_cache_key
         self._content_feed_cache_key_prefix = content_feed_cache_key_prefix
         self._content_status_cache_key_prefix = content_status_cache_key_prefix
 
@@ -134,6 +136,15 @@ class RedisStore:
 
     async def close(self) -> None:
         await self._redis.aclose()
+
+    async def get_market_overview(self) -> dict[str, object] | None:
+        payload = await self._redis.get(self._market_overview_cache_key)
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    async def set_market_overview(self, payload: dict[str, object]) -> None:
+        await self._redis.set(self._market_overview_cache_key, json.dumps(payload))
 
     async def clear_content_caches(self) -> None:
         await self._delete_by_pattern(f"{self._content_feed_cache_key_prefix}:*")
