@@ -168,7 +168,7 @@ class TencentQuote:
             "source": "tencent-finance",
             "raw": {
                 "provider": "tencent-finance",
-                "providerVolumeUnit": "lots",
+                "providerVolumeUnit": "shares",
                 "volumeUnit": "shares",
                 "currency": self.currency,
                 "previousClose": self.previous_close,
@@ -189,7 +189,7 @@ class TencentQuote:
             "source": "tencent-finance",
             "raw": {
                 "provider": "tencent-finance",
-                "providerVolumeUnit": "lots",
+                "providerVolumeUnit": "shares",
                 "volumeUnit": "shares",
                 "previousClose": self.previous_close,
                 "currency": self.currency,
@@ -267,7 +267,7 @@ class TencentQuoteClient:
         open_price = _to_float(parts[5])
         high_price = _to_float(parts[33])
         low_price = _to_float(parts[34])
-        volume = _lots_to_shares(_to_int(parts[36]))
+        volume = _to_int(parts[36])
         amount = None
         if parts[35]:
             detail_parts = parts[35].split("/")
