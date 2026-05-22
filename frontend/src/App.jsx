@@ -2190,13 +2190,7 @@ function App() {
                       </h4>
                       <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · {intradayDataModeLabel} · 白线价格 / 黄线均价</span>
                     </div>
-                    <div
-                      className="chart-interaction-layer"
-                      onMouseMove={handleIntradayHoverMove}
-                      onMouseLeave={handleIntradayHoverLeave}
-                      onPointerMove={handleIntradayHoverMove}
-                      onPointerLeave={handleIntradayHoverLeave}
-                    >
+                    <div className="chart-interaction-layer">
                     <svg
                       className={`kline-chart line-chart-surface ${intradayTone}-tone`}
                       viewBox={`0 0 ${intradayLineChart.width} ${intradayLineChart.height}`}
@@ -2303,6 +2297,11 @@ function App() {
                       <div
                         className="chart-hover-overlay"
                         style={{ width: `${(intradayLineChart.plotWidth / intradayLineChart.width) * 100}%` }}
+                        onMouseMove={handleIntradayHoverMove}
+                        onMouseLeave={handleIntradayHoverLeave}
+                        onPointerMove={handleIntradayHoverMove}
+                        onPointerLeave={handleIntradayHoverLeave}
+                        aria-hidden="true"
                       />
                     </div>
                     <div className="chart-axis-row intraday-axis-row" style={{ width: `${(intradayLineChart.plotWidth / intradayLineChart.width) * 100}%` }}>
