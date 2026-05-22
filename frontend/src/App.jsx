@@ -2031,6 +2031,7 @@ function App() {
         ? intradayChartPoints[intradayChartPoints.length - 1]
         : detailPayload?.latestKline || null;
     const latestEvent = detailPayload?.latestEvent || null;
+    const intradayCompleteness = detailPayload?.intradayCompleteness || null;
     const orderBook = detailPayload?.orderBook || {};
     const capabilities = detailPayload?.capabilities || {};
     const events = dedupeEvents(selectedDetail?.events || []);
@@ -2065,6 +2066,27 @@ function App() {
         : intradayDataMode === 'tick'
           ? 'Tick 回退'
           : '暂无数据';
+    const intradayCompletenessStatus = typeof intradayCompleteness?.status === 'string' ? intradayCompleteness.status : 'unavailable';
+    const intradayCompletenessLabel = intradayCompletenessStatus === 'complete'
+      ? '分时完整'
+      : intradayCompletenessStatus === 'pending'
+        ? '分时补齐中'
+        : intradayCompletenessStatus === 'incomplete'
+          ? '分时未完整'
+          : '分时不可用';
+    const intradayCompletenessTone = intradayCompletenessStatus === 'complete'
+      ? 'muted'
+      : intradayCompletenessStatus === 'pending'
+        ? 'warning'
+        : intradayCompletenessStatus === 'incomplete'
+          ? 'warning'
+          : 'muted';
+    const shouldShowIntradayCompletenessNotice = showingIntraday && intradayCompletenessStatus !== 'complete';
+    const intradayCompletenessMessage = intradayCompletenessStatus === 'pending'
+      ? `分时数据仍在补齐中，当前仅展示已入库的真实点位${intradayCompleteness?.lastBucketTs ? `；最新分钟 ${formatTime(intradayCompleteness.lastBucketTs)}` : ''}。`
+      : intradayCompletenessStatus === 'incomplete'
+        ? `尾盘分时数据仍不完整，图表只展示已接收到的真实分钟线${intradayCompleteness?.missingBucketCount > 0 ? `；当前缺少 ${intradayCompleteness.missingBucketCount} 个分钟桶。` : '。'}`
+        : '当前没有可用于判定完整性的 1 分钟分时数据。';
     const intradayHoverSummary = showingIntraday && intradayLineChart && intradayHoverPoint
       ? {
           time: formatTime(intradayHoverPoint.bucketTs),
@@ -2187,9 +2209,11 @@ function App() {
                       <h4>
                         分时线
                         <span className={`intraday-render-badge intraday-render-badge-${intradayDataMode}`}>{intradayDataModeLabel}</span>
+                        {shouldShowIntradayCompletenessNotice ? <span className={`market-breadth-chip ${intradayCompletenessTone}`}>{intradayCompletenessLabel}</span> : null}
                       </h4>
                       <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · {intradayDataModeLabel} · 白线价格 / 黄线均价</span>
                     </div>
+                    {shouldShowIntradayCompletenessNotice ? <p className="panel-tip compact intraday-completeness-tip">{intradayCompletenessMessage}</p> : null}
                     <div className="chart-interaction-layer">
                     <svg
                       className={`kline-chart line-chart-surface ${intradayTone}-tone`}

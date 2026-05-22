@@ -1368,6 +1368,11 @@ input {
   color: #8fa6d8;
 }
 
+.intraday-completeness-tip {
+  margin: 0;
+  color: #ffd58c;
+}
+
 .intraday-render-badge {
   display: inline-flex;
   align-items: center;
