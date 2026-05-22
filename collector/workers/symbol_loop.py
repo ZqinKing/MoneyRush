@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from time import monotonic
 from collections.abc import Sequence
 
@@ -15,6 +15,7 @@ from collector.services.tencent_quote_client import MarketQuoteClient
 
 logger = logging.getLogger(__name__)
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
+INTRADAY_EXPECTED_BUCKET_COUNT = 240
 
 
 class CollectorWorker:
@@ -32,7 +33,8 @@ class CollectorWorker:
         self._symbol_poll_interval_seconds: dict[str, float] = {}
         self._unchanged_quote_counts: dict[str, int] = {}
         self._daily_history_synced_for_trade_day: dict[str, str] = {}
-        self._intraday_history_synced_for_trade_day: dict[str, str] = {}
+        self._intraday_history_terminal_for_trade_day: dict[str, tuple[str, str]] = {}
+        self._intraday_history_last_refresh_at: dict[str, float] = {}
         self._latest_daily_trade_day_by_symbol: dict[str, date] = {}
         self._postgres_ready = False
 
@@ -144,7 +146,8 @@ class CollectorWorker:
         self._symbol_poll_interval_seconds.pop(symbol, None)
         self._unchanged_quote_counts.pop(symbol, None)
         self._daily_history_synced_for_trade_day.pop(symbol, None)
-        self._intraday_history_synced_for_trade_day.pop(symbol, None)
+        self._intraday_history_terminal_for_trade_day.pop(symbol, None)
+        self._intraday_history_last_refresh_at.pop(symbol, None)
         self._latest_daily_trade_day_by_symbol.pop(symbol, None)
 
     def _market_state_identity(self, market_state: dict[str, dict[str, object]]) -> tuple[object, ...]:
@@ -220,19 +223,25 @@ class CollectorWorker:
             return
 
         trade_day = trade_day_date.isoformat()
-        if self._intraday_history_synced_for_trade_day.get(symbol) == trade_day:
+        terminal_state = self._intraday_history_terminal_for_trade_day.get(symbol)
+        if terminal_state is not None and terminal_state[0] == trade_day:
+            return
+
+        if self._should_skip_intraday_refresh(symbol, trade_day_date):
             return
 
         history = await asyncio.to_thread(self._quote_client.fetch_intraday_history, symbol, trade_day_date)
+        self._intraday_history_last_refresh_at[symbol] = monotonic()
+        terminal_status = self._resolve_intraday_terminal_status(trade_day_date, history)
         if history:
             await self._postgres.persist_kline_history(history)
-            self._intraday_history_synced_for_trade_day[symbol] = trade_day
             logger.info(
                 "collector backfilled intraday kline history",
                 extra={
                     "symbol": symbol,
                     "trade_day": trade_day,
                     "rows": len(history),
+                    "terminal_status": terminal_status,
                 },
             )
         else:
@@ -241,8 +250,74 @@ class CollectorWorker:
                 extra={
                     "symbol": symbol,
                     "trade_day": trade_day,
+                    "terminal_status": terminal_status,
                 },
             )
+
+        if terminal_status is not None:
+            self._intraday_history_terminal_for_trade_day[symbol] = (trade_day, terminal_status)
+
+    def _should_skip_intraday_refresh(self, symbol: str, trade_day_date: date) -> bool:
+        if trade_day_date != datetime.now(CHINA_MARKET_TZ).date():
+            return False
+
+        last_refresh_at = self._intraday_history_last_refresh_at.get(symbol)
+        if last_refresh_at is None:
+            return False
+
+        refresh_seconds = self._intraday_refresh_interval_seconds(trade_day_date)
+        return monotonic() - last_refresh_at < refresh_seconds
+
+    def _intraday_refresh_interval_seconds(self, trade_day_date: date) -> int:
+        base_refresh_seconds = max(int(self._settings.collector_intraday_history_refresh_seconds), 1)
+        if self._is_within_intraday_reconciliation_window(trade_day_date):
+            reconciliation_seconds = max(int(self._settings.collector_intraday_post_close_reconciliation_seconds), 0)
+            if reconciliation_seconds > 0:
+                return min(base_refresh_seconds, reconciliation_seconds)
+        return base_refresh_seconds
+
+    def _resolve_intraday_terminal_status(self, trade_day_date: date, history: list[dict[str, object]]) -> str | None:
+        if trade_day_date != datetime.now(CHINA_MARKET_TZ).date():
+            return "complete" if self._is_intraday_history_complete(trade_day_date, history) else "incomplete"
+
+        if self._is_intraday_history_complete(trade_day_date, history):
+            return "complete"
+
+        if not self._is_within_intraday_reconciliation_window(trade_day_date):
+            return "incomplete"
+
+        return None
+
+    def _is_intraday_history_complete(self, trade_day_date: date, history: list[dict[str, object]]) -> bool:
+        bucket_ts_values = {
+            item.get("bucketTs")
+            for item in history
+            if isinstance(item.get("bucketTs"), datetime)
+        }
+        expected_final_bucket = self._expected_intraday_final_bucket(trade_day_date)
+        return len(bucket_ts_values) >= INTRADAY_EXPECTED_BUCKET_COUNT and expected_final_bucket in bucket_ts_values
+
+    def _is_within_intraday_reconciliation_window(self, trade_day_date: date) -> bool:
+        now_local = datetime.now(CHINA_MARKET_TZ)
+        if now_local.date() != trade_day_date:
+            return False
+
+        market_close_local = datetime(trade_day_date.year, trade_day_date.month, trade_day_date.day, 15, 0, tzinfo=CHINA_MARKET_TZ)
+        reconciliation_end_local = market_close_local + timedelta(
+            seconds=max(int(self._settings.collector_intraday_post_close_reconciliation_seconds), 0)
+        )
+        return now_local <= reconciliation_end_local
+
+    @staticmethod
+    def _expected_intraday_final_bucket(trade_day_date: date) -> datetime:
+        return datetime(
+            trade_day_date.year,
+            trade_day_date.month,
+            trade_day_date.day,
+            14,
+            59,
+            tzinfo=CHINA_MARKET_TZ,
+        ).astimezone(UTC)
 
     async def _consume_command_stream(self) -> None:
         messages = await self._redis.xread(

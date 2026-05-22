@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     collector_intraday_history_request_interval_seconds: int = 8
     collector_intraday_history_request_jitter_seconds: int = 2
     collector_intraday_history_vendor_cooldown_seconds: int = 3600
+    collector_intraday_post_close_reconciliation_seconds: int = 900
     collector_enable_runtime_data_repair: bool = False
     collector_vendor_price_divergence_limit_pct: float = 15.0
     content_collector_enabled: bool = True
