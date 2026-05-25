@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.content import router as content_router
+from app.api.routes.dragon_tiger import router as dragon_tiger_router
 from app.api.routes.health import router as health_router
 from app.api.routes.market import router as market_router
 from app.api.routes.symbols import router as symbols_router
@@ -15,6 +16,7 @@ from app.services.cache.redis_store import RedisStore
 from app.services.content_query_service import ContentQueryService
 from app.services.market_detail.query_service import MarketDetailQueryService
 from app.services.symbol_lookup import SymbolLookupService
+from app.services.vendors.dragon_tiger_client import DragonTigerClient
 from app.ws.market import router as market_ws_router
 
 
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI):
         market_overview_cache_key=settings.market_overview_cache_key,
         content_feed_cache_key_prefix=settings.content_feed_cache_key_prefix,
         content_status_cache_key_prefix=settings.content_status_cache_key_prefix,
+        dragon_tiger_cache_key_prefix=settings.dragon_tiger_cache_key_prefix,
     )
     app.state.market_detail_query_service = MarketDetailQueryService(settings.postgres_dsn)
     app.state.content_query_service = ContentQueryService(
@@ -61,6 +64,7 @@ async def lifespan(app: FastAPI):
         },
     )
     app.state.symbol_lookup_service = SymbolLookupService()
+    app.state.dragon_tiger_client = DragonTigerClient()
     await app.state.market_detail_query_service.connect()
     await app.state.content_query_service.connect()
 
@@ -96,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(market_router, prefix="/api/v1")
     app.include_router(symbols_router, prefix="/api/v1")
     app.include_router(content_router, prefix="/api/v1")
+    app.include_router(dragon_tiger_router, prefix="/api/v1")
     app.include_router(market_ws_router)
     return app
 

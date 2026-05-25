@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     content_query_cache_ttl_seconds: int = 120
     content_feed_cache_key_prefix: str = "moneyrush:content:feed"
     content_status_cache_key_prefix: str = "moneyrush:content:status"
+    dragon_tiger_cache_key_prefix: str = "moneyrush:dragon_tiger"
+    dragon_tiger_cache_ttl_seconds: int = 300
     content_report_refresh_seconds: int = 43200
     content_news_refresh_seconds: int = 1800
     content_announcement_refresh_seconds: int = 7200

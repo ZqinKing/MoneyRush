@@ -18,6 +18,7 @@ class RedisStore:
         market_overview_cache_key: str = "moneyrush:market:overview",
         content_feed_cache_key_prefix: str = "moneyrush:content:feed",
         content_status_cache_key_prefix: str = "moneyrush:content:status",
+        dragon_tiger_cache_key_prefix: str = "moneyrush:dragon_tiger",
     ) -> None:
         self._redis = Redis.from_url(redis_url, decode_responses=True)
         self._stream_key = stream_key
@@ -28,6 +29,7 @@ class RedisStore:
         self._market_overview_cache_key = market_overview_cache_key
         self._content_feed_cache_key_prefix = content_feed_cache_key_prefix
         self._content_status_cache_key_prefix = content_status_cache_key_prefix
+        self._dragon_tiger_cache_key_prefix = dragon_tiger_cache_key_prefix
 
     def _snapshot_key(self, symbol: str) -> str:
         return f"{self._market_snapshot_key_prefix}:{symbol}"
@@ -40,6 +42,9 @@ class RedisStore:
 
     def _content_status_key(self, cache_key: str) -> str:
         return f"{self._content_status_cache_key_prefix}:{cache_key}"
+
+    def _dragon_tiger_key(self, cache_key: str) -> str:
+        return f"{self._dragon_tiger_cache_key_prefix}:{cache_key}"
 
     async def _delete_by_pattern(self, pattern: str) -> None:
         cursor = 0
@@ -167,3 +172,12 @@ class RedisStore:
 
     async def set_content_status_cache(self, cache_key: str, payload: dict[str, object], ttl_seconds: int) -> None:
         await self._redis.set(self._content_status_key(cache_key), json.dumps(payload), ex=ttl_seconds)
+
+    async def get_dragon_tiger_cache(self, cache_key: str) -> dict[str, object] | None:
+        payload = await self._redis.get(self._dragon_tiger_key(cache_key))
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    async def set_dragon_tiger_cache(self, cache_key: str, payload: dict[str, object], ttl_seconds: int) -> None:
+        await self._redis.set(self._dragon_tiger_key(cache_key), json.dumps(payload), ex=ttl_seconds)
