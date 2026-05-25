@@ -1800,18 +1800,18 @@ function App() {
           {breadth ? (
             <>
               <div className="market-breadth-summary" aria-hidden="true">
-                <div className="market-breadth-side rise">
-                  <span className="market-breadth-label">上涨</span>
-                  <strong>{breadth.advanceCount ?? '--'}</strong>
-                </div>
                 <div className="market-breadth-side fall">
                   <span className="market-breadth-label">下跌</span>
                   <strong>{breadth.declineCount ?? '--'}</strong>
                 </div>
+                <div className="market-breadth-side rise">
+                  <span className="market-breadth-label">上涨</span>
+                  <strong>{breadth.advanceCount ?? '--'}</strong>
+                </div>
               </div>
-              <div className="market-breadth-track" aria-label="上涨下跌对抗条">
-                <div className="market-breadth-segment rise" style={{ width: `${advanceRatio}%` }} />
+              <div className="market-breadth-track" aria-label="下跌上涨对抗条">
                 <div className="market-breadth-segment fall" style={{ width: `${declineRatio}%` }} />
+                <div className="market-breadth-segment rise" style={{ width: `${advanceRatio}%` }} />
               </div>
               <div className="market-breadth-footnote">
                 <span className="market-breadth-chip flat">平盘 {breadth.flatCount ?? '--'}</span>
