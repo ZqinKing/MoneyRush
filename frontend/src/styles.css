@@ -669,6 +669,132 @@ input {
   min-width: 0;
 }
 
+.dragon-tiger-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.dragon-tiger-toolbar-row {
+  align-items: flex-end;
+}
+
+.dragon-tiger-toolbar-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.dragon-tiger-filter-row {
+  flex: 0 1 260px;
+}
+
+.dragon-tiger-date-input {
+  width: 100%;
+}
+
+.dragon-tiger-toolbar-meta {
+  display: flex;
+  align-items: center;
+}
+
+.dragon-tiger-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 10px;
+}
+
+.dragon-tiger-section {
+  display: grid;
+  gap: 12px;
+}
+
+.dragon-tiger-heading {
+  margin-bottom: 0;
+}
+
+.dragon-tiger-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(157, 180, 255, 0.12);
+  background: rgba(4, 8, 16, 0.9);
+}
+
+.dragon-tiger-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.dragon-tiger-card-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.dragon-tiger-source-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(129, 164, 255, 0.18);
+  background: rgba(43, 96, 255, 0.12);
+  color: #dbe6ff;
+  font-size: 0.78rem;
+}
+
+.dragon-tiger-metric {
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.dragon-tiger-metrics-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 6px;
+}
+
+.dragon-tiger-pill {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(11, 18, 34, 0.72);
+  border: 1px solid rgba(157, 180, 255, 0.12);
+  color: #dbe6ff;
+  font-size: 0.86rem;
+}
+
+.dragon-tiger-table-wrap {
+  max-height: 520px;
+}
+
+.dragon-tiger-table {
+  min-width: 780px;
+}
+
+.dragon-tiger-reason-cell {
+  min-width: 280px;
+  max-width: 440px;
+  color: #bbcaea;
+}
+
+.dragon-tiger-table th,
+.dragon-tiger-table td {
+  white-space: nowrap;
+}
+
+.dragon-tiger-table td:last-child,
+.dragon-tiger-table td:nth-child(2),
+.dragon-tiger-table td:nth-child(1) {
+  white-space: normal;
+}
+
 .content-toolbar-groups {
   display: flex;
   flex-wrap: nowrap;

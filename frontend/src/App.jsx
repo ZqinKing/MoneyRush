@@ -77,6 +77,8 @@ const contentLaneLabels = {
   'market-news': '市场快讯',
 };
 
+const dragonTigerDefaultStockDisplayLimit = 100;
+
 function buildContentFeedUrl({ symbol = '', type = 'all', timeRange = 'today', limit = 20, before = '' }) {
   const params = new URLSearchParams();
   if (symbol) {
@@ -109,6 +111,51 @@ function buildEventSummariesUrl() {
 
 function buildMarketOverviewUrl() {
   return `${apiBaseUrl}/api/v1/market/overview`;
+}
+
+function buildDragonTigerDailyUrl(tradeDate = '') {
+  const params = new URLSearchParams();
+  if (tradeDate) {
+    params.set('date', tradeDate);
+  }
+  const query = params.toString();
+  return `${apiBaseUrl}/api/v1/dragon-tiger/daily${query ? `?${query}` : ''}`;
+}
+
+function buildDragonTigerStocksUrl(range = '1month') {
+  const params = new URLSearchParams();
+  params.set('range', range);
+  return `${apiBaseUrl}/api/v1/dragon-tiger/stocks?${params.toString()}`;
+}
+
+function buildDragonTigerInstitutionUrl(startDate = '', endDate = '') {
+  const params = new URLSearchParams();
+  if (startDate) {
+    params.set('startDate', startDate);
+  }
+  if (endDate) {
+    params.set('endDate', endDate);
+  }
+  return `${apiBaseUrl}/api/v1/dragon-tiger/institution?${params.toString()}`;
+}
+
+function buildDragonTigerBranchRankUrl(range = '1month') {
+  const params = new URLSearchParams();
+  params.set('range', range);
+  return `${apiBaseUrl}/api/v1/dragon-tiger/branch-rank?${params.toString()}`;
+}
+
+function buildDragonTigerSeatDatesUrl(symbol = '') {
+  return `${apiBaseUrl}/api/v1/dragon-tiger/stock/${encodeURIComponent(symbol)}/seat-dates`;
+}
+
+function buildDragonTigerSeatDetailUrl(symbol = '', tradeDate = '', side = 'buy') {
+  const params = new URLSearchParams();
+  if (tradeDate) {
+    params.set('date', tradeDate);
+  }
+  params.set('side', side);
+  return `${apiBaseUrl}/api/v1/dragon-tiger/stock/${encodeURIComponent(symbol)}/seat-detail?${params.toString()}`;
 }
 
 async function parseJsonOrThrow(response, fallbackMessage) {
@@ -1191,6 +1238,21 @@ function App() {
   const [contentRequestState, setContentRequestState] = useState('idle');
   const [eventSummaries, setEventSummaries] = useState({});
   const [eventSummaryRequestState, setEventSummaryRequestState] = useState('idle');
+  const [dragonTigerRange, setDragonTigerRange] = useState('1month');
+  const [dragonTigerDate, setDragonTigerDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [dragonTigerDaily, setDragonTigerDaily] = useState([]);
+  const [dragonTigerStocks, setDragonTigerStocks] = useState([]);
+  const [dragonTigerInstitution, setDragonTigerInstitution] = useState([]);
+  const [dragonTigerBranchRank, setDragonTigerBranchRank] = useState([]);
+  const [dragonTigerSeatSymbol, setDragonTigerSeatSymbol] = useState('');
+  const [dragonTigerSeatDates, setDragonTigerSeatDates] = useState([]);
+  const [dragonTigerSeatDate, setDragonTigerSeatDate] = useState('');
+  const [dragonTigerSeatSide, setDragonTigerSeatSide] = useState('buy');
+  const [dragonTigerSeatDetail, setDragonTigerSeatDetail] = useState([]);
+  const [dragonTigerRequestState, setDragonTigerRequestState] = useState('idle');
+  const [dragonTigerStatsExpanded, setDragonTigerStatsExpanded] = useState(false);
+  const [dragonTigerStatsRequestState, setDragonTigerStatsRequestState] = useState('idle');
+  const [dragonTigerStocksExpanded, setDragonTigerStocksExpanded] = useState(false);
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
@@ -1210,6 +1272,76 @@ function App() {
         .filter((item) => item.snapshot || item.event || item.summary),
     [activeSymbols, eventSummaries, messages, snapshots],
   );
+
+  const dragonTigerRangeLabels = {
+    '1month': '近一月',
+    '3month': '近三月',
+    '6month': '近六月',
+    '1year': '近一年',
+  };
+
+  const dragonTigerDailySorted = useMemo(() => {
+    return [...dragonTigerDaily].sort((left, right) => {
+      const leftValue = typeof left?.netBuyAmount === 'number' ? left.netBuyAmount : Number.NEGATIVE_INFINITY;
+      const rightValue = typeof right?.netBuyAmount === 'number' ? right.netBuyAmount : Number.NEGATIVE_INFINITY;
+      return rightValue - leftValue;
+    });
+  }, [dragonTigerDaily]);
+
+  const dragonTigerStocksSorted = useMemo(() => {
+    return [...dragonTigerStocks].sort((left, right) => {
+      const leftValue = typeof left?.billboardTimes === 'number'
+        ? left.billboardTimes
+        : typeof left?.count === 'number'
+          ? left.count
+          : Number.NEGATIVE_INFINITY;
+      const rightValue = typeof right?.billboardTimes === 'number'
+        ? right.billboardTimes
+        : typeof right?.count === 'number'
+          ? right.count
+          : Number.NEGATIVE_INFINITY;
+      return rightValue - leftValue;
+    });
+  }, [dragonTigerStocks]);
+
+  const dragonTigerStocksVisible = useMemo(() => {
+    if (dragonTigerStocksExpanded) {
+      return dragonTigerStocksSorted;
+    }
+    return dragonTigerStocksSorted.slice(0, dragonTigerDefaultStockDisplayLimit);
+  }, [dragonTigerStocksExpanded, dragonTigerStocksSorted]);
+
+  const dragonTigerInstitutionSorted = useMemo(() => {
+    return [...dragonTigerInstitution].sort((left, right) => {
+      const leftValue = typeof left?.orgNetAmount === 'number' ? left.orgNetAmount : Number.NEGATIVE_INFINITY;
+      const rightValue = typeof right?.orgNetAmount === 'number' ? right.orgNetAmount : Number.NEGATIVE_INFINITY;
+      return rightValue - leftValue;
+    });
+  }, [dragonTigerInstitution]);
+
+  const dragonTigerBranchRankSorted = useMemo(() => {
+    return [...dragonTigerBranchRank].sort((left, right) => {
+      const leftValue = typeof left?.buyTimes1d === 'number' ? left.buyTimes1d : Number.NEGATIVE_INFINITY;
+      const rightValue = typeof right?.buyTimes1d === 'number' ? right.buyTimes1d : Number.NEGATIVE_INFINITY;
+      return rightValue - leftValue;
+    });
+  }, [dragonTigerBranchRank]);
+
+  const dragonTigerSeatDatesSorted = useMemo(() => {
+    return [...dragonTigerSeatDates].sort((left, right) => {
+      const leftTime = left?.tradeDate ? new Date(left.tradeDate).getTime() : 0;
+      const rightTime = right?.tradeDate ? new Date(right.tradeDate).getTime() : 0;
+      return rightTime - leftTime;
+    });
+  }, [dragonTigerSeatDates]);
+
+  const dragonTigerSeatDetailSorted = useMemo(() => {
+    return [...dragonTigerSeatDetail].sort((left, right) => {
+      const leftValue = typeof left?.netAmount === 'number' ? left.netAmount : Number.NEGATIVE_INFINITY;
+      const rightValue = typeof right?.netAmount === 'number' ? right.netAmount : Number.NEGATIVE_INFINITY;
+      return rightValue - leftValue;
+    });
+  }, [dragonTigerSeatDetail]);
 
   useEffect(() => {
     const socket = new WebSocket(wsUrl);
@@ -1483,6 +1615,163 @@ function App() {
       setContentSymbolFilter('');
     }
   }, [activeSymbols, contentSymbolFilter]);
+
+  useEffect(() => {
+    if (activeView !== 'dragonTiger') {
+      return undefined;
+    }
+
+    setDragonTigerStatsExpanded(false);
+    setDragonTigerStocksExpanded(false);
+
+    let cancelled = false;
+
+    async function loadDragonTiger() {
+      setDragonTigerRequestState('loading');
+      try {
+        const dailyResponse = await fetch(buildDragonTigerDailyUrl(dragonTigerDate));
+        const dailyPayload = await parseJsonOrThrow(dailyResponse, 'dragon tiger daily fetch failed');
+
+        if (cancelled) {
+          return;
+        }
+
+        setDragonTigerDaily(Array.isArray(dailyPayload?.items) ? dailyPayload.items : []);
+        setDragonTigerRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setDragonTigerRequestState('error');
+        }
+      }
+    }
+
+    loadDragonTiger();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, dragonTigerDate]);
+
+  useEffect(() => {
+    if (activeView !== 'dragonTiger' || !dragonTigerStatsExpanded) {
+      return undefined;
+    }
+
+    setDragonTigerStocksExpanded(false);
+
+    let cancelled = false;
+
+    async function loadDragonTigerStats() {
+      setDragonTigerStatsRequestState('loading');
+      try {
+        const [stocksResponse, institutionResponse, branchRankResponse] = await Promise.all([
+          fetch(buildDragonTigerStocksUrl(dragonTigerRange)),
+          fetch(buildDragonTigerInstitutionUrl(dragonTigerDate, dragonTigerDate)),
+          fetch(buildDragonTigerBranchRankUrl(dragonTigerRange)),
+        ]);
+
+        const [stocksPayload, institutionPayload, branchRankPayload] = await Promise.all([
+          parseJsonOrThrow(stocksResponse, 'dragon tiger stocks fetch failed'),
+          parseJsonOrThrow(institutionResponse, 'dragon tiger institution fetch failed'),
+          parseJsonOrThrow(branchRankResponse, 'dragon tiger branch rank fetch failed'),
+        ]);
+
+        if (cancelled) {
+          return;
+        }
+
+        setDragonTigerStocks(Array.isArray(stocksPayload?.items) ? stocksPayload.items : []);
+        setDragonTigerInstitution(Array.isArray(institutionPayload?.items) ? institutionPayload.items : []);
+        setDragonTigerBranchRank(Array.isArray(branchRankPayload?.items) ? branchRankPayload.items : []);
+        setDragonTigerStatsRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setDragonTigerStatsRequestState('error');
+        }
+      }
+    }
+
+    loadDragonTigerStats();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, dragonTigerDate, dragonTigerRange, dragonTigerStatsExpanded]);
+
+  useEffect(() => {
+    if (activeView !== 'dragonTiger' || !dragonTigerStatsExpanded || !dragonTigerSeatSymbol) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadDragonTigerSeatDates() {
+      try {
+        const response = await fetch(buildDragonTigerSeatDatesUrl(dragonTigerSeatSymbol));
+        const payload = await parseJsonOrThrow(response, 'dragon tiger seat dates fetch failed');
+        if (cancelled) {
+          return;
+        }
+        const nextSeatDates = Array.isArray(payload?.items) ? payload.items : [];
+        setDragonTigerSeatDates(nextSeatDates);
+        if (!dragonTigerSeatDate && nextSeatDates.length) {
+          setDragonTigerSeatDate(nextSeatDates[0]?.tradeDate || '');
+        }
+      } catch {
+        if (!cancelled) {
+          setDragonTigerSeatDates([]);
+          setDragonTigerSeatDate('');
+        }
+      }
+    }
+
+    loadDragonTigerSeatDates();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, dragonTigerStatsExpanded, dragonTigerSeatSymbol]);
+
+  useEffect(() => {
+    if (activeView !== 'dragonTiger' || !dragonTigerStatsExpanded || !dragonTigerSeatSymbol || !dragonTigerSeatDate) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadDragonTigerSeatDetail() {
+      try {
+        const response = await fetch(buildDragonTigerSeatDetailUrl(dragonTigerSeatSymbol, dragonTigerSeatDate, dragonTigerSeatSide));
+        const payload = await parseJsonOrThrow(response, 'dragon tiger seat detail fetch failed');
+        if (cancelled) {
+          return;
+        }
+        setDragonTigerSeatDetail(Array.isArray(payload?.items) ? payload.items : []);
+      } catch {
+        if (!cancelled) {
+          setDragonTigerSeatDetail([]);
+        }
+      }
+    }
+
+    loadDragonTigerSeatDetail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, dragonTigerSeatDate, dragonTigerSeatSide, dragonTigerSeatSymbol, dragonTigerStatsExpanded]);
+
+  useEffect(() => {
+    if (dragonTigerStatsExpanded) {
+      return;
+    }
+
+    setDragonTigerSeatSymbol('');
+    setDragonTigerSeatDates([]);
+    setDragonTigerSeatDate('');
+    setDragonTigerSeatDetail([]);
+    setDragonTigerStocksExpanded(false);
+  }, [dragonTigerStatsExpanded]);
 
   useEffect(() => {
     if (!selectedSnapshotSymbol) {
@@ -1881,6 +2170,351 @@ function App() {
           ) : null}
         </div>
       </section>
+    );
+  }
+
+  function renderDragonTigerCard(item, index) {
+    return (
+      <article className="dragon-tiger-card" key={`${item.code || item.symbol || item.name || 'dragon-tiger'}-${item.tradeDate || item.latestDate || 'unknown-date'}-${index}`}>
+        <header className="dragon-tiger-card-header">
+          <div>
+            <strong>{item.name || '--'}</strong>
+            <p className="snapshot-subtitle">
+              {item.code || item.symbol || '--'} · {item.tradeDate || item.latestDate || '--'} · {item.reason || item.explain || '上榜'}
+            </p>
+          </div>
+          <div className="dragon-tiger-card-right">
+            <span className="dragon-tiger-metric">{formatPrice(item.closePrice)}</span>
+            <span className="dragon-tiger-source-chip">东方财富</span>
+          </div>
+        </header>
+        <div className="dragon-tiger-metrics-row">
+          <span className={`dragon-tiger-pill ${item.netBuyAmount > 0 ? 'positive' : item.netBuyAmount < 0 ? 'negative' : ''}`}>
+            净买额 {formatTurnoverAmount(item.netBuyAmount)}
+          </span>
+          <span className="dragon-tiger-pill">买/卖 {formatTurnoverAmount(item.buyAmount)} / {formatTurnoverAmount(item.sellAmount)}</span>
+          <span className="dragon-tiger-pill">成交额 {formatTurnoverAmount(item.dealAmount)}</span>
+        </div>
+      </article>
+    );
+  }
+
+  function renderDragonTigerView() {
+    return (
+      <article className="panel wide dragon-tiger-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>龙虎榜</h2>
+              <p className="panel-tip compact">默认先看当日上榜个股与上榜原因，近月统计和席位明细按需展开。</p>
+          </div>
+          <div className="content-status-summary">
+            <span className="symbol-count-badge">日榜日期 {dragonTigerDate}</span>
+            {dragonTigerStatsExpanded ? <span className="symbol-count-badge">统计区间 {dragonTigerRangeLabels[dragonTigerRange] || dragonTigerRange}</span> : null}
+          </div>
+        </div>
+
+        <div className="submenu-row content-toolbar-row dragon-tiger-toolbar-row">
+          <div className="content-toolbar-groups dragon-tiger-toolbar-groups">
+            <div className="content-filter-row dragon-tiger-filter-row">
+              <label className="content-symbol-select-label" htmlFor="dragon-tiger-date">日期</label>
+              <input
+                id="dragon-tiger-date"
+                className="overview-search-input dragon-tiger-date-input"
+                type="date"
+                value={dragonTigerDate}
+                onChange={(event) => setDragonTigerDate(event.target.value)}
+              />
+            </div>
+            {dragonTigerStatsExpanded ? (
+              <div className="content-filter-row dragon-tiger-filter-row">
+                <label className="content-symbol-select-label" htmlFor="dragon-tiger-range">区间</label>
+                <select
+                  id="dragon-tiger-range"
+                  className="content-symbol-select"
+                  value={dragonTigerRange}
+                  onChange={(event) => setDragonTigerRange(event.target.value)}
+                >
+                  {Object.entries(dragonTigerRangeLabels).map(([value, label]) => (
+                    <option key={value} value={value}>{label}</option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
+          </div>
+          <div className="dragon-tiger-toolbar-meta">
+            {dragonTigerRequestState === 'loading' ? <span className="status-line pending">龙虎榜数据加载中...</span> : null}
+            {dragonTigerRequestState === 'error' ? <span className="status-line error">龙虎榜数据加载失败，请稍后重试。</span> : null}
+          </div>
+        </div>
+
+        <div className="dragon-tiger-section">
+          <div className="section-heading">
+            <div>
+              <h3>日榜总览</h3>
+              <p className="panel-tip compact">按上榜日和净买额展示龙虎榜主表。</p>
+            </div>
+            <span className="table-meta-badge">共 {dragonTigerDailySorted.length} 条</span>
+          </div>
+          <div className="dragon-tiger-grid">
+            {dragonTigerDailySorted.length ? dragonTigerDailySorted.map((item, index) => renderDragonTigerCard(item, index)) : <p className="panel-tip compact">暂无龙虎榜日榜数据。</p>}
+          </div>
+        </div>
+
+        <div className="dragon-tiger-section">
+          <div className="section-heading">
+            <div>
+              <h3>近月统计与席位明细</h3>
+              <p className="panel-tip compact">按需展开近一月到近一年的个股统计、机构净买额、营业部排行和席位明细。</p>
+            </div>
+            <button
+              type="button"
+              className="content-switch-option"
+              onClick={() => setDragonTigerStatsExpanded((current) => !current)}
+            >
+              {dragonTigerStatsExpanded ? '收起统计' : '展开统计'}
+            </button>
+          </div>
+          {!dragonTigerStatsExpanded ? <p className="panel-tip compact">默认收起，避免首屏直接加载近月长表。</p> : null}
+          {dragonTigerStatsExpanded ? (
+            <>
+              {dragonTigerStatsRequestState === 'loading' ? <p className="status-line pending">统计数据加载中...</p> : null}
+              {dragonTigerStatsRequestState === 'error' ? <p className="status-line error">统计数据加载失败，请稍后重试。</p> : null}
+
+              <div className="section-heading">
+                <div>
+                  <h3>个股上榜统计</h3>
+                  <p className="panel-tip compact">按统计区间展示个股上榜次数和机构买卖统计。</p>
+                </div>
+                <span className="table-meta-badge">共 {dragonTigerStocksSorted.length} 只</span>
+              </div>
+              {dragonTigerStocksSorted.length > dragonTigerDefaultStockDisplayLimit ? (
+                <div className="content-toolbar-groups">
+                  <button
+                    type="button"
+                    className="content-switch-option"
+                    onClick={() => setDragonTigerStocksExpanded((current) => !current)}
+                  >
+                    {dragonTigerStocksExpanded ? '仅看前100' : `显示全部 ${dragonTigerStocksSorted.length} 只`}
+                  </button>
+                </div>
+              ) : null}
+          <div className="detail-table-wrap detail-table-wrap-scrollable dragon-tiger-table-wrap">
+            <table className="detail-table dragon-tiger-table">
+              <thead>
+                <tr>
+                    <th>代码</th>
+                    <th>名称</th>
+                    <th>最近上榜日</th>
+                    <th>上榜次数</th>
+                    <th>净买额</th>
+                    <th>买入额</th>
+                    <th>卖出额</th>
+                    <th>机构买入净额</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dragonTigerStocksVisible.length ? dragonTigerStocksVisible.map((item, index) => (
+                  <tr key={`${item.code || item.symbol || item.name || 'stock'}-${item.latestTradeDate || item.latestDate || 'unknown-date'}-${index}`}>
+                      <td>{item.symbol || item.code || '--'}</td>
+                      <td>{item.name || '--'}</td>
+                      <td>{item.latestTradeDate ? formatDate(item.latestTradeDate) : '--'}</td>
+                      <td>{item.billboardTimes ?? '--'}</td>
+                      <td className={item.netBuyAmount > 0 ? 'positive' : item.netBuyAmount < 0 ? 'negative' : ''}>{formatTurnoverAmount(item.netBuyAmount)}</td>
+                      <td>{formatTurnoverAmount(item.buyAmount)}</td>
+                      <td>{formatTurnoverAmount(item.sellAmount)}</td>
+                      <td className={item.orgNetBuyAmount > 0 ? 'positive' : item.orgNetBuyAmount < 0 ? 'negative' : ''}>{formatTurnoverAmount(item.orgNetBuyAmount)}</td>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan="8" className="panel-tip compact">暂无个股上榜统计数据。</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          {dragonTigerStocksSorted.length > dragonTigerDefaultStockDisplayLimit && !dragonTigerStocksExpanded ? (
+            <p className="panel-tip compact">默认展示上榜次数最高的前 {dragonTigerDefaultStockDisplayLimit} 只个股，避免近月统计列表过长。</p>
+          ) : null}
+            </>
+          ) : null}
+        </div>
+
+        {dragonTigerStatsExpanded ? (
+          <>
+        {dragonTigerStatsExpanded ? (
+          <>
+            <div className="dragon-tiger-section">
+              <div className="section-heading">
+                <div>
+                  <h3>机构买卖统计</h3>
+                  <p className="panel-tip compact">按日期区间展示机构净买额与买卖额。</p>
+                </div>
+                <span className="table-meta-badge">共 {dragonTigerInstitutionSorted.length} 条</span>
+              </div>
+              <div className="detail-table-wrap detail-table-wrap-scrollable dragon-tiger-table-wrap">
+                <table className="detail-table dragon-tiger-table">
+                  <thead>
+                    <tr>
+                      <th>代码</th>
+                      <th>名称</th>
+                      <th>上榜日</th>
+                      <th>机构净买额</th>
+                      <th>机构买入额</th>
+                      <th>机构卖出额</th>
+                      <th>买方机构数</th>
+                      <th>卖方机构数</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dragonTigerInstitutionSorted.length ? dragonTigerInstitutionSorted.map((item, index) => (
+                      <tr key={`${item.symbol || item.code || item.name || 'institution'}-${item.tradeDate || 'unknown-date'}-${index}`}>
+                        <td>{item.symbol || item.code || '--'}</td>
+                        <td>{item.name || '--'}</td>
+                        <td>{item.tradeDate ? formatDate(item.tradeDate) : '--'}</td>
+                        <td className={item.orgNetAmount > 0 ? 'positive' : item.orgNetAmount < 0 ? 'negative' : ''}>{formatTurnoverAmount(item.orgNetAmount)}</td>
+                        <td>{formatTurnoverAmount(item.orgBuyAmount)}</td>
+                        <td>{formatTurnoverAmount(item.orgSellAmount)}</td>
+                        <td>{item.buyOrgCount ?? '--'}</td>
+                        <td>{item.sellOrgCount ?? '--'}</td>
+                      </tr>
+                    )) : (
+                      <tr><td colSpan="8" className="panel-tip compact">暂无机构买卖统计数据。</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="dragon-tiger-section">
+              <div className="section-heading">
+                <div>
+                  <h3>营业部排行</h3>
+                  <p className="panel-tip compact">展示营业部近阶段回报表现。</p>
+                </div>
+                <span className="table-meta-badge">共 {dragonTigerBranchRankSorted.length} 条</span>
+              </div>
+              <div className="detail-table-wrap detail-table-wrap-scrollable dragon-tiger-table-wrap">
+                <table className="detail-table dragon-tiger-table">
+                  <thead>
+                    <tr>
+                      <th>营业部</th>
+                      <th>1日平均涨幅</th>
+                      <th>1日上涨概率</th>
+                      <th>2日平均涨幅</th>
+                      <th>2日上涨概率</th>
+                      <th>3日平均涨幅</th>
+                      <th>3日上涨概率</th>
+                      <th>5日平均涨幅</th>
+                      <th>5日上涨概率</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dragonTigerBranchRankSorted.length ? dragonTigerBranchRankSorted.map((item) => (
+                      <tr key={item.branchName || ''}>
+                        <td>{item.branchName || '--'}</td>
+                        <td>{typeof item.avgIncrease1d === 'number' ? formatSignedPercent(item.avgIncrease1d) : '--'}</td>
+                        <td>{typeof item.riseProbability1d === 'number' ? formatPercentFromRatio(item.riseProbability1d) : '--'}</td>
+                        <td>{typeof item.avgIncrease2d === 'number' ? formatSignedPercent(item.avgIncrease2d) : '--'}</td>
+                        <td>{typeof item.riseProbability2d === 'number' ? formatPercentFromRatio(item.riseProbability2d) : '--'}</td>
+                        <td>{typeof item.avgIncrease3d === 'number' ? formatSignedPercent(item.avgIncrease3d) : '--'}</td>
+                        <td>{typeof item.riseProbability3d === 'number' ? formatPercentFromRatio(item.riseProbability3d) : '--'}</td>
+                        <td>{typeof item.avgIncrease5d === 'number' ? formatSignedPercent(item.avgIncrease5d) : '--'}</td>
+                        <td>{typeof item.riseProbability5d === 'number' ? formatPercentFromRatio(item.riseProbability5d) : '--'}</td>
+                      </tr>
+                    )) : (
+                      <tr><td colSpan="9" className="panel-tip compact">暂无营业部排行数据。</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="dragon-tiger-section">
+              <div className="section-heading">
+                <div>
+                  <h3>席位明细</h3>
+                  <p className="panel-tip compact">先选择个股，再选上榜日与方向查看买卖席位。</p>
+                </div>
+                <span className="table-meta-badge">共 {dragonTigerSeatDetailSorted.length} 条</span>
+              </div>
+              <div className="dragon-tiger-toolbar">
+                <div className="content-filter-row dragon-tiger-filter-row">
+                  <label className="content-symbol-select-label" htmlFor="dragon-tiger-seat-symbol">个股</label>
+                  <select
+                    id="dragon-tiger-seat-symbol"
+                    className="content-symbol-select"
+                    value={dragonTigerSeatSymbol}
+                    onChange={(event) => setDragonTigerSeatSymbol(event.target.value)}
+                  >
+                    <option value="">请选择个股</option>
+                    {dragonTigerStocksSorted.slice(0, 50).map((item, index) => (
+                      <option key={`${item.symbol || item.code || item.name || 'seat-symbol'}-${item.latestTradeDate || item.latestDate || 'unknown-date'}-${index}`} value={item.symbol || item.code || ''}>
+                        {item.name || item.symbol || item.code || '--'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="content-filter-row dragon-tiger-filter-row">
+                  <label className="content-symbol-select-label" htmlFor="dragon-tiger-seat-date">上榜日</label>
+                  <select
+                    id="dragon-tiger-seat-date"
+                    className="content-symbol-select"
+                    value={dragonTigerSeatDate}
+                    onChange={(event) => setDragonTigerSeatDate(event.target.value)}
+                  >
+                    <option value="">请选择日期</option>
+                    {dragonTigerSeatDatesSorted.map((item) => (
+                      <option key={`${item.symbol || ''}-${item.tradeDate || ''}`} value={item.tradeDate || ''}>
+                        {item.tradeDate ? formatDate(item.tradeDate) : '--'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="content-filter-row dragon-tiger-filter-row">
+                  <label className="content-symbol-select-label" htmlFor="dragon-tiger-seat-side">方向</label>
+                  <select
+                    id="dragon-tiger-seat-side"
+                    className="content-symbol-select"
+                    value={dragonTigerSeatSide}
+                    onChange={(event) => setDragonTigerSeatSide(event.target.value)}
+                  >
+                    <option value="buy">买入</option>
+                    <option value="sell">卖出</option>
+                  </select>
+                </div>
+              </div>
+              <div className="detail-table-wrap detail-table-wrap-scrollable dragon-tiger-table-wrap">
+                <table className="detail-table dragon-tiger-table">
+                  <thead>
+                    <tr>
+                      <th>营业部</th>
+                      <th>席位类型</th>
+                      <th>买入额</th>
+                      <th>卖出额</th>
+                      <th>净额</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dragonTigerSeatDetailSorted.length ? dragonTigerSeatDetailSorted.map((item, index) => (
+                      <tr key={`${item.branchName || 'branch'}-${index}`}>
+                        <td>{item.branchName || '--'}</td>
+                        <td>{item.seatType || '--'}</td>
+                        <td>{formatTurnoverAmount(item.buyAmount)}</td>
+                        <td>{formatTurnoverAmount(item.sellAmount)}</td>
+                        <td className={item.netAmount > 0 ? 'positive' : item.netAmount < 0 ? 'negative' : ''}>{formatTurnoverAmount(item.netAmount)}</td>
+                      </tr>
+                    )) : (
+                      <tr><td colSpan="5" className="panel-tip compact">暂无席位明细数据。</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </>
+        ) : null}
+          </>
+        ) : null}
+      </article>
     );
   }
 
@@ -2637,7 +3271,7 @@ function App() {
         <p className="eyebrow">项目 · MoneyRush</p>
         <h1>实时行情看板</h1>
         <p className="lede">
-          用总览看全局，用事件看异动，用管理页维护监控标的。
+          用总览看全局，用事件看异动，用龙虎榜看盘后资金，用管理页维护监控标的。
         </p>
         <div className="hero-toolbar">
           <button
@@ -2660,6 +3294,13 @@ function App() {
             onClick={() => setActiveView('content')}
           >
             资讯
+          </button>
+          <button
+            className={activeView === 'dragonTiger' ? 'view-tab active' : 'view-tab'}
+            type="button"
+            onClick={() => setActiveView('dragonTiger')}
+          >
+            龙虎榜
           </button>
           <button
             className={activeView === 'management' ? 'view-tab active' : 'view-tab'}
@@ -2747,6 +3388,8 @@ function App() {
           </article>
         ) : activeView === 'content' ? (
           renderContentView()
+        ) : activeView === 'dragonTiger' ? (
+          renderDragonTigerView()
         ) : activeView === 'management' ? (
           <article className="panel wide management-panel">
             <div className="panel-heading">
