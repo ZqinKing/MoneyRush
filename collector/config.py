@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     content_ai_summary_min_content_length: int = 180
     content_ai_summary_max_news_age_seconds: int = 1800
     content_ai_summary_prompt_version: str = "v1"
+    dragon_tiger_collector_enabled: bool = True
+    dragon_tiger_collector_poll_interval_seconds: int = 300
+    dragon_tiger_collection_start_hour_china: int = 17
+    dragon_tiger_collection_start_minute_china: int = 10
+    dragon_tiger_request_timeout_seconds: float = 15.0
+    dragon_tiger_request_retry_attempts: int = 3
+    dragon_tiger_request_retry_backoff_seconds: float = 0.6
 
 
 @lru_cache(maxsize=1)
