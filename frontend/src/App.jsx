@@ -1303,7 +1303,8 @@ function App() {
   const [eventSummaries, setEventSummaries] = useState({});
   const [eventSummaryRequestState, setEventSummaryRequestState] = useState('idle');
   const [dragonTigerRange, setDragonTigerRange] = useState('1month');
-  const [dragonTigerDate, setDragonTigerDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [dragonTigerDate, setDragonTigerDate] = useState('');
+  const [dragonTigerDateManuallySet, setDragonTigerDateManuallySet] = useState(false);
   const [dragonTigerDaily, setDragonTigerDaily] = useState([]);
   const [dragonTigerStocks, setDragonTigerStocks] = useState([]);
   const [dragonTigerInstitution, setDragonTigerInstitution] = useState([]);
@@ -1354,6 +1355,41 @@ function App() {
     '6month': '近六月',
     '1year': '近一年',
   };
+
+  useEffect(() => {
+    if (activeView !== 'dragonTiger' || dragonTigerDateManuallySet) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadDragonTigerHistorySummary() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/v1/dragon-tiger/history/summary`);
+        const payload = await parseJsonOrThrow(response, 'dragon tiger history summary fetch failed');
+        if (cancelled) {
+          return;
+        }
+
+        const latestTradeDate = payload?.daily?.latestTradeDate || payload?.institution?.latestTradeDate || '';
+        if (latestTradeDate) {
+          setDragonTigerDate((current) => (current && current <= latestTradeDate ? current : latestTradeDate));
+        } else if (!dragonTigerDate) {
+          setDragonTigerDate(new Date().toISOString().slice(0, 10));
+        }
+      } catch {
+        if (!cancelled && !dragonTigerDate) {
+          setDragonTigerDate(new Date().toISOString().slice(0, 10));
+        }
+      }
+    }
+
+    loadDragonTigerHistorySummary();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, dragonTigerDate, dragonTigerDateManuallySet]);
 
   const dragonTigerDailyFiltered = useMemo(() => {
     const query = dragonTigerSearchQuery.trim().toLowerCase();
@@ -2293,6 +2329,7 @@ function App() {
   }
 
   function renderDragonTigerCard(item, index) {
+    const dealAmountLabel = item.dealAmountRatio ? `龙虎榜成交额 · ${formatPercentFromRatio(item.dealAmountRatio)}` : '龙虎榜成交额';
     return (
       <article className="dragon-tiger-card" key={`${item.code || item.symbol || item.name || 'dragon-tiger'}-${item.tradeDate || item.latestDate || 'unknown-date'}-${index}`}>
         <header className="dragon-tiger-card-header">
@@ -2312,7 +2349,8 @@ function App() {
             净买额 {formatTurnoverAmount(item.netBuyAmount)}
           </span>
           <span className="dragon-tiger-pill">买/卖 {formatTurnoverAmount(item.buyAmount)} / {formatTurnoverAmount(item.sellAmount)}</span>
-          <span className="dragon-tiger-pill">成交额 {formatTurnoverAmount(item.dealAmount)}</span>
+          <span className="dragon-tiger-pill">{dealAmountLabel} {formatTurnoverAmount(item.dealAmount)}</span>
+          <span className="dragon-tiger-pill">总成交额 {formatTurnoverAmount(item.totalAmount)}</span>
         </div>
       </article>
     );
@@ -2346,7 +2384,10 @@ function App() {
                 className="overview-search-input dragon-tiger-date-input"
                 type="date"
                 value={dragonTigerDate}
-                onChange={(event) => setDragonTigerDate(event.target.value)}
+                onChange={(event) => {
+                  setDragonTigerDate(event.target.value);
+                  setDragonTigerDateManuallySet(true);
+                }}
               />
             </div>
             <div className="content-filter-row dragon-tiger-filter-row">
@@ -2553,8 +2594,6 @@ function App() {
 
         {dragonTigerStatsExpanded ? (
           <>
-        {dragonTigerStatsExpanded ? (
-          <>
             <div className="dragon-tiger-section">
               <div className="section-heading">
                 <div>
@@ -2722,8 +2761,6 @@ function App() {
                 </table>
               </div>
             </div>
-          </>
-        ) : null}
           </>
         ) : null}
       </article>
