@@ -696,6 +696,45 @@ input {
 .dragon-tiger-toolbar-meta {
   display: flex;
   align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dragon-tiger-controls-row,
+.dragon-tiger-pagination-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.dragon-tiger-pagination-row {
+  justify-content: space-between;
+}
+
+.dragon-tiger-pagination-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dragon-tiger-sort-controls {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.inline-action-button {
+  border: 0;
+  background: transparent;
+  color: #81a4ff;
+  cursor: pointer;
+  padding: 0;
+  margin-left: 8px;
+}
+
+.status-line.warning {
+  color: #ffe0a3;
 }
 
 .dragon-tiger-grid {
@@ -2068,6 +2107,8 @@ input {
   .event-status-slot,
   .content-toolbar-groups,
   .content-filter-row,
+  .dragon-tiger-controls-row,
+  .dragon-tiger-pagination-row,
   .content-status-summary,
   .overview-heading-meta,
   .overview-sort-row,
@@ -2084,6 +2125,12 @@ input {
 
   .content-toolbar-groups {
     flex-wrap: wrap;
+  }
+
+  .dragon-tiger-toolbar-meta,
+  .dragon-tiger-pagination-actions,
+  .dragon-tiger-sort-controls {
+    width: 100%;
   }
 
   .content-filter-row {

@@ -78,6 +78,23 @@ const contentLaneLabels = {
 };
 
 const dragonTigerDefaultStockDisplayLimit = 100;
+const dragonTigerDefaultPageSize = 20;
+
+const dragonTigerSortOptions = {
+  daily: [
+    { value: 'netBuyAmount', label: '按净买额' },
+    { value: 'dealAmount', label: '按成交额' },
+    { value: 'changePercent', label: '按涨跌幅' },
+    { value: 'closePrice', label: '按收盘价' },
+    { value: 'tradeDate', label: '按上榜日' },
+  ],
+  stocks: [
+    { value: 'billboardTimes', label: '按上榜次数' },
+    { value: 'netBuyAmount', label: '按净买额' },
+    { value: 'orgNetBuyAmount', label: '按机构净买额' },
+    { value: 'latestTradeDate', label: '按最近上榜日' },
+  ],
+};
 
 function buildContentFeedUrl({ symbol = '', type = 'all', timeRange = 'today', limit = 20, before = '' }) {
   const params = new URLSearchParams();
@@ -372,6 +389,53 @@ function formatDate(value) {
   }
 
   return new Date(value).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
+function getDragonTigerComparableValue(item, key) {
+  if (!item || !key) {
+    return null;
+  }
+
+  switch (key) {
+    case 'billboardTimes':
+      return typeof item.billboardTimes === 'number' ? item.billboardTimes : typeof item.count === 'number' ? item.count : null;
+    case 'orgNetBuyAmount':
+      return typeof item.orgNetBuyAmount === 'number' ? item.orgNetBuyAmount : null;
+    case 'latestTradeDate':
+    case 'tradeDate': {
+      const rawValue = key === 'latestTradeDate' ? (item.latestTradeDate || item.latestDate) : item.tradeDate;
+      const timestamp = rawValue ? new Date(rawValue).getTime() : Number.NaN;
+      return Number.isNaN(timestamp) ? null : timestamp;
+    }
+    default:
+      return typeof item[key] === 'number' ? item[key] : typeof item[key] === 'string' ? item[key] : null;
+  }
+}
+
+function sortDragonTigerItems(items, sortKey, direction = 'desc') {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  const multiplier = direction === 'asc' ? 1 : -1;
+  return [...items].sort((left, right) => {
+    const leftValue = getDragonTigerComparableValue(left, sortKey);
+    const rightValue = getDragonTigerComparableValue(right, sortKey);
+
+    if (leftValue === null && rightValue === null) {
+      return 0;
+    }
+    if (leftValue === null) {
+      return 1;
+    }
+    if (rightValue === null) {
+      return -1;
+    }
+    if (typeof leftValue === 'string' && typeof rightValue === 'string') {
+      return leftValue.localeCompare(rightValue, 'zh-CN') * multiplier;
+    }
+    return ((leftValue > rightValue) - (leftValue < rightValue)) * multiplier;
+  });
 }
 
 function getChinaTradeDayKey(value) {
@@ -1250,9 +1314,20 @@ function App() {
   const [dragonTigerSeatSide, setDragonTigerSeatSide] = useState('buy');
   const [dragonTigerSeatDetail, setDragonTigerSeatDetail] = useState([]);
   const [dragonTigerRequestState, setDragonTigerRequestState] = useState('idle');
+  const [dragonTigerErrorMessage, setDragonTigerErrorMessage] = useState('');
   const [dragonTigerStatsExpanded, setDragonTigerStatsExpanded] = useState(false);
   const [dragonTigerStatsRequestState, setDragonTigerStatsRequestState] = useState('idle');
+  const [dragonTigerStatsErrorMessage, setDragonTigerStatsErrorMessage] = useState('');
   const [dragonTigerStocksExpanded, setDragonTigerStocksExpanded] = useState(false);
+  const [dragonTigerSearchQuery, setDragonTigerSearchQuery] = useState('');
+  const [dragonTigerDailySortKey, setDragonTigerDailySortKey] = useState('netBuyAmount');
+  const [dragonTigerDailySortDirection, setDragonTigerDailySortDirection] = useState('desc');
+  const [dragonTigerDailyPage, setDragonTigerDailyPage] = useState(1);
+  const [dragonTigerStocksSortKey, setDragonTigerStocksSortKey] = useState('billboardTimes');
+  const [dragonTigerStocksSortDirection, setDragonTigerStocksSortDirection] = useState('desc');
+  const [dragonTigerStocksPage, setDragonTigerStocksPage] = useState(1);
+  const [dragonTigerReloadNonce, setDragonTigerReloadNonce] = useState(0);
+  const [dragonTigerStatsReloadNonce, setDragonTigerStatsReloadNonce] = useState(0);
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
@@ -1280,29 +1355,46 @@ function App() {
     '1year': '近一年',
   };
 
-  const dragonTigerDailySorted = useMemo(() => {
-    return [...dragonTigerDaily].sort((left, right) => {
-      const leftValue = typeof left?.netBuyAmount === 'number' ? left.netBuyAmount : Number.NEGATIVE_INFINITY;
-      const rightValue = typeof right?.netBuyAmount === 'number' ? right.netBuyAmount : Number.NEGATIVE_INFINITY;
-      return rightValue - leftValue;
+  const dragonTigerDailyFiltered = useMemo(() => {
+    const query = dragonTigerSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return dragonTigerDaily;
+    }
+
+    return dragonTigerDaily.filter((item) => {
+      const candidates = [item?.symbol, item?.code, item?.name, item?.reason, item?.explain]
+        .filter(Boolean)
+        .map((value) => `${value}`.toLowerCase());
+      return candidates.some((value) => value.includes(query));
     });
-  }, [dragonTigerDaily]);
+  }, [dragonTigerDaily, dragonTigerSearchQuery]);
+
+  const dragonTigerDailySorted = useMemo(() => {
+    const sortKey = dragonTigerDailySortKey;
+    return sortDragonTigerItems(
+      dragonTigerDailyFiltered,
+      sortKey,
+      dragonTigerDailySortDirection,
+    );
+  }, [dragonTigerDailyFiltered, dragonTigerDailySortDirection, dragonTigerDailySortKey]);
+
+  const dragonTigerDailyTotalPages = useMemo(
+    () => Math.max(1, Math.ceil(dragonTigerDailySorted.length / dragonTigerDefaultPageSize)),
+    [dragonTigerDailySorted.length],
+  );
+
+  const dragonTigerDailyVisible = useMemo(() => {
+    const startIndex = (dragonTigerDailyPage - 1) * dragonTigerDefaultPageSize;
+    return dragonTigerDailySorted.slice(startIndex, startIndex + dragonTigerDefaultPageSize);
+  }, [dragonTigerDailyPage, dragonTigerDailySorted]);
 
   const dragonTigerStocksSorted = useMemo(() => {
-    return [...dragonTigerStocks].sort((left, right) => {
-      const leftValue = typeof left?.billboardTimes === 'number'
-        ? left.billboardTimes
-        : typeof left?.count === 'number'
-          ? left.count
-          : Number.NEGATIVE_INFINITY;
-      const rightValue = typeof right?.billboardTimes === 'number'
-        ? right.billboardTimes
-        : typeof right?.count === 'number'
-          ? right.count
-          : Number.NEGATIVE_INFINITY;
-      return rightValue - leftValue;
-    });
-  }, [dragonTigerStocks]);
+    return sortDragonTigerItems(
+      dragonTigerStocks,
+      dragonTigerStocksSortKey,
+      dragonTigerStocksSortDirection,
+    );
+  }, [dragonTigerStocks, dragonTigerStocksSortDirection, dragonTigerStocksSortKey]);
 
   const dragonTigerStocksVisible = useMemo(() => {
     if (dragonTigerStocksExpanded) {
@@ -1342,6 +1434,20 @@ function App() {
       return rightValue - leftValue;
     });
   }, [dragonTigerSeatDetail]);
+
+  useEffect(() => {
+    setDragonTigerDailyPage(1);
+  }, [dragonTigerDate, dragonTigerSearchQuery, dragonTigerDailySortDirection, dragonTigerDailySortKey]);
+
+  useEffect(() => {
+    setDragonTigerStocksPage(1);
+  }, [dragonTigerRange, dragonTigerStocksSortDirection, dragonTigerStocksSortKey]);
+
+  useEffect(() => {
+    if (dragonTigerDailyPage > dragonTigerDailyTotalPages) {
+      setDragonTigerDailyPage(dragonTigerDailyTotalPages);
+    }
+  }, [dragonTigerDailyPage, dragonTigerDailyTotalPages]);
 
   useEffect(() => {
     const socket = new WebSocket(wsUrl);
@@ -1628,6 +1734,7 @@ function App() {
 
     async function loadDragonTiger() {
       setDragonTigerRequestState('loading');
+      setDragonTigerErrorMessage('');
       try {
         const dailyResponse = await fetch(buildDragonTigerDailyUrl(dragonTigerDate));
         const dailyPayload = await parseJsonOrThrow(dailyResponse, 'dragon tiger daily fetch failed');
@@ -1637,9 +1744,15 @@ function App() {
         }
 
         setDragonTigerDaily(Array.isArray(dailyPayload?.items) ? dailyPayload.items : []);
+        setDragonTigerErrorMessage(
+          dailyPayload?.stale
+            ? `当前展示最近一次可用缓存：${dailyPayload?.staleReason || '上游接口暂不可用'}`
+            : '',
+        );
         setDragonTigerRequestState('ready');
-      } catch {
+      } catch (error) {
         if (!cancelled) {
+          setDragonTigerErrorMessage(error instanceof Error ? error.message : 'dragon tiger daily fetch failed');
           setDragonTigerRequestState('error');
         }
       }
@@ -1650,7 +1763,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeView, dragonTigerDate]);
+  }, [activeView, dragonTigerDate, dragonTigerReloadNonce]);
 
   useEffect(() => {
     if (activeView !== 'dragonTiger' || !dragonTigerStatsExpanded) {
@@ -1663,6 +1776,7 @@ function App() {
 
     async function loadDragonTigerStats() {
       setDragonTigerStatsRequestState('loading');
+      setDragonTigerStatsErrorMessage('');
       try {
         const [stocksResponse, institutionResponse, branchRankResponse] = await Promise.all([
           fetch(buildDragonTigerStocksUrl(dragonTigerRange)),
@@ -1683,9 +1797,14 @@ function App() {
         setDragonTigerStocks(Array.isArray(stocksPayload?.items) ? stocksPayload.items : []);
         setDragonTigerInstitution(Array.isArray(institutionPayload?.items) ? institutionPayload.items : []);
         setDragonTigerBranchRank(Array.isArray(branchRankPayload?.items) ? branchRankPayload.items : []);
+        const staleMessages = [stocksPayload, institutionPayload, branchRankPayload]
+          .filter((payload) => payload?.stale)
+          .map((payload) => payload?.staleReason || '上游接口暂不可用');
+        setDragonTigerStatsErrorMessage(staleMessages.length ? `当前统计区使用缓存数据：${staleMessages[0]}` : '');
         setDragonTigerStatsRequestState('ready');
-      } catch {
+      } catch (error) {
         if (!cancelled) {
+          setDragonTigerStatsErrorMessage(error instanceof Error ? error.message : 'dragon tiger stats fetch failed');
           setDragonTigerStatsRequestState('error');
         }
       }
@@ -1696,7 +1815,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeView, dragonTigerDate, dragonTigerRange, dragonTigerStatsExpanded]);
+  }, [activeView, dragonTigerDate, dragonTigerRange, dragonTigerStatsExpanded, dragonTigerStatsReloadNonce]);
 
   useEffect(() => {
     if (activeView !== 'dragonTiger' || !dragonTigerStatsExpanded || !dragonTigerSeatSymbol) {
@@ -2200,6 +2319,11 @@ function App() {
   }
 
   function renderDragonTigerView() {
+    const visibleStocksPageCount = Math.max(1, Math.ceil(Math.min(dragonTigerStocksSorted.length, dragonTigerDefaultStockDisplayLimit) / dragonTigerDefaultPageSize));
+    const dragonTigerStocksPaged = dragonTigerStocksExpanded
+      ? dragonTigerStocksVisible
+      : dragonTigerStocksVisible.slice((dragonTigerStocksPage - 1) * dragonTigerDefaultPageSize, dragonTigerStocksPage * dragonTigerDefaultPageSize);
+
     return (
       <article className="panel wide dragon-tiger-panel">
         <div className="panel-heading">
@@ -2225,6 +2349,38 @@ function App() {
                 onChange={(event) => setDragonTigerDate(event.target.value)}
               />
             </div>
+            <div className="content-filter-row dragon-tiger-filter-row">
+              <label className="content-symbol-select-label" htmlFor="dragon-tiger-search">搜索</label>
+              <input
+                id="dragon-tiger-search"
+                className="overview-search-input dragon-tiger-date-input"
+                value={dragonTigerSearchQuery}
+                onChange={(event) => setDragonTigerSearchQuery(event.target.value)}
+                placeholder="按代码、名称、上榜原因筛选"
+              />
+            </div>
+            <div className="content-filter-row dragon-tiger-filter-row">
+              <label className="content-symbol-select-label" htmlFor="dragon-tiger-daily-sort">日榜排序</label>
+              <div className="overview-sort-controls">
+                <select
+                  id="dragon-tiger-daily-sort"
+                  className="content-symbol-select"
+                  value={dragonTigerDailySortKey}
+                  onChange={(event) => setDragonTigerDailySortKey(event.target.value)}
+                >
+                  {dragonTigerSortOptions.daily.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="content-switch-option overview-sort-toggle"
+                  onClick={() => setDragonTigerDailySortDirection((current) => (current === 'desc' ? 'asc' : 'desc'))}
+                >
+                  {dragonTigerDailySortDirection === 'desc' ? '降序' : '升序'}
+                </button>
+              </div>
+            </div>
             {dragonTigerStatsExpanded ? (
               <div className="content-filter-row dragon-tiger-filter-row">
                 <label className="content-symbol-select-label" htmlFor="dragon-tiger-range">区间</label>
@@ -2244,20 +2400,38 @@ function App() {
           <div className="dragon-tiger-toolbar-meta">
             {dragonTigerRequestState === 'loading' ? <span className="status-line pending">龙虎榜数据加载中...</span> : null}
             {dragonTigerRequestState === 'error' ? <span className="status-line error">龙虎榜数据加载失败，请稍后重试。</span> : null}
+            <button type="button" className="content-switch-option" onClick={() => setDragonTigerReloadNonce((current) => current + 1)}>
+              重新加载
+            </button>
           </div>
         </div>
+
+        {dragonTigerRequestState === 'ready' && dragonTigerErrorMessage ? <p className="status-line pending">{dragonTigerErrorMessage}</p> : null}
+        {dragonTigerRequestState === 'error' && dragonTigerErrorMessage ? <p className="panel-tip compact">{dragonTigerErrorMessage}</p> : null}
 
         <div className="dragon-tiger-section">
           <div className="section-heading">
             <div>
               <h3>日榜总览</h3>
-              <p className="panel-tip compact">按上榜日和净买额展示龙虎榜主表。</p>
+              <p className="panel-tip compact">支持按代码、名称和上榜原因筛选，并可切换排序字段与分页浏览。</p>
             </div>
-            <span className="table-meta-badge">共 {dragonTigerDailySorted.length} 条</span>
+            <div className="content-status-summary">
+              <span className="table-meta-badge">共 {dragonTigerDailySorted.length} 条</span>
+              <span className="table-meta-badge">第 {dragonTigerDailyPage} / {dragonTigerDailyTotalPages} 页</span>
+            </div>
           </div>
           <div className="dragon-tiger-grid">
-            {dragonTigerDailySorted.length ? dragonTigerDailySorted.map((item, index) => renderDragonTigerCard(item, index)) : <p className="panel-tip compact">暂无龙虎榜日榜数据。</p>}
+            {dragonTigerDailyVisible.length ? dragonTigerDailyVisible.map((item, index) => renderDragonTigerCard(item, index)) : <p className="panel-tip compact">当前筛选条件下暂无龙虎榜日榜数据。</p>}
           </div>
+          {dragonTigerDailySorted.length > dragonTigerDefaultPageSize ? (
+            <div className="dragon-tiger-pagination-row">
+              <span className="panel-tip compact">每页 {dragonTigerDefaultPageSize} 条</span>
+              <div className="dragon-tiger-pagination-actions">
+                <button type="button" className="content-switch-option" disabled={dragonTigerDailyPage <= 1} onClick={() => setDragonTigerDailyPage((current) => Math.max(current - 1, 1))}>上一页</button>
+                <button type="button" className="content-switch-option" disabled={dragonTigerDailyPage >= dragonTigerDailyTotalPages} onClick={() => setDragonTigerDailyPage((current) => Math.min(current + 1, dragonTigerDailyTotalPages))}>下一页</button>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         <div className="dragon-tiger-section">
@@ -2279,13 +2453,42 @@ function App() {
             <>
               {dragonTigerStatsRequestState === 'loading' ? <p className="status-line pending">统计数据加载中...</p> : null}
               {dragonTigerStatsRequestState === 'error' ? <p className="status-line error">统计数据加载失败，请稍后重试。</p> : null}
+              {dragonTigerStatsRequestState === 'ready' && dragonTigerStatsErrorMessage ? <p className="status-line pending">{dragonTigerStatsErrorMessage}</p> : null}
+              {dragonTigerStatsRequestState === 'error' && dragonTigerStatsErrorMessage ? <p className="panel-tip compact">{dragonTigerStatsErrorMessage}</p> : null}
 
-              <div className="section-heading">
-                <div>
-                  <h3>个股上榜统计</h3>
-                  <p className="panel-tip compact">按统计区间展示个股上榜次数和机构买卖统计。</p>
+               <div className="section-heading">
+                 <div>
+                   <h3>个股上榜统计</h3>
+                   <p className="panel-tip compact">支持切换排序字段；默认仍限制在前 100 只内以避免首屏过长。</p>
+                 </div>
+                 <span className="table-meta-badge">共 {dragonTigerStocksSorted.length} 只</span>
+               </div>
+              <div className="dragon-tiger-pagination-row">
+                <div className="content-filter-row dragon-tiger-filter-row">
+                  <label className="content-symbol-select-label" htmlFor="dragon-tiger-stocks-sort">个股统计排序</label>
+                  <div className="overview-sort-controls">
+                    <select
+                      id="dragon-tiger-stocks-sort"
+                      className="content-symbol-select"
+                      value={dragonTigerStocksSortKey}
+                      onChange={(event) => setDragonTigerStocksSortKey(event.target.value)}
+                    >
+                      {dragonTigerSortOptions.stocks.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="content-switch-option overview-sort-toggle"
+                      onClick={() => setDragonTigerStocksSortDirection((current) => (current === 'desc' ? 'asc' : 'desc'))}
+                    >
+                      {dragonTigerStocksSortDirection === 'desc' ? '降序' : '升序'}
+                    </button>
+                  </div>
                 </div>
-                <span className="table-meta-badge">共 {dragonTigerStocksSorted.length} 只</span>
+                <button type="button" className="content-switch-option" onClick={() => setDragonTigerStatsReloadNonce((current) => current + 1)}>
+                  重新加载统计
+                </button>
               </div>
               {dragonTigerStocksSorted.length > dragonTigerDefaultStockDisplayLimit ? (
                 <div className="content-toolbar-groups">
@@ -2313,7 +2516,7 @@ function App() {
                 </tr>
               </thead>
               <tbody>
-                {dragonTigerStocksVisible.length ? dragonTigerStocksVisible.map((item, index) => (
+                {dragonTigerStocksPaged.length ? dragonTigerStocksPaged.map((item, index) => (
                   <tr key={`${item.code || item.symbol || item.name || 'stock'}-${item.latestTradeDate || item.latestDate || 'unknown-date'}-${index}`}>
                       <td>{item.symbol || item.code || '--'}</td>
                       <td>{item.name || '--'}</td>
@@ -2334,6 +2537,15 @@ function App() {
           </div>
           {dragonTigerStocksSorted.length > dragonTigerDefaultStockDisplayLimit && !dragonTigerStocksExpanded ? (
             <p className="panel-tip compact">默认展示上榜次数最高的前 {dragonTigerDefaultStockDisplayLimit} 只个股，避免近月统计列表过长。</p>
+          ) : null}
+          {!dragonTigerStocksExpanded && visibleStocksPageCount > 1 ? (
+            <div className="dragon-tiger-pagination-row">
+              <span className="panel-tip compact">第 {dragonTigerStocksPage} / {visibleStocksPageCount} 页</span>
+              <div className="dragon-tiger-pagination-actions">
+                <button type="button" className="content-switch-option" disabled={dragonTigerStocksPage <= 1} onClick={() => setDragonTigerStocksPage((current) => Math.max(current - 1, 1))}>上一页</button>
+                <button type="button" className="content-switch-option" disabled={dragonTigerStocksPage >= visibleStocksPageCount} onClick={() => setDragonTigerStocksPage((current) => Math.min(current + 1, visibleStocksPageCount))}>下一页</button>
+              </div>
+            </div>
           ) : null}
             </>
           ) : null}
