@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     content_status_cache_key_prefix: str = "moneyrush:content:status"
     dragon_tiger_cache_key_prefix: str = "moneyrush:dragon_tiger"
     dragon_tiger_cache_ttl_seconds: int = 300
+    dragon_tiger_stale_cache_ttl_seconds: int = 43200
+    dragon_tiger_request_timeout_seconds: float = 15.0
+    dragon_tiger_request_retry_attempts: int = 3
+    dragon_tiger_request_retry_backoff_seconds: float = 0.6
     content_report_refresh_seconds: int = 43200
     content_news_refresh_seconds: int = 1800
     content_announcement_refresh_seconds: int = 7200

@@ -46,6 +46,9 @@ class RedisStore:
     def _dragon_tiger_key(self, cache_key: str) -> str:
         return f"{self._dragon_tiger_cache_key_prefix}:{cache_key}"
 
+    def _dragon_tiger_stale_key(self, cache_key: str) -> str:
+        return f"{self._dragon_tiger_cache_key_prefix}:stale:{cache_key}"
+
     async def _delete_by_pattern(self, pattern: str) -> None:
         cursor = 0
         while True:
@@ -181,3 +184,12 @@ class RedisStore:
 
     async def set_dragon_tiger_cache(self, cache_key: str, payload: dict[str, object], ttl_seconds: int) -> None:
         await self._redis.set(self._dragon_tiger_key(cache_key), json.dumps(payload), ex=ttl_seconds)
+
+    async def get_dragon_tiger_stale_cache(self, cache_key: str) -> dict[str, object] | None:
+        payload = await self._redis.get(self._dragon_tiger_stale_key(cache_key))
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    async def set_dragon_tiger_stale_cache(self, cache_key: str, payload: dict[str, object], ttl_seconds: int) -> None:
+        await self._redis.set(self._dragon_tiger_stale_key(cache_key), json.dumps(payload), ex=ttl_seconds)

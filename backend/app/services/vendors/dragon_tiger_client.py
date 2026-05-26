@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import UTC, date, datetime
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -66,17 +68,36 @@ def _to_iso_date(value: object) -> str | None:
 
 
 class DragonTigerClient:
-    def __init__(self, *, timeout_seconds: float = 15.0) -> None:
+    def __init__(self, *, timeout_seconds: float = 15.0, retry_attempts: int = 3, retry_backoff_seconds: float = 0.6) -> None:
         self._timeout_seconds = timeout_seconds
+        self._retry_attempts = max(int(retry_attempts), 1)
+        self._retry_backoff_seconds = max(float(retry_backoff_seconds), 0.0)
 
     def _request_json(self, params: dict[str, object]) -> dict[str, object]:
         query = urlencode({key: value for key, value in params.items() if value is not None})
         request = Request(f"{EASTMONEY_DATACENTER_URL}?{query}", headers=DEFAULT_HEADERS)
-        with urlopen(request, timeout=self._timeout_seconds) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        if not isinstance(payload, dict):
-            raise DragonTigerClientError("unexpected Eastmoney response payload")
-        return payload
+        last_error: Exception | None = None
+
+        for attempt in range(1, self._retry_attempts + 1):
+            try:
+                with urlopen(request, timeout=self._timeout_seconds) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise DragonTigerClientError("unexpected Eastmoney response payload")
+                return payload
+            except DragonTigerClientError:
+                raise
+            except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt >= self._retry_attempts:
+                    break
+                delay_seconds = self._retry_backoff_seconds * attempt
+                if delay_seconds > 0:
+                    time.sleep(delay_seconds)
+
+        raise DragonTigerClientError(
+            f"eastmoney request failed after {self._retry_attempts} attempts: {last_error}"
+        ) from last_error
 
     def _fetch_paginated(self, *, report_name: str, columns: str, sort_columns: str, sort_types: str, filter_expression: str) -> list[dict[str, object]]:
         page = 1
