@@ -1130,7 +1130,7 @@ input {
 .snapshot-card.clickable:hover,
 .snapshot-card.clickable:focus-visible {
   transform: translateY(-2px);
-  border-color: rgba(129, 164, 255, 0.35);
+  border-color: var(--snapshot-card-border-color, rgba(129, 164, 255, 0.35));
   box-shadow: 0 12px 30px rgba(23, 47, 99, 0.22);
   outline: none;
 }
@@ -1171,27 +1171,18 @@ input {
   color: #dbe6ff;
 }
 
-.freshness-chip.fresh {
-  background: rgba(92, 208, 155, 0.14);
-  border-color: rgba(92, 208, 155, 0.26);
-  color: #8af0c2;
+.snapshot-card.trend-positive {
+  --snapshot-card-border-color: rgba(255, 120, 120, 0.34);
+  border-color: var(--snapshot-card-border-color);
 }
 
-.freshness-chip.warning {
-  background: rgba(255, 190, 90, 0.14);
-  border-color: rgba(255, 190, 90, 0.26);
-  color: #ffd58c;
+.snapshot-card.trend-negative {
+  --snapshot-card-border-color: rgba(92, 208, 155, 0.34);
+  border-color: var(--snapshot-card-border-color);
 }
 
-.freshness-chip.critical {
-  background: rgba(255, 120, 120, 0.14);
-  border-color: rgba(255, 120, 120, 0.28);
-  color: #ffb0b0;
-}
-
-.freshness-chip.muted {
-  background: rgba(255, 255, 255, 0.06);
-  color: #b8c7eb;
+.snapshot-card.trend-neutral {
+  --snapshot-card-border-color: rgba(157, 180, 255, 0.12);
 }
 
 .market-overview-bar {
@@ -1233,15 +1224,6 @@ input {
   font-size: 1.45rem;
   font-weight: 700;
   letter-spacing: -0.03em;
-}
-
-.snapshot-card.freshness-warning {
-  border-color: rgba(255, 190, 90, 0.24);
-}
-
-.snapshot-card.freshness-critical {
-  border-color: rgba(255, 120, 120, 0.28);
-  box-shadow: 0 12px 30px rgba(120, 22, 34, 0.16);
 }
 
 .event-card-topline {

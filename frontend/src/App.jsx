@@ -232,24 +232,20 @@ function formatAgeLabel(value) {
   return `${ageHours} 小时前更新`;
 }
 
-function getFreshnessTone(updatedAt) {
-  if (!updatedAt) {
-    return 'muted';
+function getSnapshotCardTone(changePct) {
+  if (typeof changePct !== 'number' || Number.isNaN(changePct)) {
+    return 'neutral';
   }
 
-  const timestamp = new Date(updatedAt).getTime();
-  if (Number.isNaN(timestamp)) {
-    return 'muted';
+  if (changePct > 0) {
+    return 'positive';
   }
 
-  const ageSeconds = Math.max(Math.floor((Date.now() - timestamp) / 1000), 0);
-  if (ageSeconds > 60) {
-    return 'critical';
+  if (changePct < 0) {
+    return 'negative';
   }
-  if (ageSeconds > 30) {
-    return 'warning';
-  }
-  return 'fresh';
+
+  return 'neutral';
 }
 
 function getContentItemMeta(item) {
@@ -2087,11 +2083,11 @@ function App() {
   }
 
   function renderOverviewCard(item, snapshot) {
-    const freshnessTone = getFreshnessTone(snapshot?.updatedAt);
+    const cardTone = getSnapshotCardTone(snapshot?.changePct);
 
     return (
       <section
-        className={`snapshot-card clickable freshness-${freshnessTone}`}
+        className={`snapshot-card clickable trend-${cardTone}`}
         key={item}
         role="button"
         tabIndex={0}
@@ -2112,7 +2108,7 @@ function App() {
           </div>
           <div className="snapshot-header-side">
             <span>{snapshot?.source || '等待采集'}</span>
-            <span className={`freshness-chip ${freshnessTone}`}>{formatAgeLabel(snapshot?.updatedAt)}</span>
+            <span className="freshness-chip">{formatAgeLabel(snapshot?.updatedAt)}</span>
           </div>
         </header>
         <div className="snapshot-metric">{formatPrice(snapshot?.lastPrice)}</div>
