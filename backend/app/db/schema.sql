@@ -186,3 +186,88 @@ CREATE TABLE IF NOT EXISTS content_fetch_log (
 
 CREATE INDEX IF NOT EXISTS content_fetch_log_lane_started_idx
     ON content_fetch_log (lane, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS dragon_tiger_daily_item (
+    trade_date DATE NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT,
+    close_price NUMERIC(18, 4),
+    change_percent NUMERIC(10, 4),
+    net_buy_amount NUMERIC(20, 2),
+    buy_amount NUMERIC(20, 2),
+    sell_amount NUMERIC(20, 2),
+    deal_amount NUMERIC(20, 2),
+    total_amount NUMERIC(20, 2),
+    net_buy_ratio NUMERIC(18, 4),
+    deal_amount_ratio NUMERIC(18, 4),
+    turnover_rate NUMERIC(18, 4),
+    free_market_cap NUMERIC(20, 2),
+    explain TEXT,
+    reason TEXT,
+    after_1d NUMERIC(10, 4),
+    after_2d NUMERIC(10, 4),
+    after_5d NUMERIC(10, 4),
+    after_10d NUMERIC(10, 4),
+    source TEXT NOT NULL,
+    generated_at TIMESTAMPTZ,
+    collected_at TIMESTAMPTZ NOT NULL,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (trade_date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS dragon_tiger_daily_item_symbol_trade_idx
+    ON dragon_tiger_daily_item (symbol, trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS dragon_tiger_institution_item (
+    trade_date DATE NOT NULL,
+    symbol TEXT NOT NULL,
+    name TEXT,
+    close_price NUMERIC(18, 4),
+    change_percent NUMERIC(10, 4),
+    buy_org_count INTEGER,
+    sell_org_count INTEGER,
+    org_buy_amount NUMERIC(20, 2),
+    org_sell_amount NUMERIC(20, 2),
+    org_net_amount NUMERIC(20, 2),
+    market_total_amount NUMERIC(20, 2),
+    org_net_amount_ratio NUMERIC(18, 4),
+    turnover_rate NUMERIC(18, 4),
+    free_market_cap NUMERIC(20, 2),
+    reason TEXT,
+    source TEXT NOT NULL,
+    generated_at TIMESTAMPTZ,
+    collected_at TIMESTAMPTZ NOT NULL,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (trade_date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS dragon_tiger_institution_item_symbol_trade_idx
+    ON dragon_tiger_institution_item (symbol, trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS dragon_tiger_collection_checkpoint (
+    job_name TEXT PRIMARY KEY,
+    next_due_at TIMESTAMPTZ NOT NULL,
+    cooldown_until TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ,
+    last_collected_trade_date DATE,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS dragon_tiger_collection_checkpoint_next_due_idx
+    ON dragon_tiger_collection_checkpoint (next_due_at ASC);
+
+CREATE TABLE IF NOT EXISTS dragon_tiger_collection_log (
+    id BIGSERIAL PRIMARY KEY,
+    job_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ NOT NULL,
+    trade_date DATE,
+    error_message TEXT,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS dragon_tiger_collection_log_job_started_idx
+    ON dragon_tiger_collection_log (job_name, started_at DESC);

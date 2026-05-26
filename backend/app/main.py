@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.services.cache.redis_store import RedisStore
 from app.services.content_query_service import ContentQueryService
+from app.services.dragon_tiger_query_service import DragonTigerQueryService
 from app.services.market_detail.query_service import MarketDetailQueryService
 from app.services.symbol_lookup import SymbolLookupService
 from app.services.vendors.dragon_tiger_client import DragonTigerClient
@@ -63,13 +64,20 @@ async def lifespan(app: FastAPI):
             "market-news": settings.content_market_news_refresh_seconds,
         },
     )
+    app.state.dragon_tiger_query_service = DragonTigerQueryService(settings.postgres_dsn)
     app.state.symbol_lookup_service = SymbolLookupService()
-    app.state.dragon_tiger_client = DragonTigerClient()
+    app.state.dragon_tiger_client = DragonTigerClient(
+        timeout_seconds=settings.dragon_tiger_request_timeout_seconds,
+        retry_attempts=settings.dragon_tiger_request_retry_attempts,
+        retry_backoff_seconds=settings.dragon_tiger_request_retry_backoff_seconds,
+    )
     await app.state.market_detail_query_service.connect()
     await app.state.content_query_service.connect()
+    await app.state.dragon_tiger_query_service.connect()
 
     yield
 
+    await app.state.dragon_tiger_query_service.close()
     await app.state.content_query_service.close()
     await app.state.market_detail_query_service.close()
     await app.state.redis_store.close()
