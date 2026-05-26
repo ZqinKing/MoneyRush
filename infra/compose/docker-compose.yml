@@ -135,6 +135,28 @@ services:
       redis:
         condition: service_healthy
 
+  dragon-tiger-collector:
+    build:
+      context: ../..
+      dockerfile: infra/docker/collector.Dockerfile
+    command: ["python", "-m", "collector.dragon_tiger_main"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}
+      DRAGON_TIGER_COLLECTOR_ENABLED: ${DRAGON_TIGER_COLLECTOR_ENABLED:-true}
+      DRAGON_TIGER_COLLECTOR_POLL_INTERVAL_SECONDS: ${DRAGON_TIGER_COLLECTOR_POLL_INTERVAL_SECONDS:-300}
+      DRAGON_TIGER_COLLECTION_START_HOUR_CHINA: ${DRAGON_TIGER_COLLECTION_START_HOUR_CHINA:-17}
+      DRAGON_TIGER_COLLECTION_START_MINUTE_CHINA: ${DRAGON_TIGER_COLLECTION_START_MINUTE_CHINA:-10}
+      DRAGON_TIGER_REQUEST_TIMEOUT_SECONDS: ${DRAGON_TIGER_REQUEST_TIMEOUT_SECONDS:-15}
+      DRAGON_TIGER_REQUEST_RETRY_ATTEMPTS: ${DRAGON_TIGER_REQUEST_RETRY_ATTEMPTS:-3}
+      DRAGON_TIGER_REQUEST_RETRY_BACKOFF_SECONDS: ${DRAGON_TIGER_REQUEST_RETRY_BACKOFF_SECONDS:-0.6}
+      COLLECTOR_ENABLE_RUNTIME_DATA_REPAIR: ${COLLECTOR_ENABLE_RUNTIME_DATA_REPAIR:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ../..

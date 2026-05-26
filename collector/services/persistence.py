@@ -261,6 +261,103 @@ class PostgresStore:
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS content_fetch_log_lane_started_idx ON content_fetch_log (lane, started_at DESC)"
             )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dragon_tiger_daily_item (
+                    trade_date DATE NOT NULL,
+                    symbol TEXT NOT NULL,
+                    name TEXT,
+                    close_price NUMERIC(18, 4),
+                    change_percent NUMERIC(10, 4),
+                    net_buy_amount NUMERIC(20, 2),
+                    buy_amount NUMERIC(20, 2),
+                    sell_amount NUMERIC(20, 2),
+                    deal_amount NUMERIC(20, 2),
+                    total_amount NUMERIC(20, 2),
+                    net_buy_ratio NUMERIC(18, 4),
+                    deal_amount_ratio NUMERIC(18, 4),
+                    turnover_rate NUMERIC(18, 4),
+                    free_market_cap NUMERIC(20, 2),
+                    explain TEXT,
+                    reason TEXT,
+                    after_1d NUMERIC(10, 4),
+                    after_2d NUMERIC(10, 4),
+                    after_5d NUMERIC(10, 4),
+                    after_10d NUMERIC(10, 4),
+                    source TEXT NOT NULL,
+                    generated_at TIMESTAMPTZ,
+                    collected_at TIMESTAMPTZ NOT NULL,
+                    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    PRIMARY KEY (trade_date, symbol)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS dragon_tiger_daily_item_symbol_trade_idx ON dragon_tiger_daily_item (symbol, trade_date DESC)"
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dragon_tiger_institution_item (
+                    trade_date DATE NOT NULL,
+                    symbol TEXT NOT NULL,
+                    name TEXT,
+                    close_price NUMERIC(18, 4),
+                    change_percent NUMERIC(10, 4),
+                    buy_org_count INTEGER,
+                    sell_org_count INTEGER,
+                    org_buy_amount NUMERIC(20, 2),
+                    org_sell_amount NUMERIC(20, 2),
+                    org_net_amount NUMERIC(20, 2),
+                    market_total_amount NUMERIC(20, 2),
+                    org_net_amount_ratio NUMERIC(18, 4),
+                    turnover_rate NUMERIC(18, 4),
+                    free_market_cap NUMERIC(20, 2),
+                    reason TEXT,
+                    source TEXT NOT NULL,
+                    generated_at TIMESTAMPTZ,
+                    collected_at TIMESTAMPTZ NOT NULL,
+                    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    PRIMARY KEY (trade_date, symbol)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS dragon_tiger_institution_item_symbol_trade_idx ON dragon_tiger_institution_item (symbol, trade_date DESC)"
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dragon_tiger_collection_checkpoint (
+                    job_name TEXT PRIMARY KEY,
+                    next_due_at TIMESTAMPTZ NOT NULL,
+                    cooldown_until TIMESTAMPTZ,
+                    last_success_at TIMESTAMPTZ,
+                    last_attempt_at TIMESTAMPTZ,
+                    last_collected_trade_date DATE,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS dragon_tiger_collection_checkpoint_next_due_idx ON dragon_tiger_collection_checkpoint (next_due_at ASC)"
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS dragon_tiger_collection_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    job_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL,
+                    finished_at TIMESTAMPTZ NOT NULL,
+                    trade_date DATE,
+                    error_message TEXT,
+                    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS dragon_tiger_collection_log_job_started_idx ON dragon_tiger_collection_log (job_name, started_at DESC)"
+            )
             if self._enable_runtime_data_repair:
                 repairs = await self._repair_runtime_data(connection)
                 if any(repairs.values()):
@@ -964,6 +1061,264 @@ class PostgresStore:
                 http_hint,
                 error_message,
                 _json_dumps(meta),
+            )
+
+    async def ensure_dragon_tiger_checkpoint(self, *, job_name: str, next_due_at: datetime) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO dragon_tiger_collection_checkpoint (job_name, next_due_at, failure_count)
+                VALUES ($1, $2, 0)
+                ON CONFLICT (job_name) DO NOTHING
+                """,
+                job_name,
+                _coerce_utc_datetime(next_due_at, field_name="dragon_tiger_checkpoint.next_due_at"),
+            )
+
+    async def fetch_dragon_tiger_checkpoints(self) -> list[dict[str, object]]:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT job_name, next_due_at, cooldown_until, last_success_at, last_attempt_at, last_collected_trade_date, failure_count, last_error
+                FROM dragon_tiger_collection_checkpoint
+                ORDER BY next_due_at ASC, job_name ASC
+                """
+            )
+
+        return [
+            {
+                "job_name": row["job_name"],
+                "next_due_at": row["next_due_at"],
+                "cooldown_until": row["cooldown_until"],
+                "last_success_at": row["last_success_at"],
+                "last_attempt_at": row["last_attempt_at"],
+                "last_collected_trade_date": row["last_collected_trade_date"],
+                "failure_count": int(row["failure_count"] or 0),
+                "last_error": row["last_error"],
+            }
+            for row in rows
+        ]
+
+    async def upsert_dragon_tiger_checkpoint(
+        self,
+        *,
+        job_name: str,
+        next_due_at: datetime,
+        cooldown_until: datetime | None,
+        last_success_at: datetime | None,
+        last_attempt_at: datetime | None,
+        last_collected_trade_date,
+        failure_count: int,
+        last_error: str | None,
+    ) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO dragon_tiger_collection_checkpoint (
+                    job_name,
+                    next_due_at,
+                    cooldown_until,
+                    last_success_at,
+                    last_attempt_at,
+                    last_collected_trade_date,
+                    failure_count,
+                    last_error
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (job_name) DO UPDATE SET
+                    next_due_at = EXCLUDED.next_due_at,
+                    cooldown_until = EXCLUDED.cooldown_until,
+                    last_success_at = EXCLUDED.last_success_at,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    last_collected_trade_date = EXCLUDED.last_collected_trade_date,
+                    failure_count = EXCLUDED.failure_count,
+                    last_error = EXCLUDED.last_error
+                """,
+                job_name,
+                _coerce_utc_datetime(next_due_at, field_name="dragon_tiger_checkpoint.next_due_at"),
+                _coerce_optional_utc_datetime(cooldown_until, field_name="dragon_tiger_checkpoint.cooldown_until"),
+                _coerce_optional_utc_datetime(last_success_at, field_name="dragon_tiger_checkpoint.last_success_at"),
+                _coerce_optional_utc_datetime(last_attempt_at, field_name="dragon_tiger_checkpoint.last_attempt_at"),
+                last_collected_trade_date,
+                failure_count,
+                last_error,
+            )
+
+    async def insert_dragon_tiger_collection_log(
+        self,
+        *,
+        job_name: str,
+        status: str,
+        started_at: datetime,
+        finished_at: datetime,
+        trade_date,
+        error_message: str | None,
+        meta: dict[str, object],
+    ) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO dragon_tiger_collection_log (job_name, status, started_at, finished_at, trade_date, error_message, meta)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                """,
+                job_name,
+                status,
+                _coerce_utc_datetime(started_at, field_name="dragon_tiger_log.started_at"),
+                _coerce_utc_datetime(finished_at, field_name="dragon_tiger_log.finished_at"),
+                trade_date,
+                error_message,
+                _json_dumps(meta),
+            )
+
+    async def upsert_dragon_tiger_daily_items(self, items: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return
+
+        rows = [
+            (
+                item["trade_date"],
+                item["symbol"],
+                item.get("name"),
+                item.get("close_price"),
+                item.get("change_percent"),
+                item.get("net_buy_amount"),
+                item.get("buy_amount"),
+                item.get("sell_amount"),
+                item.get("deal_amount"),
+                item.get("total_amount"),
+                item.get("net_buy_ratio"),
+                item.get("deal_amount_ratio"),
+                item.get("turnover_rate"),
+                item.get("free_market_cap"),
+                item.get("explain"),
+                item.get("reason"),
+                item.get("after_1d"),
+                item.get("after_2d"),
+                item.get("after_5d"),
+                item.get("after_10d"),
+                item["source"],
+                _coerce_optional_utc_datetime(item.get("generated_at"), field_name="dragon_tiger_daily.generated_at"),
+                _coerce_utc_datetime(item["collected_at"], field_name="dragon_tiger_daily.collected_at"),
+                _json_dumps(item.get("raw_payload", {})),
+            )
+            for item in items
+        ]
+
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO dragon_tiger_daily_item (
+                    trade_date, symbol, name, close_price, change_percent, net_buy_amount, buy_amount, sell_amount,
+                    deal_amount, total_amount, net_buy_ratio, deal_amount_ratio, turnover_rate, free_market_cap,
+                    explain, reason, after_1d, after_2d, after_5d, after_10d, source, generated_at, collected_at, raw_payload
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8,
+                    $9, $10, $11, $12, $13, $14,
+                    $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb
+                )
+                ON CONFLICT (trade_date, symbol) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    close_price = EXCLUDED.close_price,
+                    change_percent = EXCLUDED.change_percent,
+                    net_buy_amount = EXCLUDED.net_buy_amount,
+                    buy_amount = EXCLUDED.buy_amount,
+                    sell_amount = EXCLUDED.sell_amount,
+                    deal_amount = EXCLUDED.deal_amount,
+                    total_amount = EXCLUDED.total_amount,
+                    net_buy_ratio = EXCLUDED.net_buy_ratio,
+                    deal_amount_ratio = EXCLUDED.deal_amount_ratio,
+                    turnover_rate = EXCLUDED.turnover_rate,
+                    free_market_cap = EXCLUDED.free_market_cap,
+                    explain = EXCLUDED.explain,
+                    reason = EXCLUDED.reason,
+                    after_1d = EXCLUDED.after_1d,
+                    after_2d = EXCLUDED.after_2d,
+                    after_5d = EXCLUDED.after_5d,
+                    after_10d = EXCLUDED.after_10d,
+                    source = EXCLUDED.source,
+                    generated_at = EXCLUDED.generated_at,
+                    collected_at = EXCLUDED.collected_at,
+                    raw_payload = EXCLUDED.raw_payload
+                """,
+                rows,
+            )
+
+    async def upsert_dragon_tiger_institution_items(self, items: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return
+
+        rows = [
+            (
+                item["trade_date"],
+                item["symbol"],
+                item.get("name"),
+                item.get("close_price"),
+                item.get("change_percent"),
+                item.get("buy_org_count"),
+                item.get("sell_org_count"),
+                item.get("org_buy_amount"),
+                item.get("org_sell_amount"),
+                item.get("org_net_amount"),
+                item.get("market_total_amount"),
+                item.get("org_net_amount_ratio"),
+                item.get("turnover_rate"),
+                item.get("free_market_cap"),
+                item.get("reason"),
+                item["source"],
+                _coerce_optional_utc_datetime(item.get("generated_at"), field_name="dragon_tiger_institution.generated_at"),
+                _coerce_utc_datetime(item["collected_at"], field_name="dragon_tiger_institution.collected_at"),
+                _json_dumps(item.get("raw_payload", {})),
+            )
+            for item in items
+        ]
+
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO dragon_tiger_institution_item (
+                    trade_date, symbol, name, close_price, change_percent, buy_org_count, sell_org_count,
+                    org_buy_amount, org_sell_amount, org_net_amount, market_total_amount, org_net_amount_ratio,
+                    turnover_rate, free_market_cap, reason, source, generated_at, collected_at, raw_payload
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7,
+                    $8, $9, $10, $11, $12,
+                    $13, $14, $15, $16, $17, $18, $19::jsonb
+                )
+                ON CONFLICT (trade_date, symbol) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    close_price = EXCLUDED.close_price,
+                    change_percent = EXCLUDED.change_percent,
+                    buy_org_count = EXCLUDED.buy_org_count,
+                    sell_org_count = EXCLUDED.sell_org_count,
+                    org_buy_amount = EXCLUDED.org_buy_amount,
+                    org_sell_amount = EXCLUDED.org_sell_amount,
+                    org_net_amount = EXCLUDED.org_net_amount,
+                    market_total_amount = EXCLUDED.market_total_amount,
+                    org_net_amount_ratio = EXCLUDED.org_net_amount_ratio,
+                    turnover_rate = EXCLUDED.turnover_rate,
+                    free_market_cap = EXCLUDED.free_market_cap,
+                    reason = EXCLUDED.reason,
+                    source = EXCLUDED.source,
+                    generated_at = EXCLUDED.generated_at,
+                    collected_at = EXCLUDED.collected_at,
+                    raw_payload = EXCLUDED.raw_payload
+                """,
+                rows,
             )
 
     async def upsert_research_reports(self, items: list[dict[str, object]]) -> None:
