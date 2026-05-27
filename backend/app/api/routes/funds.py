@@ -34,9 +34,16 @@ async def active_fund_snapshots(request: Request) -> dict[str, dict[str, object]
     query_service = request.app.state.fund_query_service
     fund_codes = await redis_store.get_active_funds()
     snapshots = await redis_store.get_fund_snapshots(fund_codes)
-    missing = [fund_code for fund_code in fund_codes if fund_code not in snapshots]
-    if missing:
-        snapshots.update(await query_service.fetch_active_fund_snapshots(missing))
+    query_snapshots = await query_service.fetch_active_fund_snapshots(fund_codes)
+    for fund_code, query_snapshot in query_snapshots.items():
+        if fund_code in snapshots:
+            snapshots[fund_code] = {
+                **snapshots[fund_code],
+                **({"estimatedIntradayReturn": query_snapshot.get("estimatedIntradayReturn")} if "estimatedIntradayReturn" in query_snapshot else {}),
+                **({"updatedAt": query_snapshot.get("updatedAt")} if "updatedAt" in query_snapshot else {}),
+            }
+        else:
+            snapshots[fund_code] = query_snapshot
     return {"snapshots": snapshots}
 
 

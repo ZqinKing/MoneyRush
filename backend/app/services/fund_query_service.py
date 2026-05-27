@@ -36,6 +36,18 @@ def _to_date_string(value: object) -> str | None:
     return None
 
 
+def _decode_jsonish(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
 class FundQueryService:
     def __init__(self, dsn: str) -> None:
         self._dsn = dsn
@@ -175,7 +187,7 @@ class FundQueryService:
         )
         snapshots: dict[str, dict[str, object]] = {}
         for row in rows:
-            payload = dict(row["payload"] or {}) if isinstance(row["payload"], dict) else {}
+            payload = _decode_jsonish(row["payload"])
             snapshots[str(row["fund_code"])] = {
                 **payload,
                 "fundCode": row["fund_code"],
@@ -185,6 +197,11 @@ class FundQueryService:
                 "estimatedIntradayReturn": _to_float(row["estimated_intraday_return"]),
                 "updatedAt": _to_iso(row["updated_at"]),
             }
+        estimated_returns = await self._compute_estimated_returns_for_funds(fund_codes)
+        for fund_code, estimated_return in estimated_returns.items():
+            snapshot = snapshots.get(fund_code)
+            if snapshot is not None:
+                snapshot["estimatedIntradayReturn"] = estimated_return
         return snapshots
 
     async def fetch_fund_detail(self, fund_code: str) -> dict[str, object]:
@@ -217,23 +234,43 @@ class FundQueryService:
         )
         top_holdings = await self._fetch(
             """
+            WITH latest_report AS (
+                SELECT MAX(report_date) AS report_date
+                FROM fund_stock_holding
+                WHERE fund_code = $1
+            ), ranked AS (
+                SELECT fund_code, stock_symbol, stock_name, report_date, rank, weight_percent, hold_shares,
+                       hold_market_value, change_type, raw,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY rank
+                           ORDER BY weight_percent DESC NULLS LAST, hold_market_value DESC NULLS LAST, stock_symbol ASC
+                       ) AS rank_choice
+                FROM fund_stock_holding
+                WHERE fund_code = $1
+                  AND report_date = (SELECT report_date FROM latest_report)
+            )
             SELECT fund_code, stock_symbol, stock_name, report_date, rank, weight_percent, hold_shares,
                    hold_market_value, change_type, raw
-            FROM fund_stock_holding
-            WHERE fund_code = $1
-            ORDER BY report_date DESC, rank ASC NULLS LAST, stock_symbol ASC
+            FROM ranked
+            WHERE rank_choice = 1
+            ORDER BY rank ASC NULLS LAST, stock_symbol ASC
             LIMIT 10
             """,
             fund_code,
         )
         holding_symbols = [str(row["stock_symbol"]) for row in top_holdings]
         stock_snapshots = await self._fetch_stock_snapshots(holding_symbols)
+        holding_performance = self._build_holding_performance(top_holdings, stock_snapshots)
+        estimated_intraday_return = self._sum_estimated_contributions(holding_performance)
+        serialized_snapshot = self._serialize_snapshot(snapshot)
+        if serialized_snapshot is not None:
+            serialized_snapshot["estimatedIntradayReturn"] = estimated_intraday_return
         return {
             "profile": self._serialize_profile(profile),
-            "snapshot": self._serialize_snapshot(snapshot),
+            "snapshot": serialized_snapshot,
             "navHistory": [self._serialize_nav_row(row) for row in nav_history],
             "topHoldings": [self._serialize_holding_row(row) for row in top_holdings],
-            "holdingStocksPerformance": self._build_holding_performance(top_holdings, stock_snapshots),
+            "holdingStocksPerformance": holding_performance,
         }
 
     async def fetch_stock_funds(self, symbol: str) -> dict[str, object]:
@@ -473,7 +510,7 @@ class FundQueryService:
         )
         snapshots: dict[str, dict[str, object]] = {}
         for row in rows:
-            payload = dict(row["payload"] or {}) if isinstance(row["payload"], dict) else {}
+            payload = _decode_jsonish(row["payload"])
             payload["updatedAt"] = _to_iso(row["updated_at"])
             snapshots[str(row["symbol"])] = payload
         return snapshots
@@ -505,10 +542,58 @@ class FundQueryService:
             )
         return performance
 
+    def _sum_estimated_contributions(self, performance: list[dict[str, object]]) -> float | None:
+        values = [item.get("estimatedContribution") for item in performance if isinstance(item.get("estimatedContribution"), (float, int, Decimal))]
+        if not values:
+            return None
+        return float(sum(values))
+
+    async def _compute_estimated_returns_for_funds(self, fund_codes: list[str]) -> dict[str, float | None]:
+        if not fund_codes:
+            return {}
+        rows = await self._fetch(
+            """
+            WITH latest_report AS (
+                SELECT fund_code, MAX(report_date) AS report_date
+                FROM fund_stock_holding
+                WHERE fund_code = ANY($1::text[])
+                GROUP BY fund_code
+            ), ranked AS (
+                SELECT holding.fund_code, holding.stock_symbol, holding.stock_name, holding.report_date, holding.rank,
+                       holding.weight_percent, holding.hold_shares, holding.hold_market_value, holding.change_type,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY holding.fund_code, holding.rank
+                           ORDER BY holding.weight_percent DESC NULLS LAST, holding.hold_market_value DESC NULLS LAST, holding.stock_symbol ASC
+                       ) AS rank_choice
+                FROM fund_stock_holding AS holding
+                INNER JOIN latest_report
+                    ON latest_report.fund_code = holding.fund_code
+                   AND latest_report.report_date = holding.report_date
+            )
+            SELECT fund_code, stock_symbol, stock_name, report_date, rank, weight_percent, hold_shares, hold_market_value, change_type
+            FROM ranked
+            WHERE rank_choice = 1
+            ORDER BY fund_code ASC, rank ASC NULLS LAST, stock_symbol ASC
+            """,
+            fund_codes,
+        )
+        holdings_by_fund: dict[str, list[asyncpg.Record]] = {}
+        symbols: list[str] = []
+        for row in rows:
+            fund_code = str(row["fund_code"])
+            holdings_by_fund.setdefault(fund_code, []).append(row)
+            symbols.append(str(row["stock_symbol"]))
+        stock_snapshots = await self._fetch_stock_snapshots(sorted(set(symbols)))
+        estimated_returns: dict[str, float | None] = {}
+        for fund_code, holdings in holdings_by_fund.items():
+            performance = self._build_holding_performance(holdings, stock_snapshots)
+            estimated_returns[fund_code] = self._sum_estimated_contributions(performance)
+        return estimated_returns
+
     def _serialize_profile(self, row: asyncpg.Record | None) -> dict[str, object] | None:
         if row is None:
             return None
-        payload = dict(row["payload"] or {}) if isinstance(row["payload"], dict) else {}
+        payload = _decode_jsonish(row["payload"])
         return {
             **payload,
             "fundCode": row["fund_code"],
@@ -528,7 +613,7 @@ class FundQueryService:
     def _serialize_snapshot(self, row: asyncpg.Record | None) -> dict[str, object] | None:
         if row is None:
             return None
-        payload = dict(row["payload"] or {}) if isinstance(row["payload"], dict) else {}
+        payload = _decode_jsonish(row["payload"])
         return {
             **payload,
             "fundCode": row["fund_code"],

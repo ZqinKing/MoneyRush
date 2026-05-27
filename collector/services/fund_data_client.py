@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import UTC, date, datetime, timedelta
 
@@ -79,6 +80,42 @@ def _quarter_dates(anchor: date | None = None, count: int = 8) -> list[date]:
                     break
         year -= 1
     return candidates
+
+
+def _quarter_label_to_date(value: object) -> date | None:
+    text = _safe_text(value)
+    if not text:
+        return None
+    normalized = text.replace(" ", "")
+    match = re.search(r"(\d{4})[年/-]?第?([1-4])[季度Qq]+", normalized)
+    if not match:
+        match = re.search(r"(\d{4})[Qq]([1-4])", normalized)
+    if not match:
+        return None
+    year = int(match.group(1))
+    quarter = int(match.group(2))
+    month_day_map = {
+        1: (3, 31),
+        2: (6, 30),
+        3: (9, 30),
+        4: (12, 31),
+    }
+    month, day = month_day_map[quarter]
+    return date(year, month, day)
+
+
+def _to_ten_thousand_float(value: object) -> float | None:
+    number = _to_float(value)
+    if number is None:
+        return None
+    return number * 10_000
+
+
+def _to_ten_thousand_int(value: object) -> int | None:
+    number = _to_ten_thousand_float(value)
+    if number is None:
+        return None
+    return int(round(number))
 
 
 class FundDataClient:
@@ -169,6 +206,10 @@ class FundDataClient:
         return sorted(rows, key=lambda item: item["nav_date"], reverse=True)[:limit]
 
     def fetch_top_holdings(self, fund_code: str) -> list[dict[str, object]]:
+        primary_rows = self._fetch_top_holdings_from_portfolio(fund_code)
+        if primary_rows:
+            return primary_rows[:10]
+
         for report_date in _quarter_dates(count=8):
             self._wait_for_slot()
             try:
@@ -177,6 +218,29 @@ class FundDataClient:
                 logger.info("fund holdings fetch failed for report date", extra={"fund_code": fund_code, "report_date": report_date.isoformat()})
                 continue
             rows = self._normalize_fund_holdings(fund_code, report_date, frame)
+            if rows:
+                return rows[:10]
+        return []
+
+    def _fetch_top_holdings_from_portfolio(self, fund_code: str) -> list[dict[str, object]]:
+        years_to_try: list[str] = []
+        current_year = datetime.now(UTC).year
+        for year in (current_year, current_year - 1):
+            year_text = str(year)
+            if year_text not in years_to_try:
+                years_to_try.append(year_text)
+
+        for year in years_to_try:
+            self._wait_for_slot()
+            try:
+                frame = ak.fund_portfolio_hold_em(symbol=fund_code, date=year)
+            except Exception:
+                logger.info(
+                    "fund portfolio holdings fetch failed",
+                    extra={"fund_code": fund_code, "year": year},
+                )
+                continue
+            rows = self._normalize_portfolio_holdings(fund_code, frame)
             if rows:
                 return rows[:10]
         return []
@@ -247,11 +311,40 @@ class FundDataClient:
             )
         return sorted(rows, key=lambda item: (item.get("rank") or 9999, item["stock_symbol"]))
 
+    def _normalize_portfolio_holdings(self, fund_code: str, frame) -> list[dict[str, object]]:
+        rows: list[dict[str, object]] = []
+        if frame is None or getattr(frame, "empty", True):
+            return rows
+
+        for row in frame.to_dict("records"):
+            symbol = _normalize_stock_symbol(row.get("股票代码"))
+            report_date = _quarter_label_to_date(row.get("季度"))
+            if symbol is None or report_date is None:
+                continue
+            rows.append(
+                {
+                    "fund_code": fund_code,
+                    "stock_symbol": symbol,
+                    "stock_name": _safe_text(row.get("股票名称") or row.get("股票简称")),
+                    "report_date": report_date,
+                    "rank": _to_int(row.get("序号")),
+                    "weight_percent": _to_float(row.get("占净值比例") or row.get("占基金净值比例")),
+                    "hold_shares": _to_ten_thousand_int(row.get("持股数") or row.get("持仓数量")),
+                    "hold_market_value": _to_ten_thousand_float(row.get("持仓市值") or row.get("持股市值")),
+                    "change_type": _safe_text(row.get("变动情况") or row.get("持仓变动")),
+                    "raw": {**row, "source": "akshare-fund_portfolio_hold_em"},
+                }
+            )
+
+        rows.sort(key=lambda item: (item["report_date"], -(item.get("rank") or 9999)), reverse=True)
+        latest_report_date = rows[0]["report_date"] if rows else None
+        if latest_report_date is None:
+            return []
+        latest_rows = [item for item in rows if item["report_date"] == latest_report_date]
+        return sorted(latest_rows, key=lambda item: (item.get("rank") or 9999, item["stock_symbol"]))
+
     def _estimate_intraday_return(self, holdings: list[dict[str, object]]) -> float | None:
-        weighted_values = [item.get("weight_percent") for item in holdings if isinstance(item.get("weight_percent"), (int, float))]
-        if not weighted_values:
-            return None
-        return 0.0
+        return None
 
     def _wait_for_slot(self) -> None:
         interval = max(float(getattr(self._settings, "fund_collector_request_interval_seconds", 1.0)), 0.0)
