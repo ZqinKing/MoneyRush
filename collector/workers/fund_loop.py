@@ -110,9 +110,10 @@ class FundCollectorWorker:
         await self._postgres.upsert_fund_holding_rows(holdings)
 
         linked_symbols = [item["stock_symbol"] for item in holdings if item.get("stock_symbol")]
+        auto_linkable_symbols = [symbol for symbol in linked_symbols if self._is_stock_collector_supported_symbol(symbol)]
         previous_symbols = set(await self._redis.smembers(f"{self._settings.active_symbols_key}:fund:{fund_code}"))
         await self._postgres.upsert_fund_stock_links(
-            [{"fund_code": fund_code, "stock_symbol": symbol, "link_type": "top-holding"} for symbol in linked_symbols]
+            [{"fund_code": fund_code, "stock_symbol": symbol, "link_type": "top-holding"} for symbol in auto_linkable_symbols]
         )
         await self._redis.set(f"{self._settings.fund_snapshot_key_prefix}:{fund_code}", json.dumps(snapshot, default=str))
         await self._redis.set(f"{self._settings.fund_holdings_key_prefix}:{fund_code}:holdings", json.dumps(linked_symbols))
@@ -124,15 +125,16 @@ class FundCollectorWorker:
             should_auto_link_stocks = auto_link_stocks
 
         for symbol in linked_symbols:
-            if should_auto_link_stocks:
+            if should_auto_link_stocks and self._is_stock_collector_supported_symbol(symbol):
                 await self._redis.sadd(self._settings.active_symbols_key, symbol)
                 await self._redis.sadd(f"{self._settings.active_symbols_key}:fund:{fund_code}", symbol)
-            stock_fund_rows = await asyncio.to_thread(self._client.fetch_stock_fund_holders, symbol)
-            await self._postgres.upsert_stock_fund_holding_rows(stock_fund_rows)
-            await self._redis.set(
-                f"{self._settings.stock_funds_key_prefix}:{symbol}:funds",
-                json.dumps(sorted({row["fund_code"] for row in stock_fund_rows if row.get("fund_code")})),
-            )
+            if self._is_stock_collector_supported_symbol(symbol):
+                stock_fund_rows = await asyncio.to_thread(self._client.fetch_stock_fund_holders, symbol)
+                await self._postgres.upsert_stock_fund_holding_rows(stock_fund_rows)
+                await self._redis.set(
+                    f"{self._settings.stock_funds_key_prefix}:{symbol}:funds",
+                    json.dumps(sorted({row["fund_code"] for row in stock_fund_rows if row.get("fund_code")})),
+                )
 
         stale_symbols = previous_symbols.difference(linked_symbols)
         for symbol in stale_symbols:
@@ -154,6 +156,9 @@ class FundCollectorWorker:
         if isinstance(value, str):
             return value.strip().lower() in {"1", "true", "yes", "on"}
         return bool(value)
+
+    def _is_stock_collector_supported_symbol(self, symbol: str | None) -> bool:
+        return bool(symbol and symbol.isdigit() and len(symbol) == 6)
 
     async def _symbol_is_tracked_by_other_active_fund(self, excluding_fund_code: str, symbol: str) -> bool:
         active_funds = await self._redis.smembers(self._settings.active_funds_key)

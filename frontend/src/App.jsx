@@ -3296,7 +3296,10 @@ function App() {
                     return (
                       <tr key={`${holding.stockSymbol}-${holding.reportDate}`}>
                         <td>{holding.rank ?? '--'}</td>
-                        <td>{holding.stockName || holding.stockSymbol}<span className="table-subtext">{holding.stockSymbol}</span></td>
+                        <td>
+                          {holding.stockName || holding.stockSymbol}
+                          <span className="table-subtext">{holding.stockSymbol}{holding.stockMarket ? ` · ${holding.stockMarket}` : ''}</span>
+                        </td>
                         <td>{formatSignedPercent(holding.weightPercent).replace('+', '')}</td>
                         <td>{formatPrice(linked.lastPrice)}</td>
                         <td className={linked.changePct > 0 ? 'positive' : linked.changePct < 0 ? 'negative' : ''}>{formatSignedPercent(linked.changePct)}</td>
