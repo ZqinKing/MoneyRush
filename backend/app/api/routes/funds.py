@@ -1,0 +1,117 @@
+from __future__ import annotations
+
+import re
+
+from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+
+router = APIRouter(prefix="/funds", tags=["funds"])
+_FUND_CODE_RE = re.compile(r"^\d{6}$")
+
+
+class ActivateFundRequest(BaseModel):
+    fundCode: str = Field(min_length=1, max_length=16)
+    autoLinkStocks: bool = True
+
+
+def _normalize_fund_code_or_422(fund_code: str | None) -> str:
+    normalized = (fund_code or "").strip()
+    if not _FUND_CODE_RE.match(normalized):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="fundCode must be a 6 digit fund code")
+    return normalized
+
+
+@router.get("/active")
+async def active_funds(request: Request) -> dict[str, list[str]]:
+    return {"funds": await request.app.state.redis_store.get_active_funds()}
+
+
+@router.get("/snapshots")
+async def active_fund_snapshots(request: Request) -> dict[str, dict[str, object]]:
+    redis_store = request.app.state.redis_store
+    query_service = request.app.state.fund_query_service
+    fund_codes = await redis_store.get_active_funds()
+    snapshots = await redis_store.get_fund_snapshots(fund_codes)
+    missing = [fund_code for fund_code in fund_codes if fund_code not in snapshots]
+    if missing:
+        snapshots.update(await query_service.fetch_active_fund_snapshots(missing))
+    return {"snapshots": snapshots}
+
+
+@router.get("/{fund_code}/detail")
+async def fund_detail(fund_code: str, request: Request) -> dict[str, object]:
+    normalized_fund_code = _normalize_fund_code_or_422(fund_code)
+    return {
+        "fundCode": normalized_fund_code,
+        **await request.app.state.fund_query_service.fetch_fund_detail(normalized_fund_code),
+    }
+
+
+@router.post("/activate")
+async def activate_fund(payload: ActivateFundRequest, request: Request) -> JSONResponse:
+    fund_code = _normalize_fund_code_or_422(payload.fundCode)
+    redis_store = request.app.state.redis_store
+    if await redis_store.is_fund_active(fund_code):
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "status": "already_active",
+                "fundCode": fund_code,
+                "message": f"基金 {fund_code} 已在监控列表中",
+            },
+        )
+
+    try:
+        lookup_result = request.app.state.fund_lookup_service.lookup(fund_code)
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=f"基金校验失败：{exc}") from exc
+
+    if not lookup_result.is_valid:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"基金代码 {fund_code} 不存在")
+
+    await request.app.state.fund_query_service.upsert_fund_profile(
+        fund_code=fund_code,
+        payload={
+            "fundCode": fund_code,
+            "fundName": lookup_result.fund_name,
+            "source": "eastmoney-fundgz",
+            "rawPayload": lookup_result.raw_payload,
+        },
+    )
+    if lookup_result.nav is not None:
+        snapshot = {
+            "fundCode": fund_code,
+            "fundName": lookup_result.fund_name,
+            "nav": lookup_result.nav,
+            "dailyReturn": lookup_result.daily_return,
+            "navDate": lookup_result.nav_date,
+            "estimatedIntradayReturn": lookup_result.daily_return,
+            "source": "eastmoney-fundgz",
+        }
+        await request.app.state.fund_query_service.upsert_fund_snapshot(fund_code=fund_code, payload=snapshot)
+        await redis_store.set_fund_snapshot(fund_code, snapshot)
+
+    await redis_store.activate_fund(fund_code, payload.autoLinkStocks)
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "accepted",
+            "fundCode": fund_code,
+            "fundName": lookup_result.fund_name,
+            "autoLinkStocks": payload.autoLinkStocks,
+            "message": f"已将 {fund_code} {lookup_result.fund_name or ''} 加入基金监控队列".strip(),
+        },
+    )
+
+
+@router.delete("/{fund_code}", status_code=status.HTTP_202_ACCEPTED)
+async def deactivate_fund(fund_code: str, request: Request) -> dict[str, str]:
+    normalized_fund_code = _normalize_fund_code_or_422(fund_code)
+    await request.app.state.redis_store.deactivate_fund(normalized_fund_code)
+    return {
+        "status": "accepted",
+        "fundCode": normalized_fund_code,
+        "message": f"collector fund deactivation queued for {normalized_fund_code}",
+    }
