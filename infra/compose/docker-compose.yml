@@ -157,6 +157,31 @@ services:
       redis:
         condition: service_healthy
 
+  fund-collector:
+    build:
+      context: ../..
+      dockerfile: infra/docker/collector.Dockerfile
+    command: ["python", "-m", "collector.fund_main"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}
+      REDIS_STREAM_KEY: moneyrush:symbol:commands
+      ACTIVE_SYMBOLS_KEY: moneyrush:active_symbols
+      ACTIVE_FUNDS_KEY: moneyrush:active_funds
+      FUND_SNAPSHOT_KEY_PREFIX: moneyrush:fund:snapshot
+      FUND_HOLDINGS_KEY_PREFIX: moneyrush:fund
+      FUND_AUTO_LINK_STOCKS_KEY_PREFIX: moneyrush:fund:auto_link
+      STOCK_FUNDS_KEY_PREFIX: moneyrush:stock
+      FUND_COLLECTOR_ENABLED: ${FUND_COLLECTOR_ENABLED:-true}
+      FUND_COLLECTOR_POLL_INTERVAL_SECONDS: ${FUND_COLLECTOR_POLL_INTERVAL_SECONDS:-3600}
+      FUND_COLLECTOR_REQUEST_INTERVAL_SECONDS: ${FUND_COLLECTOR_REQUEST_INTERVAL_SECONDS:-1}
+      COLLECTOR_ENABLE_RUNTIME_DATA_REPAIR: ${COLLECTOR_ENABLE_RUNTIME_DATA_REPAIR:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ../..
