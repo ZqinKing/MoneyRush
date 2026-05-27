@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     market_event_key_prefix: str = "moneyrush:event"
     market_events_stream_key: str = "moneyrush:market:events"
     market_overview_cache_key: str = "moneyrush:market:overview"
+    active_funds_key: str = "moneyrush:active_funds"
+    fund_snapshot_key_prefix: str = "moneyrush:fund:snapshot"
+    fund_holdings_key_prefix: str = "moneyrush:fund"
+    fund_auto_link_stocks_key_prefix: str = "moneyrush:fund:auto_link"
+    stock_funds_key_prefix: str = "moneyrush:stock"
     collector_poll_interval_seconds: int = 5
     collector_symbol_min_interval_seconds: int = 10
     collector_unchanged_quote_backoff_threshold: int = 2
@@ -50,6 +55,9 @@ class Settings(BaseSettings):
     market_overview_legu_breadth_refresh_seconds: int = 300
     market_overview_legu_breadth_timeout_seconds: int = 10
     market_overview_legu_breadth_failure_cooldown_seconds: int = 600
+    fund_collector_enabled: bool = True
+    fund_collector_poll_interval_seconds: int = 3600
+    fund_collector_request_interval_seconds: float = 1.0
     content_report_backfill_days: int = 365
     content_announcement_backfill_pages: int = 5
     content_news_backfill_max_items: int = 100
