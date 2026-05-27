@@ -315,6 +315,7 @@ CREATE TABLE IF NOT EXISTS fund_snapshot (
 CREATE TABLE IF NOT EXISTS fund_stock_holding (
     fund_code TEXT NOT NULL,
     stock_symbol TEXT NOT NULL,
+    stock_market TEXT,
     stock_name TEXT,
     report_date DATE NOT NULL,
     rank INTEGER,

@@ -60,10 +60,47 @@ def _normalize_stock_symbol(value: object) -> str | None:
     text = _safe_text(value)
     if not text:
         return None
-    digits = "".join(character for character in text if character.isdigit())
-    if len(digits) < 6:
+    normalized = text.replace(" ", "").upper()
+    if not normalized:
         return None
-    return digits[:6]
+    if normalized.endswith((".SH", ".SZ")):
+        base = normalized.rsplit(".", 1)[0]
+        if base.isdigit() and len(base) >= 6:
+            return base[:6]
+    if normalized.startswith(("SH", "SZ")) and normalized[2:].isdigit() and len(normalized) >= 8:
+        return normalized[2:8]
+    digits = "".join(character for character in normalized if character.isdigit())
+    if len(digits) >= 6 and normalized == digits:
+        return digits[:6]
+    if len(normalized) <= 16:
+        return normalized
+    return normalized[:16]
+
+
+def _infer_stock_market(symbol: str) -> str | None:
+    if not symbol:
+        return None
+    if symbol.isdigit() and len(symbol) == 6:
+        if symbol.startswith(("5", "6", "9")):
+            return "SH"
+        return "SZ"
+    if "." in symbol:
+        suffix = symbol.rsplit(".", 1)[-1]
+        if suffix in {"HK", "US", "SH", "SZ"}:
+            return suffix
+    if symbol.startswith(("HK", "US")):
+        return symbol[:2]
+    if symbol.isdigit() and len(symbol) < 6:
+        return "HK"
+    if symbol.isalpha():
+        return "US"
+    return None
+
+
+def _is_stock_collector_supported_symbol(symbol: str | None) -> bool:
+    if not symbol:
+        return False
+    return symbol.isdigit() and len(symbol) == 6
 
 
 def _quarter_dates(anchor: date | None = None, count: int = 8) -> list[date]:
@@ -247,7 +284,11 @@ class FundDataClient:
 
     def fetch_stock_fund_holders(self, symbol: str) -> list[dict[str, object]]:
         self._wait_for_slot()
-        frame = ak.stock_fund_stock_holder(symbol=symbol)
+        try:
+            frame = ak.stock_fund_stock_holder(symbol=symbol)
+        except Exception as exc:
+            logger.info("stock fund holders unavailable", extra={"symbol": symbol, "error": str(exc)})
+            return []
         rows: list[dict[str, object]] = []
         for row in frame.to_dict("records"):
             fund_code = _safe_text(row.get("基金代码"))
@@ -257,6 +298,7 @@ class FundDataClient:
             rows.append(
                 {
                     "stock_symbol": symbol,
+                    "stock_market": _infer_stock_market(symbol),
                     "fund_code": fund_code,
                     "fund_name": _safe_text(row.get("基金名称")),
                     "fund_type": None,
@@ -299,6 +341,7 @@ class FundDataClient:
                 {
                     "fund_code": fund_code,
                     "stock_symbol": symbol,
+                    "stock_market": _infer_stock_market(symbol),
                     "stock_name": _safe_text(row.get("股票简称") or row.get("股票名称")),
                     "report_date": report_date,
                     "rank": _to_int(row.get("序号")),
@@ -325,6 +368,7 @@ class FundDataClient:
                 {
                     "fund_code": fund_code,
                     "stock_symbol": symbol,
+                    "stock_market": _infer_stock_market(symbol),
                     "stock_name": _safe_text(row.get("股票名称") or row.get("股票简称")),
                     "report_date": report_date,
                     "rank": _to_int(row.get("序号")),

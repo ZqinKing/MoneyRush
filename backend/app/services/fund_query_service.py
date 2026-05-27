@@ -114,6 +114,7 @@ class FundQueryService:
                 CREATE TABLE IF NOT EXISTS fund_stock_holding (
                     fund_code TEXT NOT NULL,
                     stock_symbol TEXT NOT NULL,
+                    stock_market TEXT,
                     stock_name TEXT,
                     report_date DATE NOT NULL,
                     rank INTEGER,
@@ -126,6 +127,7 @@ class FundQueryService:
                 )
                 """
             )
+            await connection.execute("ALTER TABLE fund_stock_holding ADD COLUMN IF NOT EXISTS stock_market TEXT")
             await connection.execute("CREATE INDEX IF NOT EXISTS fund_stock_holding_fund_report_idx ON fund_stock_holding (fund_code, report_date DESC, rank ASC)")
             await connection.execute("CREATE INDEX IF NOT EXISTS fund_stock_holding_stock_report_idx ON fund_stock_holding (stock_symbol, report_date DESC)")
             await connection.execute(
@@ -239,7 +241,7 @@ class FundQueryService:
                 FROM fund_stock_holding
                 WHERE fund_code = $1
             ), ranked AS (
-                SELECT fund_code, stock_symbol, stock_name, report_date, rank, weight_percent, hold_shares,
+                SELECT fund_code, stock_symbol, stock_market, stock_name, report_date, rank, weight_percent, hold_shares,
                        hold_market_value, change_type, raw,
                        ROW_NUMBER() OVER (
                            PARTITION BY rank
@@ -249,7 +251,7 @@ class FundQueryService:
                 WHERE fund_code = $1
                   AND report_date = (SELECT report_date FROM latest_report)
             )
-            SELECT fund_code, stock_symbol, stock_name, report_date, rank, weight_percent, hold_shares,
+            SELECT fund_code, stock_symbol, stock_market, stock_name, report_date, rank, weight_percent, hold_shares,
                    hold_market_value, change_type, raw
             FROM ranked
             WHERE rank_choice = 1
@@ -398,6 +400,7 @@ class FundQueryService:
             (
                 row["fund_code"],
                 row["stock_symbol"],
+                row.get("stock_market"),
                 row.get("stock_name"),
                 row["report_date"],
                 row.get("rank"),
@@ -413,10 +416,11 @@ class FundQueryService:
             await connection.executemany(
                 """
                 INSERT INTO fund_stock_holding (
-                    fund_code, stock_symbol, stock_name, report_date, rank, weight_percent, hold_shares,
+                    fund_code, stock_symbol, stock_market, stock_name, report_date, rank, weight_percent, hold_shares,
                     hold_market_value, change_type, raw
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
                 ON CONFLICT (fund_code, stock_symbol, report_date) DO UPDATE SET
+                    stock_market = EXCLUDED.stock_market,
                     stock_name = EXCLUDED.stock_name,
                     rank = EXCLUDED.rank,
                     weight_percent = EXCLUDED.weight_percent,
@@ -642,6 +646,7 @@ class FundQueryService:
             **raw,
             "fundCode": row["fund_code"],
             "stockSymbol": row["stock_symbol"],
+            "stockMarket": row.get("stock_market"),
             "stockName": row["stock_name"],
             "reportDate": _to_date_string(row["report_date"]),
             "rank": row["rank"],
