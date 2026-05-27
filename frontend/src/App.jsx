@@ -25,6 +25,9 @@ function normalizeLoopbackUrl(configuredUrl, fallbackUrl) {
     if (browserHostname && isBindableLocalHostname(parsedUrl.hostname)) {
       parsedUrl.hostname = browserHostname;
     }
+    if (browserHostname && isBindableLocalHostname(browserHostname) && parsedUrl.hostname !== browserHostname) {
+      parsedUrl.hostname = browserHostname;
+    }
     return parsedUrl.toString().replace(/\/$/, '');
   } catch {
     return rawUrl.replace(/\/$/, '');
@@ -468,6 +471,17 @@ function formatPrice(value) {
   return new Intl.NumberFormat('zh-CN', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatNav(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  return new Intl.NumberFormat('zh-CN', {
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 4,
   }).format(value);
 }
 
@@ -1325,6 +1339,15 @@ function App() {
   const [dragonTigerStocksPage, setDragonTigerStocksPage] = useState(1);
   const [dragonTigerReloadNonce, setDragonTigerReloadNonce] = useState(0);
   const [dragonTigerStatsReloadNonce, setDragonTigerStatsReloadNonce] = useState(0);
+  const [fundCode, setFundCode] = useState('');
+  const [fundRequestState, setFundRequestState] = useState('idle');
+  const [activeFunds, setActiveFunds] = useState([]);
+  const [fundSnapshots, setFundSnapshots] = useState({});
+  const [selectedFundCode, setSelectedFundCode] = useState(null);
+  const [fundDetails, setFundDetails] = useState({});
+  const [fundDetailRequestState, setFundDetailRequestState] = useState('idle');
+  const [removingFund, setRemovingFund] = useState('');
+  const [autoLinkStocks, setAutoLinkStocks] = useState(true);
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
@@ -1580,6 +1603,79 @@ function App() {
       })
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (activeView !== 'funds') {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadFunds() {
+      setFundRequestState('loading');
+      try {
+        const [activeResponse, snapshotResponse] = await Promise.all([
+          fetch(`${apiBaseUrl}/api/v1/funds/active`),
+          fetch(`${apiBaseUrl}/api/v1/funds/snapshots`),
+        ]);
+        const [activePayload, snapshotPayload] = await Promise.all([
+          parseJsonOrThrow(activeResponse, 'fund active fetch failed'),
+          parseJsonOrThrow(snapshotResponse, 'fund snapshots fetch failed'),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setActiveFunds(Array.isArray(activePayload?.funds) ? activePayload.funds : []);
+        setFundSnapshots(snapshotPayload?.snapshots && typeof snapshotPayload.snapshots === 'object' ? snapshotPayload.snapshots : {});
+        setFundRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setFundRequestState('error');
+        }
+      }
+    }
+
+    loadFunds();
+    const intervalId = window.setInterval(loadFunds, 60000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeView]);
+
+  useEffect(() => {
+    if (!selectedFundCode) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadFundDetail() {
+      setFundDetailRequestState('loading');
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/v1/funds/${encodeURIComponent(selectedFundCode)}/detail`);
+        const payload = await parseJsonOrThrow(response, 'fund detail fetch failed');
+        if (cancelled) {
+          return;
+        }
+        setFundDetails((current) => ({
+          ...current,
+          [selectedFundCode]: payload,
+        }));
+        setFundDetailRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setFundDetailRequestState('error');
+        }
+      }
+    }
+
+    loadFundDetail();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedFundCode]);
 
   useEffect(() => {
     if (activeView !== 'content') {
@@ -2082,6 +2178,16 @@ function App() {
     setDetailChartView('intraday');
   }
 
+  function handleOpenFundDetail(fundCodeValue) {
+    setSelectedFundCode(fundCodeValue);
+    setFundDetailRequestState(fundDetails[fundCodeValue] ? 'ready' : 'loading');
+  }
+
+  function handleCloseFundDetail() {
+    setSelectedFundCode(null);
+    setFundDetailRequestState('idle');
+  }
+
   function renderOverviewCard(item, snapshot) {
     const cardTone = getSnapshotCardTone(snapshot?.changePct);
 
@@ -2142,6 +2248,58 @@ function App() {
         </dl>
       </section>
     );
+  }
+
+  async function handleSubmitFund(event) {
+    event.preventDefault();
+    const normalizedFundCode = fundCode.trim();
+
+    if (!/^\d{6}$/.test(normalizedFundCode)) {
+      setFundRequestState('请输入6位基金代码');
+      return;
+    }
+
+    setFundRequestState('submitting');
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/v1/funds/activate`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ fundCode: normalizedFundCode, autoLinkStocks }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.detail || payload.message || `基金激活失败（HTTP ${response.status}）`);
+      }
+      setFundRequestState(typeof payload.status === 'string' ? payload.status : 'accepted');
+      setFundCode('');
+    } catch (error) {
+      setFundRequestState(error.message);
+    }
+  }
+
+  async function handleRemoveFund(fundCodeValue) {
+    if (removingFund) {
+      return;
+    }
+
+    setRemovingFund(fundCodeValue);
+    setFundRequestState(`正在移除基金 ${fundCodeValue}...`);
+    try {
+      const response = await fetch(`${apiBaseUrl}/api/v1/funds/${encodeURIComponent(fundCodeValue)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok) {
+        throw new Error(`移除失败（HTTP ${response.status}）`);
+      }
+      setActiveFunds((current) => current.filter((item) => item !== fundCodeValue));
+      setFundRequestState(`已停止监控基金 ${fundCodeValue}`);
+    } catch (error) {
+      setFundRequestState(error.message);
+    } finally {
+      setRemovingFund('');
+    }
   }
 
   function renderWatchlistCard(item) {
@@ -2866,6 +3024,171 @@ function App() {
     );
   }
 
+  function renderFundCard(item) {
+    const snapshot = fundSnapshots[item] || {};
+    const holdings = Array.isArray(snapshot.topHoldingsPreview) ? snapshot.topHoldingsPreview : [];
+    return (
+      <section className="snapshot-card fund-card clickable" key={item} role="button" tabIndex={0} onClick={() => handleOpenFundDetail(item)} onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          handleOpenFundDetail(item);
+        }
+      }}>
+        <header>
+          <div>
+            <strong>{snapshot.fundName || '待识别基金'}</strong>
+            <p className="snapshot-subtitle">{item} · {snapshot.fundType || '基金'}</p>
+          </div>
+          <div className="snapshot-header-side">
+            <span>{snapshot.source || '等待采集'}</span>
+            <span className="freshness-chip">净值日 {snapshot.navDate || '--'}</span>
+          </div>
+        </header>
+        <div className="snapshot-metric">{formatNav(snapshot.nav)}</div>
+        <dl>
+          <div>
+            <dt>日涨跌</dt>
+            <dd className={snapshot.dailyReturn > 0 ? 'positive' : snapshot.dailyReturn < 0 ? 'negative' : ''}>{formatSignedPercent(snapshot.dailyReturn)}</dd>
+          </div>
+          <div>
+            <dt>估算联动</dt>
+            <dd className={snapshot.estimatedIntradayReturn > 0 ? 'positive' : snapshot.estimatedIntradayReturn < 0 ? 'negative' : ''}>{formatSignedPercent(snapshot.estimatedIntradayReturn)}</dd>
+          </div>
+          <div>
+            <dt>重仓摘要</dt>
+            <dd>{holdings.length ? holdings.slice(0, 3).map((holding) => holding.stockName || holding.stockSymbol).join(' / ') : '--'}</dd>
+          </div>
+          <div>
+            <dt>更新时间</dt>
+            <dd>{formatRelativeDateTime(snapshot.updatedAt)}</dd>
+          </div>
+        </dl>
+      </section>
+    );
+  }
+
+  function renderFundDetailView() {
+    const detail = selectedFundCode ? fundDetails[selectedFundCode] : null;
+    const profile = detail?.profile || {};
+    const snapshot = detail?.snapshot || fundSnapshots[selectedFundCode] || {};
+    const navHistory = Array.isArray(detail?.navHistory) ? detail.navHistory : [];
+    const topHoldings = Array.isArray(detail?.topHoldings) ? detail.topHoldings : [];
+    const performance = Array.isArray(detail?.holdingStocksPerformance) ? detail.holdingStocksPerformance : [];
+
+    return (
+      <div className="detail-view fund-detail-view">
+        <button className="back-button" type="button" onClick={handleCloseFundDetail}>← 返回基金总览</button>
+        <div className="detail-header">
+          <div>
+            <p className="eyebrow">基金详情</p>
+            <h2>{profile.fundName || snapshot.fundName || selectedFundCode}</h2>
+            <p className="lede">{selectedFundCode} · {profile.fundType || snapshot.fundType || '基金'} · 净值日 {snapshot.navDate || '--'}</p>
+          </div>
+          <div className="detail-header-metrics">
+            <span className="snapshot-metric small">{formatNav(snapshot.nav)}</span>
+            <span className={snapshot.dailyReturn > 0 ? 'positive' : snapshot.dailyReturn < 0 ? 'negative' : ''}>{formatSignedPercent(snapshot.dailyReturn)}</span>
+            <span className={snapshot.estimatedIntradayReturn > 0 ? 'positive' : snapshot.estimatedIntradayReturn < 0 ? 'negative' : ''}>估算联动 {formatSignedPercent(snapshot.estimatedIntradayReturn)}</span>
+          </div>
+        </div>
+        {fundDetailRequestState === 'loading' ? <p className="status-line pending">基金详情加载中...</p> : null}
+        {fundDetailRequestState === 'error' ? <p className="status-line error">基金详情加载失败，请稍后重试。</p> : null}
+        <div className="detail-grid">
+          <section className="detail-card">
+            <h3>基础资料</h3>
+            <dl>
+              <div><dt>基金公司</dt><dd>{profile.fundCompany || '--'}</dd></div>
+              <div><dt>经理</dt><dd>{profile.managerName || '--'}</dd></div>
+              <div><dt>跟踪标的</dt><dd>{profile.benchmarkIndex || '--'}</dd></div>
+              <div><dt>风险等级</dt><dd>{profile.riskLevel || '--'}</dd></div>
+            </dl>
+          </section>
+          <section className="detail-card">
+            <h3>净值历史</h3>
+            <div className="mini-nav-list">
+              {navHistory.slice(0, 8).map((item) => (
+                <div className="mini-nav-row" key={`${item.fundCode}-${item.navDate}`}>
+                  <span>{item.navDate}</span>
+                  <strong>{formatNav(item.nav)}</strong>
+                  <em className={item.dailyReturn > 0 ? 'positive' : item.dailyReturn < 0 ? 'negative' : ''}>{formatSignedPercent(item.dailyReturn)}</em>
+                </div>
+              ))}
+              {!navHistory.length ? <p className="panel-tip compact">暂无净值历史。</p> : null}
+            </div>
+          </section>
+          <section className="detail-card wide-card">
+            <h3>十大重仓与实时联动估算</h3>
+            <div className="detail-table-wrap detail-table-wrap-scrollable">
+              <table className="detail-table">
+                <thead><tr><th>排名</th><th>股票</th><th>权重</th><th>最新价</th><th>涨跌幅</th><th>估算贡献</th></tr></thead>
+                <tbody>
+                  {topHoldings.length ? topHoldings.map((holding) => {
+                    const linked = performance.find((item) => item.stockSymbol === holding.stockSymbol) || {};
+                    return (
+                      <tr key={`${holding.stockSymbol}-${holding.reportDate}`}>
+                        <td>{holding.rank ?? '--'}</td>
+                        <td>{holding.stockName || holding.stockSymbol}<span className="table-subtext">{holding.stockSymbol}</span></td>
+                        <td>{formatSignedPercent(holding.weightPercent).replace('+', '')}</td>
+                        <td>{formatPrice(linked.lastPrice)}</td>
+                        <td className={linked.changePct > 0 ? 'positive' : linked.changePct < 0 ? 'negative' : ''}>{formatSignedPercent(linked.changePct)}</td>
+                        <td className={linked.estimatedContribution > 0 ? 'positive' : linked.estimatedContribution < 0 ? 'negative' : ''}>{formatSignedPercent(linked.estimatedContribution)}</td>
+                      </tr>
+                    );
+                  }) : <tr><td colSpan="6" className="panel-tip compact">暂无重仓数据。</td></tr>}
+                </tbody>
+              </table>
+            </div>
+            <p className="panel-tip compact">估算贡献只基于重仓股实时快照和持仓权重，不代表官方实时净值。</p>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  function renderFundsView() {
+    return (
+      <article className="panel wide fund-panel">
+        {selectedFundCode ? (
+          renderFundDetailView()
+        ) : (
+          <>
+            <div className="panel-heading">
+              <div>
+                <h2>基金监控</h2>
+                <p className="panel-tip compact">激活基金后按日刷新净值、季度同步重仓，并自动把重仓股纳入股票监控集合。</p>
+              </div>
+              <div className="management-meta"><span className="symbol-count-badge">监控中 {activeFunds.length}</span></div>
+            </div>
+            <form className="symbol-form compact-form fund-form" onSubmit={handleSubmitFund}>
+              <label htmlFor="fund-code">基金代码</label>
+              <div className="inline-form-row">
+                <input id="fund-code" value={fundCode} onChange={(event) => setFundCode(event.target.value)} placeholder="例如 007329" />
+                <button type="submit" disabled={fundRequestState === 'submitting'}>{fundRequestState === 'submitting' ? '提交中…' : '激活基金'}</button>
+              </div>
+              <label className="inline-checkbox">
+                <input type="checkbox" checked={autoLinkStocks} onChange={(event) => setAutoLinkStocks(event.target.checked)} />
+                自动关联重仓股到股票监控
+              </label>
+              <p className="panel-tip compact">支持 6 位基金代码；collector 会按基金节奏异步补全净值与持仓。</p>
+            </form>
+            <p className={`status-line ${getRequestStatusTone(fundRequestState)}`}>请求状态：{getRequestStatusLabel(fundRequestState)}</p>
+            {fundRequestState === 'loading' ? <p className="status-line pending">基金列表加载中...</p> : null}
+            {fundRequestState === 'error' ? <p className="status-line error">基金列表加载失败，请稍后重试。</p> : null}
+            <div className="snapshot-grid fund-grid">
+              {activeFunds.length ? activeFunds.map((item) => renderFundCard(item)) : <p className="panel-tip compact">尚无激活基金。</p>}
+            </div>
+            <div className="fund-watchlist-row">
+              {activeFunds.map((item) => (
+                <button key={item} type="button" className="remove-symbol-button" onClick={() => handleRemoveFund(item)} disabled={Boolean(removingFund)}>
+                  {removingFund === item ? '移除中…' : `移除 ${item}`}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </article>
+    );
+  }
+
   function renderDetailView() {
     const detailPayload = selectedDetail?.detail || null;
     const previewBars =
@@ -2913,6 +3236,7 @@ function App() {
     const intradayCompleteness = detailPayload?.intradayCompleteness || null;
     const orderBook = detailPayload?.orderBook || {};
     const capabilities = detailPayload?.capabilities || {};
+    const stockFundHoldings = Array.isArray(detailPayload?.fundHoldingSummary?.items) ? detailPayload.fundHoldingSummary.items : [];
     const events = dedupeEvents(selectedDetail?.events || []);
     const readableEvents = buildReadableEventItems(events);
     const snapshot = selectedSnapshot || detailPayload?.snapshot || null;
@@ -3439,6 +3763,44 @@ function App() {
           <section className="detail-card wide-card">
             <div className="detail-card-header compact-card-header">
               <div>
+                <h3>基金持仓</h3>
+                <p className="panel-tip compact">按最新报告期展示持有该股票的基金，来自基金反向持仓明细。</p>
+              </div>
+              {detailPayload?.fundHoldingSummary?.latestReportDate ? <span className="table-meta-badge">报告期 {detailPayload.fundHoldingSummary.latestReportDate}</span> : null}
+            </div>
+            {stockFundHoldings.length ? (
+              <div className="detail-table-wrap detail-table-wrap-scrollable">
+                <table className="detail-table">
+                  <thead>
+                    <tr>
+                      <th>基金</th>
+                      <th>类型</th>
+                      <th>报告期</th>
+                      <th>净值占比</th>
+                      <th>持股市值</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stockFundHoldings.slice(0, 12).map((item) => (
+                      <tr key={`${item.fundCode}-${item.reportDate}`}>
+                        <td>{item.fundName || item.fundCode}<span className="table-subtext">{item.fundCode}</span></td>
+                        <td>{item.fundType || '--'}</td>
+                        <td>{item.reportDate || '--'}</td>
+                        <td>{formatSignedPercent(item.weightPercent).replace('+', '')}</td>
+                        <td>{formatTurnoverAmount(item.holdMarketValue)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <p className="panel-tip compact">暂无基金持仓反查数据。</p>
+            )}
+          </section>
+
+          <section className="detail-card wide-card">
+            <div className="detail-card-header compact-card-header">
+              <div>
                 <h3>最近 Tick</h3>
                 <p className="panel-tip compact">默认只展示最新 12 条；成交量按股展示，成交额按元展示，避免单位误读。</p>
               </div>
@@ -3548,6 +3910,13 @@ function App() {
             龙虎榜
           </button>
           <button
+            className={activeView === 'funds' ? 'view-tab active' : 'view-tab'}
+            type="button"
+            onClick={() => setActiveView('funds')}
+          >
+            基金
+          </button>
+          <button
             className={activeView === 'management' ? 'view-tab active' : 'view-tab'}
             type="button"
             onClick={() => setActiveView('management')}
@@ -3633,6 +4002,8 @@ function App() {
           </article>
         ) : activeView === 'content' ? (
           renderContentView()
+        ) : activeView === 'funds' ? (
+          renderFundsView()
         ) : activeView === 'dragonTiger' ? (
           renderDragonTigerView()
         ) : activeView === 'management' ? (

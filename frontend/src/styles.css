@@ -607,6 +607,72 @@ input {
   min-height: 100%;
 }
 
+.fund-card {
+  border-color: rgba(111, 229, 179, 0.22);
+}
+
+.fund-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.fund-detail-view {
+  display: grid;
+  gap: 18px;
+}
+
+.fund-form {
+  margin-bottom: 6px;
+}
+
+.fund-grid {
+  margin-top: 12px;
+}
+
+.fund-watchlist-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.detail-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.detail-header-metrics {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+}
+
+.mini-nav-list {
+  display: grid;
+  gap: 8px;
+}
+
+.mini-nav-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(157, 180, 255, 0.1);
+}
+
+.mini-nav-row em {
+  font-style: normal;
+}
+
+.table-subtext {
+  display: block;
+  color: #8fa6d8;
+  font-size: 0.82rem;
+  margin-top: 2px;
+}
+
 .event-status-slot {
   display: flex;
   align-items: flex-start;
