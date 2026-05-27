@@ -109,6 +109,7 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
     )
     intraday_sampled_bars = await query_service.fetch_intraday_sampled_bars(normalized_symbol, interval_minutes=5)
     order_book = await query_service.fetch_best_bid_ask(normalized_symbol)
+    fund_holding_summary = await request.app.state.fund_query_service.fetch_stock_funds(normalized_symbol)
 
     reference_intraday_ts = (
         (snapshot or {}).get("updatedAt")
@@ -139,14 +140,22 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
         "intradaySampledBars": intraday_sampled_bars,
         "intradayCompleteness": intraday_completeness,
         "orderBook": order_book,
+        "fundHoldingSummary": fund_holding_summary,
         "capabilities": {
             "supportsIntradayKline": len(intraday_minute_bars) > 1,
             "supportsIntradayMinuteBars": len(intraday_minute_bars) > 1,
             "supportsOrderBookDepth5": False,
             "supportsSampledIntradayBars": len(intraday_sampled_bars) > 1,
             "supportsBestBidAsk": any(value is not None for value in order_book.values()),
+            "supportsFundHoldings": True,
         },
     }
+
+
+@router.get("/{symbol}/funds")
+async def symbol_funds(symbol: str, request: Request) -> dict[str, object]:
+    normalized_symbol = _normalize_symbol_or_422(symbol)
+    return await request.app.state.fund_query_service.fetch_stock_funds(normalized_symbol)
 
 
 @router.get("/{symbol}/ticks")
