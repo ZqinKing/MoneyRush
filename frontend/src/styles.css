@@ -595,6 +595,8 @@ input {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 12px;
+  width: 100%;
+  min-width: 0;
 }
 
 .snapshot-card,
@@ -1062,20 +1064,27 @@ input {
   min-width: 0;
 }
 
+.panel-scroll-area,
 .content-feed-scroll-area {
-  max-height: 1140px;
+  max-height: min(1140px, calc(100vh - 320px));
   overflow-y: auto;
   overflow-x: hidden;
   padding-right: 8px;
   scrollbar-gutter: stable;
+  overscroll-behavior: contain;
   min-width: 0;
+  min-height: 0;
 }
 
+.panel-scroll-area .snapshot-grid,
+.panel-scroll-area .event-grid,
+.panel-scroll-area .dragon-tiger-grid,
 .content-feed-scroll-area .content-grid {
   align-content: start;
 }
 
-.content-grid {
+.content-grid,
+.dragon-tiger-grid {
   width: 100%;
   min-width: 0;
 }
@@ -2300,6 +2309,7 @@ input {
     gap: 4px;
   }
 
+  .panel-scroll-area,
   .content-feed-scroll-area {
     padding-right: 0;
     scrollbar-gutter: auto;

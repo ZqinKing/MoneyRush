@@ -1451,7 +1451,6 @@ function App() {
   const [dragonTigerDailyTab, setDragonTigerDailyTab] = useState('single');
   const [dragonTigerDailySortKey, setDragonTigerDailySortKey] = useState('netBuyAmount');
   const [dragonTigerDailySortDirection, setDragonTigerDailySortDirection] = useState('desc');
-  const [dragonTigerDailyPage, setDragonTigerDailyPage] = useState(1);
   const [dragonTigerStocksSortKey, setDragonTigerStocksSortKey] = useState('billboardTimes');
   const [dragonTigerStocksSortDirection, setDragonTigerStocksSortDirection] = useState('desc');
   const [dragonTigerStocksPage, setDragonTigerStocksPage] = useState(1);
@@ -1568,15 +1567,7 @@ function App() {
     );
   }, [dragonTigerDailyFiltered, dragonTigerDailySortDirection, dragonTigerDailySortKey]);
 
-  const dragonTigerDailyTotalPages = useMemo(
-    () => Math.max(1, Math.ceil(dragonTigerDailySorted.length / dragonTigerDefaultPageSize)),
-    [dragonTigerDailySorted.length],
-  );
-
-  const dragonTigerDailyVisible = useMemo(() => {
-    const startIndex = (dragonTigerDailyPage - 1) * dragonTigerDefaultPageSize;
-    return dragonTigerDailySorted.slice(startIndex, startIndex + dragonTigerDefaultPageSize);
-  }, [dragonTigerDailyPage, dragonTigerDailySorted]);
+  const dragonTigerDailyVisible = useMemo(() => dragonTigerDailySorted, [dragonTigerDailySorted]);
 
   const dragonTigerStocksSorted = useMemo(() => {
     return sortDragonTigerItems(
@@ -1626,22 +1617,8 @@ function App() {
   }, [dragonTigerSeatDetail]);
 
   useEffect(() => {
-    setDragonTigerDailyPage(1);
-  }, [dragonTigerDate, dragonTigerDailySortDirection, dragonTigerDailySortKey, dragonTigerDailyTab, dragonTigerSearchQuery]);
-
-  useEffect(() => {
     setDragonTigerStocksPage(1);
   }, [dragonTigerRange, dragonTigerStocksSortDirection, dragonTigerStocksSortKey]);
-
-  useEffect(() => {
-    if (dragonTigerDailyPage > dragonTigerDailyTotalPages) {
-      setDragonTigerDailyPage(dragonTigerDailyTotalPages);
-    }
-  }, [dragonTigerDailyPage, dragonTigerDailyTotalPages]);
-
-  useEffect(() => {
-    setDragonTigerDailyPage(1);
-  }, [dragonTigerDailyTab]);
 
   useEffect(() => {
     const socket = new WebSocket(wsUrl);
@@ -2768,7 +2745,6 @@ function App() {
             </div>
             <div className="content-status-summary">
               <span className="table-meta-badge">共 {dragonTigerDailySorted.length} 条</span>
-              <span className="table-meta-badge">第 {dragonTigerDailyPage} / {dragonTigerDailyTotalPages} 页</span>
             </div>
           </div>
           <div className="dragon-tiger-tab-row" role="tablist" aria-label="龙虎榜日榜分类切换">
@@ -2785,18 +2761,11 @@ function App() {
               </button>
             ))}
           </div>
-          <div className="dragon-tiger-grid">
-            {dragonTigerDailyVisible.length ? dragonTigerDailyVisible.map((item, index) => renderDragonTigerCard(item, index)) : <p className="panel-tip compact">当前筛选条件下暂无龙虎榜日榜数据。</p>}
-          </div>
-          {dragonTigerDailySorted.length > dragonTigerDefaultPageSize ? (
-            <div className="dragon-tiger-pagination-row">
-              <span className="panel-tip compact">每页 {dragonTigerDefaultPageSize} 条</span>
-              <div className="dragon-tiger-pagination-actions">
-                <button type="button" className="content-switch-option" disabled={dragonTigerDailyPage <= 1} onClick={() => setDragonTigerDailyPage((current) => Math.max(current - 1, 1))}>上一页</button>
-                <button type="button" className="content-switch-option" disabled={dragonTigerDailyPage >= dragonTigerDailyTotalPages} onClick={() => setDragonTigerDailyPage((current) => Math.min(current + 1, dragonTigerDailyTotalPages))}>下一页</button>
-              </div>
+          <div className="panel-scroll-area">
+            <div className="dragon-tiger-grid">
+              {dragonTigerDailyVisible.length ? dragonTigerDailyVisible.map((item, index) => renderDragonTigerCard(item, index)) : <p className="panel-tip compact">当前筛选条件下暂无龙虎榜日榜数据。</p>}
             </div>
-          ) : null}
+          </div>
         </div>
 
         <div className="dragon-tiger-section">
@@ -4160,15 +4129,17 @@ function App() {
                     </div>
                   </div>
                 </div>
-                <div className="snapshot-grid">
-                  {overviewItems.length ? (
-                    overviewItems.map((item) => {
-                      const snapshot = snapshots[item];
-                      return renderOverviewCard(item, snapshot);
-                    })
-                  ) : (
-                    <p>{activeSymbols.length ? '当前筛选条件下没有匹配标的。' : '尚未生成快照数据。'}</p>
-                  )}
+                <div className="panel-scroll-area">
+                  <div className="snapshot-grid">
+                    {overviewItems.length ? (
+                      overviewItems.map((item) => {
+                        const snapshot = snapshots[item];
+                        return renderOverviewCard(item, snapshot);
+                      })
+                    ) : (
+                      <p>{activeSymbols.length ? '当前筛选条件下没有匹配标的。' : '尚未生成快照数据。'}</p>
+                    )}
+                  </div>
                 </div>
               </>
             )}
@@ -4256,70 +4227,72 @@ function App() {
                 </span>
               </div>
             </div>
-            <div className="event-grid">
-              {eventCards.length ? (
-                eventCards.map(({ symbol: currentSymbol, snapshot, event, summary }) => (
-                  <section className={`event-card ${getJumpSeverityClass(summary?.jumpSeverity)}`.trim()} key={currentSymbol}>
-                    <header>
-                      <div>
-                        <strong>{snapshot?.companyName || event?.companyName || '待识别公司'}</strong>
-                        <p className="snapshot-subtitle">
-                          {currentSymbol} · {snapshot?.exchange || event?.exchange || '--'}
-                        </p>
+            <div className="panel-scroll-area">
+              <div className="event-grid">
+                {eventCards.length ? (
+                  eventCards.map(({ symbol: currentSymbol, snapshot, event, summary }) => (
+                    <section className={`event-card ${getJumpSeverityClass(summary?.jumpSeverity)}`.trim()} key={currentSymbol}>
+                      <header>
+                        <div>
+                          <strong>{snapshot?.companyName || event?.companyName || '待识别公司'}</strong>
+                          <p className="snapshot-subtitle">
+                            {currentSymbol} · {snapshot?.exchange || event?.exchange || '--'}
+                          </p>
+                        </div>
+                        <span>{formatTime(summary?.latestEventTs || event?.generatedAt || snapshot?.updatedAt)}</span>
+                      </header>
+                      <div className="event-card-topline">
+                        <span className="event-summary-chip">今日事件记录 {formatPlainNumber(summary?.eventCountToday ?? 0)} 条</span>
+                        {typeof summary?.latestPriceJumpPct === 'number' ? (
+                          <span className={`event-jump-badge ${getJumpSeverityClass(summary?.jumpSeverity)}`.trim()}>
+                            最新一步 {formatSignedPercent(summary.latestPriceJumpPct)}
+                          </span>
+                        ) : null}
                       </div>
-                      <span>{formatTime(summary?.latestEventTs || event?.generatedAt || snapshot?.updatedAt)}</span>
-                    </header>
-                    <div className="event-card-topline">
-                      <span className="event-summary-chip">今日事件记录 {formatPlainNumber(summary?.eventCountToday ?? 0)} 条</span>
-                      {typeof summary?.latestPriceJumpPct === 'number' ? (
-                        <span className={`event-jump-badge ${getJumpSeverityClass(summary?.jumpSeverity)}`.trim()}>
-                          最新一步 {formatSignedPercent(summary.latestPriceJumpPct)}
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="event-ratio-block">
-                      <div className="event-ratio-labels">
-                        <span>买盘 {formatPercentFromRatio(summary?.buyRatio)}</span>
-                        <span>卖盘 {formatPercentFromRatio(summary?.sellRatio)}</span>
+                      <div className="event-ratio-block">
+                        <div className="event-ratio-labels">
+                          <span>买盘 {formatPercentFromRatio(summary?.buyRatio)}</span>
+                          <span>卖盘 {formatPercentFromRatio(summary?.sellRatio)}</span>
+                        </div>
+                        <div className="event-ratio-track" aria-hidden="true">
+                          <span className="event-ratio-fill buy" style={{ width: `${Math.max(0, Math.min((summary?.buyRatio ?? 0) * 100, 100))}%` }} />
+                        </div>
                       </div>
-                      <div className="event-ratio-track" aria-hidden="true">
-                        <span className="event-ratio-fill buy" style={{ width: `${Math.max(0, Math.min((summary?.buyRatio ?? 0) * 100, 100))}%` }} />
-                      </div>
-                    </div>
-                    <dl>
-                      <div>
-                        <dt>最新价</dt>
-                        <dd>{formatPrice(summary?.latestPrice ?? event?.tick?.price ?? snapshot?.lastPrice)}</dd>
-                      </div>
-                      <div>
-                        <dt>成交量</dt>
-                        <dd className={getVolumeToneClass(summary?.volumeRatio)}>
-                          {formatTickVolume(summary?.latestVolume ?? event?.tick?.volume)}
-                          {typeof summary?.volumeRatio === 'number' ? ` (${formatRatioMultiple(summary.volumeRatio)})` : ''}
-                        </dd>
-                      </div>
-                      <div>
-                        <dt>买卖方向</dt>
-                        <dd>{event?.tick?.side === 'buy' ? '买盘' : event?.tick?.side === 'sell' ? '卖盘' : '--'}</dd>
-                      </div>
-                      <div>
-                        <dt>K线周期</dt>
-                        <dd>{event?.kline?.period || '--'}</dd>
-                      </div>
-                      <div>
-                        <dt>K线区间</dt>
-                        <dd>{event?.kline ? `${formatPrice(event.kline.low)} ~ ${formatPrice(event.kline.high)}` : '--'}</dd>
-                      </div>
-                      <div>
-                        <dt>收盘价</dt>
-                        <dd>{formatPrice(event?.kline?.close)}</dd>
-                      </div>
-                    </dl>
-                  </section>
-                ))
-              ) : (
-                <p>暂无结构化事件数据。</p>
-              )}
+                      <dl>
+                        <div>
+                          <dt>最新价</dt>
+                          <dd>{formatPrice(summary?.latestPrice ?? event?.tick?.price ?? snapshot?.lastPrice)}</dd>
+                        </div>
+                        <div>
+                          <dt>成交量</dt>
+                          <dd className={getVolumeToneClass(summary?.volumeRatio)}>
+                            {formatTickVolume(summary?.latestVolume ?? event?.tick?.volume)}
+                            {typeof summary?.volumeRatio === 'number' ? ` (${formatRatioMultiple(summary.volumeRatio)})` : ''}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt>买卖方向</dt>
+                          <dd>{event?.tick?.side === 'buy' ? '买盘' : event?.tick?.side === 'sell' ? '卖盘' : '--'}</dd>
+                        </div>
+                        <div>
+                          <dt>K线周期</dt>
+                          <dd>{event?.kline?.period || '--'}</dd>
+                        </div>
+                        <div>
+                          <dt>K线区间</dt>
+                          <dd>{event?.kline ? `${formatPrice(event.kline.low)} ~ ${formatPrice(event.kline.high)}` : '--'}</dd>
+                        </div>
+                        <div>
+                          <dt>收盘价</dt>
+                          <dd>{formatPrice(event?.kline?.close)}</dd>
+                        </div>
+                      </dl>
+                    </section>
+                  ))
+                ) : (
+                  <p>暂无结构化事件数据。</p>
+                )}
+              </div>
             </div>
           </article>
         )}
