@@ -271,3 +271,101 @@ CREATE TABLE IF NOT EXISTS dragon_tiger_collection_log (
 
 CREATE INDEX IF NOT EXISTS dragon_tiger_collection_log_job_started_idx
     ON dragon_tiger_collection_log (job_name, started_at DESC);
+
+CREATE TABLE IF NOT EXISTS fund_profile (
+    fund_code TEXT PRIMARY KEY,
+    fund_name TEXT NOT NULL,
+    fund_type TEXT,
+    fund_company TEXT,
+    manager_name TEXT,
+    established_date DATE,
+    risk_level TEXT,
+    benchmark_index TEXT,
+    management_fee NUMERIC(8, 4),
+    custody_fee NUMERIC(8, 4),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS fund_nav (
+    fund_code TEXT NOT NULL,
+    nav_date DATE NOT NULL,
+    nav NUMERIC(18, 6),
+    accum_nav NUMERIC(18, 6),
+    daily_return NUMERIC(10, 4),
+    source TEXT NOT NULL,
+    raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (fund_code, nav_date)
+);
+
+CREATE INDEX IF NOT EXISTS fund_nav_code_date_idx
+    ON fund_nav (fund_code, nav_date DESC);
+
+CREATE TABLE IF NOT EXISTS fund_snapshot (
+    fund_code TEXT PRIMARY KEY,
+    nav NUMERIC(18, 6),
+    daily_return NUMERIC(10, 4),
+    nav_date DATE,
+    estimated_intraday_return NUMERIC(10, 4),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS fund_stock_holding (
+    fund_code TEXT NOT NULL,
+    stock_symbol TEXT NOT NULL,
+    stock_name TEXT,
+    report_date DATE NOT NULL,
+    rank INTEGER,
+    weight_percent NUMERIC(10, 4),
+    hold_shares BIGINT,
+    hold_market_value NUMERIC(20, 2),
+    change_type TEXT,
+    raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (fund_code, stock_symbol, report_date)
+);
+
+CREATE INDEX IF NOT EXISTS fund_stock_holding_fund_report_idx
+    ON fund_stock_holding (fund_code, report_date DESC, rank ASC);
+CREATE INDEX IF NOT EXISTS fund_stock_holding_stock_report_idx
+    ON fund_stock_holding (stock_symbol, report_date DESC);
+
+CREATE TABLE IF NOT EXISTS stock_fund_holding (
+    stock_symbol TEXT NOT NULL,
+    fund_code TEXT NOT NULL,
+    fund_name TEXT,
+    fund_type TEXT,
+    report_date DATE NOT NULL,
+    weight_percent NUMERIC(10, 4),
+    hold_market_value NUMERIC(20, 2),
+    change_type TEXT,
+    raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+    UNIQUE (stock_symbol, fund_code, report_date)
+);
+
+CREATE INDEX IF NOT EXISTS stock_fund_holding_stock_report_idx
+    ON stock_fund_holding (stock_symbol, report_date DESC);
+
+CREATE TABLE IF NOT EXISTS fund_stock_link (
+    fund_code TEXT NOT NULL,
+    stock_symbol TEXT NOT NULL,
+    link_type TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (fund_code, stock_symbol)
+);
+
+CREATE INDEX IF NOT EXISTS fund_stock_link_symbol_idx
+    ON fund_stock_link (stock_symbol);
+
+CREATE TABLE IF NOT EXISTS fund_command_log (
+    ts TIMESTAMPTZ NOT NULL,
+    fund_code TEXT NOT NULL,
+    command_type TEXT NOT NULL,
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+SELECT create_hypertable('fund_command_log', 'ts', if_not_exists => TRUE, migrate_data => TRUE);
+
+CREATE INDEX IF NOT EXISTS fund_command_log_fund_ts_idx
+    ON fund_command_log (fund_code, ts DESC);

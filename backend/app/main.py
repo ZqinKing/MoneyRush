@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes.content import router as content_router
 from app.api.routes.dragon_tiger import router as dragon_tiger_router
+from app.api.routes.funds import router as funds_router
 from app.api.routes.health import router as health_router
 from app.api.routes.market import router as market_router
 from app.api.routes.symbols import router as symbols_router
@@ -15,6 +16,8 @@ from app.core.logging import configure_logging
 from app.services.cache.redis_store import RedisStore
 from app.services.content_query_service import ContentQueryService
 from app.services.dragon_tiger_query_service import DragonTigerQueryService
+from app.services.fund_lookup import FundLookupService
+from app.services.fund_query_service import FundQueryService
 from app.services.market_detail.query_service import MarketDetailQueryService
 from app.services.symbol_lookup import SymbolLookupService
 from app.services.vendors.dragon_tiger_client import DragonTigerClient
@@ -50,11 +53,17 @@ async def lifespan(app: FastAPI):
         market_event_key_prefix=settings.market_event_key_prefix,
         market_events_stream_key=settings.market_events_stream_key,
         market_overview_cache_key=settings.market_overview_cache_key,
+        active_funds_key=settings.active_funds_key,
+        fund_snapshot_key_prefix=settings.fund_snapshot_key_prefix,
+        fund_holdings_key_prefix=settings.fund_holdings_key_prefix,
+        fund_auto_link_stocks_key_prefix=settings.fund_auto_link_stocks_key_prefix,
+        stock_funds_key_prefix=settings.stock_funds_key_prefix,
         content_feed_cache_key_prefix=settings.content_feed_cache_key_prefix,
         content_status_cache_key_prefix=settings.content_status_cache_key_prefix,
         dragon_tiger_cache_key_prefix=settings.dragon_tiger_cache_key_prefix,
     )
     app.state.market_detail_query_service = MarketDetailQueryService(settings.postgres_dsn)
+    app.state.fund_query_service = FundQueryService(settings.postgres_dsn)
     app.state.content_query_service = ContentQueryService(
         settings.postgres_dsn,
         lane_refresh_seconds={
@@ -66,12 +75,14 @@ async def lifespan(app: FastAPI):
     )
     app.state.dragon_tiger_query_service = DragonTigerQueryService(settings.postgres_dsn)
     app.state.symbol_lookup_service = SymbolLookupService()
+    app.state.fund_lookup_service = FundLookupService()
     app.state.dragon_tiger_client = DragonTigerClient(
         timeout_seconds=settings.dragon_tiger_request_timeout_seconds,
         retry_attempts=settings.dragon_tiger_request_retry_attempts,
         retry_backoff_seconds=settings.dragon_tiger_request_retry_backoff_seconds,
     )
     await app.state.market_detail_query_service.connect()
+    await app.state.fund_query_service.connect()
     await app.state.content_query_service.connect()
     await app.state.dragon_tiger_query_service.connect()
 
@@ -79,6 +90,7 @@ async def lifespan(app: FastAPI):
 
     await app.state.dragon_tiger_query_service.close()
     await app.state.content_query_service.close()
+    await app.state.fund_query_service.close()
     await app.state.market_detail_query_service.close()
     await app.state.redis_store.close()
 
@@ -109,6 +121,7 @@ def create_app() -> FastAPI:
     app.include_router(symbols_router, prefix="/api/v1")
     app.include_router(content_router, prefix="/api/v1")
     app.include_router(dragon_tiger_router, prefix="/api/v1")
+    app.include_router(funds_router, prefix="/api/v1")
     app.include_router(market_ws_router)
     return app
 
