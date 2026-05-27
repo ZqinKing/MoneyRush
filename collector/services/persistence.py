@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -12,7 +13,19 @@ logger = logging.getLogger(__name__)
 
 
 def _json_dumps(value: object) -> str:
-    return json.dumps(value, default=str)
+    return json.dumps(_json_safe(value), default=str, allow_nan=False)
+
+
+def _json_safe(value: object) -> object:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    return value
 
 
 def _coerce_optional_utc_datetime(value: object, *, field_name: str) -> datetime | None:
@@ -358,10 +371,120 @@ class PostgresStore:
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS dragon_tiger_collection_log_job_started_idx ON dragon_tiger_collection_log (job_name, started_at DESC)"
             )
+            await self._ensure_fund_schema(connection)
             if self._enable_runtime_data_repair:
                 repairs = await self._repair_runtime_data(connection)
                 if any(repairs.values()):
                     logger.warning("collector repaired persisted market data", extra=repairs)
+
+    async def _ensure_fund_schema(self, connection: asyncpg.Connection) -> None:
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_profile (
+                fund_code TEXT PRIMARY KEY,
+                fund_name TEXT NOT NULL,
+                fund_type TEXT,
+                fund_company TEXT,
+                manager_name TEXT,
+                established_date DATE,
+                risk_level TEXT,
+                benchmark_index TEXT,
+                management_fee NUMERIC(8, 4),
+                custody_fee NUMERIC(8, 4),
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_nav (
+                fund_code TEXT NOT NULL,
+                nav_date DATE NOT NULL,
+                nav NUMERIC(18, 6),
+                accum_nav NUMERIC(18, 6),
+                daily_return NUMERIC(10, 4),
+                source TEXT NOT NULL,
+                raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+                PRIMARY KEY (fund_code, nav_date)
+            )
+            """
+        )
+        await connection.execute("CREATE INDEX IF NOT EXISTS fund_nav_code_date_idx ON fund_nav (fund_code, nav_date DESC)")
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_snapshot (
+                fund_code TEXT PRIMARY KEY,
+                nav NUMERIC(18, 6),
+                daily_return NUMERIC(10, 4),
+                nav_date DATE,
+                estimated_intraday_return NUMERIC(10, 4),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+            """
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_stock_holding (
+                fund_code TEXT NOT NULL,
+                stock_symbol TEXT NOT NULL,
+                stock_name TEXT,
+                report_date DATE NOT NULL,
+                rank INTEGER,
+                weight_percent NUMERIC(10, 4),
+                hold_shares BIGINT,
+                hold_market_value NUMERIC(20, 2),
+                change_type TEXT,
+                raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+                UNIQUE (fund_code, stock_symbol, report_date)
+            )
+            """
+        )
+        await connection.execute("CREATE INDEX IF NOT EXISTS fund_stock_holding_fund_report_idx ON fund_stock_holding (fund_code, report_date DESC, rank ASC)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS fund_stock_holding_stock_report_idx ON fund_stock_holding (stock_symbol, report_date DESC)")
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS stock_fund_holding (
+                stock_symbol TEXT NOT NULL,
+                fund_code TEXT NOT NULL,
+                fund_name TEXT,
+                fund_type TEXT,
+                report_date DATE NOT NULL,
+                weight_percent NUMERIC(10, 4),
+                hold_market_value NUMERIC(20, 2),
+                change_type TEXT,
+                raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+                UNIQUE (stock_symbol, fund_code, report_date)
+            )
+            """
+        )
+        await connection.execute("CREATE INDEX IF NOT EXISTS stock_fund_holding_stock_report_idx ON stock_fund_holding (stock_symbol, report_date DESC)")
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_stock_link (
+                fund_code TEXT NOT NULL,
+                stock_symbol TEXT NOT NULL,
+                link_type TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (fund_code, stock_symbol)
+            )
+            """
+        )
+        await connection.execute("CREATE INDEX IF NOT EXISTS fund_stock_link_symbol_idx ON fund_stock_link (stock_symbol)")
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS fund_command_log (
+                ts TIMESTAMPTZ NOT NULL,
+                fund_code TEXT NOT NULL,
+                command_type TEXT NOT NULL,
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+            """
+        )
+        await connection.execute("SELECT create_hypertable('fund_command_log', 'ts', if_not_exists => TRUE, migrate_data => TRUE)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS fund_command_log_fund_ts_idx ON fund_command_log (fund_code, ts DESC)")
 
     async def _dedupe_exact_market_rows(self, connection: asyncpg.Connection) -> dict[str, int]:
         removed_tick_duplicates = await connection.fetchval(
@@ -911,7 +1034,243 @@ class PostgresStore:
                 timestamp,
                 symbol,
                 command_type,
-                json.dumps(payload),
+                _json_dumps(payload),
+            )
+
+    async def persist_fund_command(self, *, timestamp, fund_code: str, command_type: str, payload: dict[str, object]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO fund_command_log (ts, fund_code, command_type, payload)
+                VALUES ($1, $2, $3, $4::jsonb)
+                """,
+                timestamp,
+                fund_code,
+                command_type,
+                _json_dumps(payload),
+            )
+
+    async def upsert_fund_profile(self, payload: dict[str, object]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO fund_profile (
+                    fund_code, fund_name, fund_type, fund_company, manager_name, established_date, risk_level,
+                    benchmark_index, management_fee, custody_fee, payload, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, now()
+                )
+                ON CONFLICT (fund_code) DO UPDATE SET
+                    fund_name = EXCLUDED.fund_name,
+                    fund_type = EXCLUDED.fund_type,
+                    fund_company = EXCLUDED.fund_company,
+                    manager_name = EXCLUDED.manager_name,
+                    established_date = EXCLUDED.established_date,
+                    risk_level = EXCLUDED.risk_level,
+                    benchmark_index = EXCLUDED.benchmark_index,
+                    management_fee = EXCLUDED.management_fee,
+                    custody_fee = EXCLUDED.custody_fee,
+                    payload = EXCLUDED.payload,
+                    updated_at = EXCLUDED.updated_at
+                """,
+                payload["fundCode"],
+                payload.get("fundName"),
+                payload.get("fundType"),
+                payload.get("fundCompany"),
+                payload.get("managerName"),
+                payload.get("establishedDate"),
+                payload.get("riskLevel"),
+                payload.get("benchmarkIndex"),
+                payload.get("managementFee"),
+                payload.get("custodyFee"),
+                _json_dumps(payload),
+            )
+
+    async def upsert_fund_snapshot(self, payload: dict[str, object]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO fund_snapshot (
+                    fund_code, nav, daily_return, nav_date, estimated_intraday_return, updated_at, payload
+                ) VALUES ($1, $2, $3, $4, $5, now(), $6::jsonb)
+                ON CONFLICT (fund_code) DO UPDATE SET
+                    nav = EXCLUDED.nav,
+                    daily_return = EXCLUDED.daily_return,
+                    nav_date = EXCLUDED.nav_date,
+                    estimated_intraday_return = EXCLUDED.estimated_intraday_return,
+                    updated_at = EXCLUDED.updated_at,
+                    payload = EXCLUDED.payload
+                """,
+                payload["fundCode"],
+                payload.get("nav"),
+                payload.get("dailyReturn"),
+                payload.get("navDate"),
+                payload.get("estimatedIntradayReturn"),
+                _json_dumps(payload),
+            )
+
+    async def upsert_fund_nav_rows(self, rows: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not rows:
+            return
+
+        values = [
+            (row["fund_code"], row["nav_date"], row.get("nav"), row.get("accum_nav"), row.get("daily_return"), row.get("source", "akshare"), _json_dumps(row.get("raw", {})))
+            for row in rows
+        ]
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO fund_nav (fund_code, nav_date, nav, accum_nav, daily_return, source, raw)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                ON CONFLICT (fund_code, nav_date) DO UPDATE SET
+                    nav = EXCLUDED.nav,
+                    accum_nav = EXCLUDED.accum_nav,
+                    daily_return = EXCLUDED.daily_return,
+                    source = EXCLUDED.source,
+                    raw = EXCLUDED.raw
+                """,
+                values,
+            )
+
+    async def upsert_fund_holding_rows(self, rows: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not rows:
+            return
+
+        values = [
+            (
+                row["fund_code"],
+                row["stock_symbol"],
+                row.get("stock_name"),
+                row["report_date"],
+                row.get("rank"),
+                row.get("weight_percent"),
+                row.get("hold_shares"),
+                row.get("hold_market_value"),
+                row.get("change_type"),
+                _json_dumps(row.get("raw", {})),
+            )
+            for row in rows
+        ]
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO fund_stock_holding (
+                    fund_code, stock_symbol, stock_name, report_date, rank, weight_percent, hold_shares,
+                    hold_market_value, change_type, raw
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)
+                ON CONFLICT (fund_code, stock_symbol, report_date) DO UPDATE SET
+                    stock_name = EXCLUDED.stock_name,
+                    rank = EXCLUDED.rank,
+                    weight_percent = EXCLUDED.weight_percent,
+                    hold_shares = EXCLUDED.hold_shares,
+                    hold_market_value = EXCLUDED.hold_market_value,
+                    change_type = EXCLUDED.change_type,
+                    raw = EXCLUDED.raw
+                """,
+                values,
+            )
+
+    async def upsert_stock_fund_holding_rows(self, rows: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not rows:
+            return
+
+        values = [
+            (
+                row["stock_symbol"],
+                row["fund_code"],
+                row.get("fund_name"),
+                row.get("fund_type"),
+                row["report_date"],
+                row.get("weight_percent"),
+                row.get("hold_market_value"),
+                row.get("change_type"),
+                _json_dumps(row.get("raw", {})),
+            )
+            for row in rows
+        ]
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO stock_fund_holding (
+                    stock_symbol, fund_code, fund_name, fund_type, report_date, weight_percent,
+                    hold_market_value, change_type, raw
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                ON CONFLICT (stock_symbol, fund_code, report_date) DO UPDATE SET
+                    fund_name = EXCLUDED.fund_name,
+                    fund_type = EXCLUDED.fund_type,
+                    weight_percent = EXCLUDED.weight_percent,
+                    hold_market_value = EXCLUDED.hold_market_value,
+                    change_type = EXCLUDED.change_type,
+                    raw = EXCLUDED.raw
+                """,
+                values,
+            )
+
+    async def upsert_fund_stock_links(self, rows: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not rows:
+            return
+
+        values = [(row["fund_code"], row["stock_symbol"], row.get("link_type", "top-holding")) for row in rows]
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO fund_stock_link (fund_code, stock_symbol, link_type)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (fund_code, stock_symbol) DO UPDATE SET
+                    link_type = EXCLUDED.link_type
+                """,
+                values,
+            )
+
+    async def delete_fund_stock_links(self, fund_code: str, exclude_stock_symbols: list[str] | None = None) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        async with self._pool.acquire() as connection:
+            if exclude_stock_symbols:
+                await connection.execute(
+                    """
+                    DELETE FROM fund_stock_link
+                    WHERE fund_code = $1
+                      AND NOT (stock_symbol = ANY($2::text[]))
+                    """,
+                    fund_code,
+                    exclude_stock_symbols,
+                )
+            else:
+                await connection.execute("DELETE FROM fund_stock_link WHERE fund_code = $1", fund_code)
+
+    async def has_other_fund_stock_links(self, *, stock_symbol: str, excluding_fund_code: str) -> bool:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        async with self._pool.acquire() as connection:
+            return bool(
+                await connection.fetchval(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM fund_stock_link
+                        WHERE stock_symbol = $1
+                          AND fund_code <> $2
+                    )
+                    """,
+                    stock_symbol,
+                    excluding_fund_code,
+                )
             )
 
     async def ensure_content_checkpoint(self, *, lane: str, symbol: str, next_due_at: datetime) -> None:
