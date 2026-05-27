@@ -83,6 +83,27 @@ const contentLaneLabels = {
 const dragonTigerDefaultStockDisplayLimit = 100;
 const dragonTigerDefaultPageSize = 20;
 
+const dragonTigerDailyTabs = [
+  { value: 'single', label: '单日榜' },
+  { value: 'three', label: '三日榜' },
+  { value: 'ten', label: '十日榜' },
+  { value: 'month', label: '月榜' },
+];
+
+const dragonTigerDailyTabLabels = {
+  single: '单日榜',
+  three: '三日榜',
+  ten: '十日榜',
+  month: '月榜',
+};
+
+const dragonTigerDailyTabPriority = {
+  single: 0,
+  three: 1,
+  ten: 2,
+  month: 3,
+};
+
 const dragonTigerSortOptions = {
   daily: [
     { value: 'netBuyAmount', label: '按净买额' },
@@ -435,6 +456,102 @@ function sortDragonTigerItems(items, sortKey, direction = 'desc') {
     }
     return ((leftValue > rightValue) - (leftValue < rightValue)) * multiplier;
   });
+}
+
+function getDragonTigerDailyTab(item) {
+  const text = [item?.reason, item?.explain].filter(Boolean).join(' ');
+
+  if (/连续十个交易日/.test(text)) {
+    return 'ten';
+  }
+  if (/连续三个交易日/.test(text)) {
+    return 'three';
+  }
+  if (/[月]|近\s*30\s*个?交易日/.test(text)) {
+    return 'month';
+  }
+  return 'single';
+}
+
+function getDragonTigerRepresentativeScore(item) {
+  const netBuyAmount = typeof item?.netBuyAmount === 'number' ? Math.abs(item.netBuyAmount) : 0;
+  const dealAmount = typeof item?.dealAmount === 'number' ? Math.abs(item.dealAmount) : 0;
+  return Math.max(netBuyAmount, dealAmount);
+}
+
+function updateDragonTigerRepresentativeItem(current, item) {
+  const fields = [
+    'symbol',
+    'code',
+    'secuCode',
+    'name',
+    'tradeDate',
+    'latestTradeDate',
+    'latestDate',
+    'closePrice',
+    'changePercent',
+    'netBuyAmount',
+    'buyAmount',
+    'sellAmount',
+    'dealAmount',
+    'totalAmount',
+    'netBuyRatio',
+    'dealAmountRatio',
+    'turnoverRate',
+    'freeMarketCap',
+  ];
+
+  fields.forEach((field) => {
+    if (typeof item?.[field] !== 'undefined') {
+      current[field] = item[field];
+    }
+  });
+}
+
+function aggregateDragonTigerDailyItems(items) {
+  if (!Array.isArray(items)) {
+    return [];
+  }
+
+  const groupedItems = new Map();
+
+  items.forEach((item, index) => {
+    const tradeDate = item?.tradeDate || item?.latestDate || '';
+    const symbol = item?.symbol || item?.code || item?.name || `unknown-${index}`;
+    const key = `${tradeDate}-${symbol}`;
+    const detail = {
+      reason: item?.reason || item?.explain || '上榜',
+      tab: getDragonTigerDailyTab(item),
+    };
+
+    if (!groupedItems.has(key)) {
+      groupedItems.set(key, {
+        ...item,
+        tradeDate,
+        dailyTab: detail.tab,
+        dailyDetails: [detail],
+        dailyReasonCount: 1,
+        _dragonTigerRepresentativeScore: getDragonTigerRepresentativeScore(item),
+      });
+      return;
+    }
+
+    const current = groupedItems.get(key);
+    current.dailyDetails.push(detail);
+    current.dailyReasonCount = current.dailyDetails.length;
+    current.dailyTab = current.dailyDetails.reduce((selectedTab, currentDetail) => {
+      return dragonTigerDailyTabPriority[currentDetail.tab] > dragonTigerDailyTabPriority[selectedTab] ? currentDetail.tab : selectedTab;
+    }, current.dailyTab);
+    current.reason = current.dailyDetails.map((currentDetail) => currentDetail.reason).join('；');
+    current.explain = current.reason;
+    const nextScore = getDragonTigerRepresentativeScore(item);
+    if (nextScore > (current._dragonTigerRepresentativeScore || 0)) {
+      updateDragonTigerRepresentativeItem(current, item);
+      current._dragonTigerRepresentativeScore = nextScore;
+    }
+  });
+
+  return Array.from(groupedItems.values()).map(({ _dragonTigerRepresentativeScore, ...entry }) => entry);
 }
 
 function getChinaTradeDayKey(value) {
@@ -1331,6 +1448,7 @@ function App() {
   const [dragonTigerStatsErrorMessage, setDragonTigerStatsErrorMessage] = useState('');
   const [dragonTigerStocksExpanded, setDragonTigerStocksExpanded] = useState(false);
   const [dragonTigerSearchQuery, setDragonTigerSearchQuery] = useState('');
+  const [dragonTigerDailyTab, setDragonTigerDailyTab] = useState('single');
   const [dragonTigerDailySortKey, setDragonTigerDailySortKey] = useState('netBuyAmount');
   const [dragonTigerDailySortDirection, setDragonTigerDailySortDirection] = useState('desc');
   const [dragonTigerDailyPage, setDragonTigerDailyPage] = useState(1);
@@ -1410,19 +1528,36 @@ function App() {
     };
   }, [activeView, dragonTigerDate, dragonTigerDateManuallySet]);
 
+  const dragonTigerDailyAggregated = useMemo(() => aggregateDragonTigerDailyItems(dragonTigerDaily), [dragonTigerDaily]);
+
+  const dragonTigerDailyTabbed = useMemo(
+    () => dragonTigerDailyAggregated.filter((item) => item.dailyTab === dragonTigerDailyTab),
+    [dragonTigerDailyAggregated, dragonTigerDailyTab],
+  );
+
+  const dragonTigerDailyTabCounts = useMemo(() => {
+    return dragonTigerDailyAggregated.reduce((counts, item) => {
+      const tab = item?.dailyTab || 'single';
+      return { ...counts, [tab]: (counts[tab] || 0) + 1 };
+    }, {});
+  }, [dragonTigerDailyAggregated]);
+
   const dragonTigerDailyFiltered = useMemo(() => {
     const query = dragonTigerSearchQuery.trim().toLowerCase();
     if (!query) {
-      return dragonTigerDaily;
+      return dragonTigerDailyTabbed;
     }
 
-    return dragonTigerDaily.filter((item) => {
-      const candidates = [item?.symbol, item?.code, item?.name, item?.reason, item?.explain]
+    return dragonTigerDailyTabbed.filter((item) => {
+      const detailReasons = Array.isArray(item?.dailyDetails)
+        ? item.dailyDetails.map((detail) => detail.reason)
+        : [];
+      const candidates = [item?.symbol, item?.code, item?.name, item?.reason, item?.explain, ...detailReasons]
         .filter(Boolean)
         .map((value) => `${value}`.toLowerCase());
       return candidates.some((value) => value.includes(query));
     });
-  }, [dragonTigerDaily, dragonTigerSearchQuery]);
+  }, [dragonTigerDailyTabbed, dragonTigerSearchQuery]);
 
   const dragonTigerDailySorted = useMemo(() => {
     const sortKey = dragonTigerDailySortKey;
@@ -1492,7 +1627,7 @@ function App() {
 
   useEffect(() => {
     setDragonTigerDailyPage(1);
-  }, [dragonTigerDate, dragonTigerSearchQuery, dragonTigerDailySortDirection, dragonTigerDailySortKey]);
+  }, [dragonTigerDate, dragonTigerDailySortDirection, dragonTigerDailySortKey, dragonTigerDailyTab, dragonTigerSearchQuery]);
 
   useEffect(() => {
     setDragonTigerStocksPage(1);
@@ -1503,6 +1638,10 @@ function App() {
       setDragonTigerDailyPage(dragonTigerDailyTotalPages);
     }
   }, [dragonTigerDailyPage, dragonTigerDailyTotalPages]);
+
+  useEffect(() => {
+    setDragonTigerDailyPage(1);
+  }, [dragonTigerDailyTab]);
 
   useEffect(() => {
     const socket = new WebSocket(wsUrl);
@@ -2484,13 +2623,21 @@ function App() {
 
   function renderDragonTigerCard(item, index) {
     const dealAmountLabel = item.dealAmountRatio ? `龙虎榜成交额 · ${formatPercentFromRatio(item.dealAmountRatio)}` : '龙虎榜成交额';
+    const details = Array.isArray(item.dailyDetails) && item.dailyDetails.length
+      ? item.dailyDetails
+      : [{ reason: item.reason || item.explain || '上榜', tab: item.dailyTab || 'single' }];
+    const reasonCount = item.dailyReasonCount || details.length;
     return (
       <article className="dragon-tiger-card" key={`${item.code || item.symbol || item.name || 'dragon-tiger'}-${item.tradeDate || item.latestDate || 'unknown-date'}-${index}`}>
         <header className="dragon-tiger-card-header">
           <div>
-            <strong>{item.name || '--'}</strong>
+            <div className="dragon-tiger-card-title-row">
+              <strong>{item.name || '--'}</strong>
+              <span className="dragon-tiger-source-chip">{dragonTigerDailyTabLabels[item.dailyTab] || '单日榜'}</span>
+              {reasonCount > 1 ? <span className="dragon-tiger-reason-count">同日 {reasonCount} 个原因</span> : null}
+            </div>
             <p className="snapshot-subtitle">
-              {item.code || item.symbol || '--'} · {item.tradeDate || item.latestDate || '--'} · {item.reason || item.explain || '上榜'}
+              {item.code || item.symbol || '--'} · {item.tradeDate || item.latestDate || '--'}
             </p>
           </div>
           <div className="dragon-tiger-card-right">
@@ -2498,6 +2645,14 @@ function App() {
             <span className="dragon-tiger-source-chip">东方财富</span>
           </div>
         </header>
+        <div className="dragon-tiger-reason-list">
+          {details.map((detail, detailIndex) => (
+            <span className="dragon-tiger-reason-item" key={`${detail.reason}-${detailIndex}`}>
+              <span className="dragon-tiger-reason-tab">{dragonTigerDailyTabLabels[detail.tab] || '单日榜'}</span>
+              {detail.reason || '上榜'}
+            </span>
+          ))}
+        </div>
         <div className="dragon-tiger-metrics-row">
           <span className={`dragon-tiger-pill ${item.netBuyAmount > 0 ? 'positive' : item.netBuyAmount < 0 ? 'negative' : ''}`}>
             净买额 {formatTurnoverAmount(item.netBuyAmount)}
@@ -2608,12 +2763,27 @@ function App() {
           <div className="section-heading">
             <div>
               <h3>日榜总览</h3>
-              <p className="panel-tip compact">支持按代码、名称和上榜原因筛选，并可切换排序字段与分页浏览。</p>
+              <p className="panel-tip compact">支持按代码、名称和同日原因筛选，切换 Tab 后会重置分页；四个 Tab 都是同一天出榜数据。
+              </p>
             </div>
             <div className="content-status-summary">
               <span className="table-meta-badge">共 {dragonTigerDailySorted.length} 条</span>
               <span className="table-meta-badge">第 {dragonTigerDailyPage} / {dragonTigerDailyTotalPages} 页</span>
             </div>
+          </div>
+          <div className="dragon-tiger-tab-row" role="tablist" aria-label="龙虎榜日榜分类切换">
+            {dragonTigerDailyTabs.map((tab) => (
+              <button
+                key={tab.value}
+                type="button"
+                className={dragonTigerDailyTab === tab.value ? 'view-tab active' : 'view-tab'}
+                onClick={() => setDragonTigerDailyTab(tab.value)}
+                aria-pressed={dragonTigerDailyTab === tab.value}
+              >
+                {tab.label}
+                <span className="dragon-tiger-tab-count">{dragonTigerDailyTabCounts[tab.value] || 0}</span>
+              </button>
+            ))}
           </div>
           <div className="dragon-tiger-grid">
             {dragonTigerDailyVisible.length ? dragonTigerDailyVisible.map((item, index) => renderDragonTigerCard(item, index)) : <p className="panel-tip compact">当前筛选条件下暂无龙虎榜日榜数据。</p>}

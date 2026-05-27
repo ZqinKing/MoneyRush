@@ -818,6 +818,35 @@ input {
   margin-bottom: 0;
 }
 
+.dragon-tiger-tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dragon-tiger-tab-row .view-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dragon-tiger-tab-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(157, 180, 255, 0.14);
+  color: #dbe6ff;
+  font-size: 0.78rem;
+}
+
+.view-tab.active .dragon-tiger-tab-count {
+  background: rgba(255, 255, 255, 0.2);
+  color: #f7fbff;
+}
+
 .dragon-tiger-card {
   display: grid;
   gap: 8px;
@@ -825,6 +854,48 @@ input {
   border-radius: 16px;
   border: 1px solid rgba(157, 180, 255, 0.12);
   background: rgba(4, 8, 16, 0.9);
+}
+
+.dragon-tiger-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.dragon-tiger-reason-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 197, 66, 0.12);
+  color: #ffd67a;
+  font-size: 0.78rem;
+}
+
+.dragon-tiger-reason-list {
+  display: grid;
+  gap: 6px;
+}
+
+.dragon-tiger-reason-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: #dbe6ff;
+  font-size: 0.86rem;
+}
+
+.dragon-tiger-reason-tab {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(129, 164, 255, 0.14);
+  color: #9fc0ff;
+  font-size: 0.76rem;
 }
 
 .dragon-tiger-card-header {
