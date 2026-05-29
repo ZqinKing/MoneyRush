@@ -56,6 +56,9 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/collector.Dockerfile
+    env_file:
+      - path: ../../.env
+        required: false
     environment:
       REDIS_URL: redis://redis:6379/0
       POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}
@@ -79,7 +82,9 @@ services:
       COLLECTOR_VENDOR_PRICE_DIVERGENCE_LIMIT_PCT: ${COLLECTOR_VENDOR_PRICE_DIVERGENCE_LIMIT_PCT:-15}
       ANOMALY_AGGREGATION_ENABLED: ${ANOMALY_AGGREGATION_ENABLED:-true}
       ANOMALY_AGGREGATION_INTERVAL_SECONDS: ${ANOMALY_AGGREGATION_INTERVAL_SECONDS:-300}
-      ANOMALY_AI_REASON_ENABLED: ${ANOMALY_AI_REASON_ENABLED:-false}
+      ANOMALY_AI_REASON_ENABLED: ${ANOMALY_AI_REASON_ENABLED:-true}
+      ANOMALY_AI_REASON_INTERVAL_SECONDS: ${ANOMALY_AI_REASON_INTERVAL_SECONDS:-300}
+      ANOMALY_AI_REASON_BATCH_SIZE: ${ANOMALY_AI_REASON_BATCH_SIZE:-10}
     depends_on:
       db:
         condition: service_healthy
