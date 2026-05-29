@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.routes.anomaly import router as anomaly_router
 from app.api.routes.content import router as content_router
 from app.api.routes.dragon_tiger import router as dragon_tiger_router
 from app.api.routes.funds import router as funds_router
@@ -117,6 +118,7 @@ def create_app() -> FastAPI:
         }
 
     app.include_router(health_router, prefix="/api/v1")
+    app.include_router(anomaly_router, prefix="/api/v1")
     app.include_router(market_router, prefix="/api/v1")
     app.include_router(symbols_router, prefix="/api/v1")
     app.include_router(content_router, prefix="/api/v1")
