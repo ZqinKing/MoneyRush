@@ -64,8 +64,8 @@ class CollectorWorker:
         logger.info("active symbols snapshot", extra={"active_symbols": active_symbols})
 
         for symbol in active_symbols:
-            await self._ensure_daily_history(symbol)
-            await self._ensure_intraday_history(symbol)
+            await self._safe_ensure_daily_history(symbol)
+            await self._safe_ensure_intraday_history(symbol)
             await self._collect_symbol(symbol)
 
     async def _collect_symbol(self, symbol: str) -> None:
@@ -181,6 +181,18 @@ class CollectorWorker:
         max_seconds = max(int(self._settings.collector_unchanged_quote_backoff_max_seconds), base_seconds)
         exponent = unchanged_quote_count - threshold
         return float(min(base_seconds * (2 ** exponent), max_seconds))
+
+    async def _safe_ensure_daily_history(self, symbol: str) -> None:
+        try:
+            await self._ensure_daily_history(symbol)
+        except Exception:
+            logger.exception("collector daily history backfill failed; continuing symbol sweep", extra={"symbol": symbol})
+
+    async def _safe_ensure_intraday_history(self, symbol: str) -> None:
+        try:
+            await self._ensure_intraday_history(symbol)
+        except Exception:
+            logger.exception("collector intraday history backfill failed; continuing symbol sweep", extra={"symbol": symbol})
 
     async def _ensure_daily_history(self, symbol: str) -> None:
         trade_day = datetime.now(CHINA_MARKET_TZ).date().isoformat()

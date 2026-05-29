@@ -14,6 +14,10 @@ QUOTE_URL = "https://qt.gtimg.cn/q="
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 DEFAULT_MOOTDX_SERVER = ("180.153.18.170", 7709)
 A_SHARE_LOT_SIZE = 100
+QUOTE_SYMBOL_FAILURE_BACKOFF_SECONDS = 30.0
+QUOTE_SERVER_FAILURE_BACKOFF_SECONDS = 10.0
+HISTORY_FAILURE_BACKOFF_INITIAL_SECONDS = 60.0
+HISTORY_FAILURE_BACKOFF_MAX_SECONDS = 300.0
 logger = logging.getLogger(__name__)
 
 
@@ -314,6 +318,9 @@ class TencentQuoteClient:
 
 class MootdxQuoteClient:
     def __init__(self) -> None:
+        self._client = None
+
+    def reset(self) -> None:
         self._client = None
 
     def _ensure_client(self):
@@ -677,12 +684,15 @@ class MootdxQuoteClient:
 class MarketQuoteClient:
     def __init__(self, settings) -> None:
         self._settings = settings
-        self._mootdx_client = MootdxQuoteClient()
+        self._mootdx_quote_client = MootdxQuoteClient()
+        self._mootdx_history_client = MootdxQuoteClient()
         self._tencent_client = TencentQuoteClient()
         self._tencent_cache: dict[str, tuple[TencentQuote, float]] = {}
-        self._mootdx_failure_until = 0.0
+        self._quote_symbol_failure_until: dict[str, float] = {}
+        self._quote_server_failure_until = 0.0
         self._tencent_failure_until = 0.0
-        self._history_failure_until = 0.0
+        self._history_failure_until_by_key: dict[tuple[str, str, str], float] = {}
+        self._history_failure_count_by_key: dict[tuple[str, str, str], int] = {}
         self._last_history_request_at = 0.0
 
     def fetch_quote(self, symbol: str) -> dict[str, dict[str, object]]:
@@ -713,26 +723,65 @@ class MarketQuoteClient:
         return self._build_market_state(mootdx_quote, tencent_quote)
 
     def fetch_daily_history(self, symbol: str, limit: int = 60) -> list[dict[str, object]]:
+        trade_day = datetime.now(CHINA_MARKET_TZ).date()
+        self._raise_if_history_backoff_active(symbol, trade_day, "daily")
         self._wait_for_history_slot()
         try:
-            return self._mootdx_client.fetch_daily_history(symbol, limit=limit)
-        except Exception:
-            self._history_failure_until = monotonic() + self._settings.collector_intraday_history_vendor_cooldown_seconds
+            history = self._mootdx_history_client.fetch_daily_history(symbol, limit=limit)
+        except Exception as exc:
+            self._record_history_failure(
+                symbol,
+                trade_day,
+                scope="daily",
+                reason=self._classify_mootdx_failure(exc),
+                transport_failure=self._is_transport_failure(exc),
+            )
             raise
 
+        if not history:
+            self._record_history_failure(
+                symbol,
+                trade_day,
+                scope="daily",
+                reason="history_empty",
+                transport_failure=False,
+            )
+            raise ValueError(f"empty mootdx daily history payload for {symbol} on {trade_day.isoformat()}")
+
+        self._clear_history_backoff(symbol, trade_day, "daily")
+        return history
+
     def fetch_intraday_history(self, symbol: str, trade_day: date | None = None) -> list[dict[str, object]]:
+        trade_day = trade_day or datetime.now(CHINA_MARKET_TZ).date()
+        self._raise_if_history_backoff_active(symbol, trade_day, "intraday")
         self._wait_for_history_slot()
         try:
-            return self._mootdx_client.fetch_intraday_history(symbol, trade_day=trade_day)
-        except Exception:
-            self._history_failure_until = monotonic() + self._settings.collector_intraday_history_vendor_cooldown_seconds
+            history = self._mootdx_history_client.fetch_intraday_history(symbol, trade_day=trade_day)
+        except Exception as exc:
+            self._record_history_failure(
+                symbol,
+                trade_day,
+                scope="intraday",
+                reason=self._classify_mootdx_failure(exc),
+                transport_failure=self._is_transport_failure(exc),
+            )
             raise
+
+        if not history:
+            self._record_history_failure(
+                symbol,
+                trade_day,
+                scope="intraday",
+                reason="history_empty",
+                transport_failure=False,
+            )
+            raise ValueError(f"empty mootdx intraday history payload for {symbol} on {trade_day.isoformat()}")
+
+        self._clear_history_backoff(symbol, trade_day, "intraday")
+        return history
 
     def _wait_for_history_slot(self) -> None:
         now = monotonic()
-        if now < self._history_failure_until:
-            raise RuntimeError("mootdx history fetch is in cooldown")
-
         base_interval = float(self._settings.collector_intraday_history_request_interval_seconds)
         jitter = float(self._settings.collector_intraday_history_request_jitter_seconds)
         desired_interval = max(base_interval + random.uniform(-jitter, jitter), 0.0)
@@ -744,14 +793,151 @@ class MarketQuoteClient:
 
     def _get_mootdx_quote(self, symbol: str) -> MootdxQuote:
         now = monotonic()
-        if now < self._mootdx_failure_until:
-            raise RuntimeError("mootdx fetch is in cooldown")
+        symbol_failure_until = self._quote_symbol_failure_until.get(symbol, 0.0)
+        if now < symbol_failure_until:
+            logger.info(
+                "mootdx quote skipped due to symbol-scoped cooldown",
+                extra={
+                    "symbol": symbol,
+                    "cooldown_scope": "symbol",
+                    "cooldown_reason": "content_error",
+                    "cooldown_remaining_seconds": round(symbol_failure_until - now, 2),
+                },
+            )
+            raise RuntimeError("mootdx quote is in symbol cooldown")
+
+        if now < self._quote_server_failure_until:
+            logger.info(
+                "mootdx quote skipped due to server-scoped cooldown",
+                extra={
+                    "symbol": symbol,
+                    "cooldown_scope": "server",
+                    "cooldown_reason": "transport_error",
+                    "cooldown_remaining_seconds": round(self._quote_server_failure_until - now, 2),
+                },
+            )
+            raise RuntimeError("mootdx quote is in server cooldown")
 
         try:
-            return self._mootdx_client.fetch_quote(symbol)
-        except Exception:
-            self._mootdx_failure_until = now + self._settings.collector_vendor_failure_cooldown_seconds
+            quote = self._mootdx_quote_client.fetch_quote(symbol)
+        except Exception as exc:
+            reason = self._classify_mootdx_failure(exc)
+            if self._is_transport_failure(exc):
+                cooldown_seconds = min(
+                    float(self._settings.collector_vendor_failure_cooldown_seconds),
+                    QUOTE_SERVER_FAILURE_BACKOFF_SECONDS,
+                )
+                self._quote_server_failure_until = now + cooldown_seconds
+                self._mootdx_quote_client.reset()
+                logger.exception(
+                    "mootdx quote transport failure; applying server-scoped cooldown",
+                    extra={
+                        "symbol": symbol,
+                        "cooldown_scope": "server",
+                        "cooldown_reason": reason,
+                        "cooldown_seconds": cooldown_seconds,
+                        "client_reset": "quote",
+                    },
+                )
+            else:
+                cooldown_seconds = min(
+                    float(self._settings.collector_vendor_failure_cooldown_seconds),
+                    QUOTE_SYMBOL_FAILURE_BACKOFF_SECONDS,
+                )
+                self._quote_symbol_failure_until[symbol] = now + cooldown_seconds
+                logger.exception(
+                    "mootdx quote content failure; applying symbol-scoped cooldown",
+                    extra={
+                        "symbol": symbol,
+                        "cooldown_scope": "symbol",
+                        "cooldown_reason": reason,
+                        "cooldown_seconds": cooldown_seconds,
+                    },
+                )
             raise
+
+        self._quote_symbol_failure_until.pop(symbol, None)
+        self._quote_server_failure_until = 0.0
+        return quote
+
+    def _raise_if_history_backoff_active(self, symbol: str, trade_day: date, scope: str) -> None:
+        key = (symbol, trade_day.isoformat(), scope)
+        now = monotonic()
+        failure_until = self._history_failure_until_by_key.get(key, 0.0)
+        if now < failure_until:
+            logger.info(
+                "mootdx history skipped due to symbol/trade-day cooldown",
+                extra={
+                    "symbol": symbol,
+                    "trade_day": trade_day.isoformat(),
+                    "history_scope": scope,
+                    "cooldown_scope": "symbol_trade_day",
+                    "cooldown_reason": "history_backoff",
+                    "cooldown_remaining_seconds": round(failure_until - now, 2),
+                },
+            )
+            raise RuntimeError("mootdx history is in symbol/trade-day cooldown")
+
+    def _record_history_failure(
+        self,
+        symbol: str,
+        trade_day: date,
+        *,
+        scope: str,
+        reason: str,
+        transport_failure: bool,
+    ) -> None:
+        key = (symbol, trade_day.isoformat(), scope)
+        failure_count = self._history_failure_count_by_key.get(key, 0) + 1
+        self._history_failure_count_by_key[key] = failure_count
+        backoff_seconds = min(
+            HISTORY_FAILURE_BACKOFF_INITIAL_SECONDS * (2 ** (failure_count - 1)),
+            HISTORY_FAILURE_BACKOFF_MAX_SECONDS,
+        )
+        self._history_failure_until_by_key[key] = monotonic() + backoff_seconds
+        if transport_failure:
+            self._mootdx_history_client.reset()
+
+        logger.warning(
+            "mootdx history fetch failed; applying symbol/trade-day cooldown",
+            extra={
+                "symbol": symbol,
+                "trade_day": trade_day.isoformat(),
+                "history_scope": scope,
+                "cooldown_scope": "symbol_trade_day",
+                "cooldown_reason": reason,
+                "cooldown_seconds": backoff_seconds,
+                "failure_count": failure_count,
+                "client_reset": "history" if transport_failure else None,
+            },
+        )
+
+    def _clear_history_backoff(self, symbol: str, trade_day: date, scope: str) -> None:
+        key = (symbol, trade_day.isoformat(), scope)
+        self._history_failure_until_by_key.pop(key, None)
+        self._history_failure_count_by_key.pop(key, None)
+
+    @staticmethod
+    def _is_transport_failure(exc: Exception) -> bool:
+        if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
+            return True
+        message = str(exc).lower()
+        return any(token in message for token in ("timeout", "timed out", "reconnect", "socket", "connection", "server unavailable"))
+
+    @staticmethod
+    def _classify_mootdx_failure(exc: Exception) -> str:
+        if isinstance(exc, ValueError):
+            message = str(exc).lower()
+            if "empty" in message:
+                return "empty_payload"
+            return "value_error"
+        if isinstance(exc, TypeError):
+            return "type_error"
+        if isinstance(exc, (IndexError, KeyError)):
+            return "parse_error"
+        if MarketQuoteClient._is_transport_failure(exc):
+            return "transport_error"
+        return "unknown_error"
 
     def _get_tencent_quote(self, symbol: str) -> TencentQuote:
         now = monotonic()
