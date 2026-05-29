@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     collector_intraday_post_close_reconciliation_seconds: int = 900
     collector_enable_runtime_data_repair: bool = False
     collector_vendor_price_divergence_limit_pct: float = 15.0
+    anomaly_aggregation_enabled: bool = True
+    anomaly_aggregation_interval_seconds: int = 300
+    anomaly_ai_reason_enabled: bool = False
     content_collector_enabled: bool = True
     content_collector_poll_interval_seconds: int = 5
     content_collector_batch_size: int = 3

@@ -9,6 +9,7 @@ from collections.abc import Sequence
 
 from redis.asyncio import Redis
 
+from collector.services.anomaly_aggregator import AnomalyAggregator
 from collector.services.persistence import PostgresStore
 from collector.services.tencent_quote_client import MarketQuoteClient
 
@@ -26,6 +27,10 @@ class CollectorWorker:
             settings.postgres_dsn,
             enable_runtime_data_repair=settings.collector_enable_runtime_data_repair,
         )
+        self._anomaly_aggregator = AnomalyAggregator(
+            self._postgres,
+            ai_reason_enabled=settings.anomaly_ai_reason_enabled,
+        )
         self._quote_client = MarketQuoteClient(settings)
         self._last_stream_id = "$"
         self._last_collected_at: dict[str, float] = {}
@@ -36,6 +41,7 @@ class CollectorWorker:
         self._intraday_history_terminal_for_trade_day: dict[str, tuple[str, str]] = {}
         self._intraday_history_last_refresh_at: dict[str, float] = {}
         self._latest_daily_trade_day_by_symbol: dict[str, date] = {}
+        self._last_anomaly_aggregation_at = 0.0
         self._postgres_ready = False
 
     async def run(self) -> None:
@@ -46,6 +52,7 @@ class CollectorWorker:
                 await self._ensure_postgres_connection()
                 await self._consume_command_stream()
                 await self._collect_active_symbols()
+                await self._aggregate_active_symbol_anomalies()
             except Exception:
                 self._postgres_ready = False
                 logger.exception("collector loop failed; retrying")
@@ -67,6 +74,22 @@ class CollectorWorker:
             await self._safe_ensure_daily_history(symbol)
             await self._safe_ensure_intraday_history(symbol)
             await self._collect_symbol(symbol)
+
+    async def _aggregate_active_symbol_anomalies(self) -> None:
+        if not self._settings.anomaly_aggregation_enabled:
+            return
+        now = monotonic()
+        interval_seconds = max(float(self._settings.anomaly_aggregation_interval_seconds), 60.0)
+        if now - self._last_anomaly_aggregation_at < interval_seconds:
+            return
+        self._last_anomaly_aggregation_at = now
+        active_symbols = sorted(await self._redis.smembers(self._settings.active_symbols_key))
+        try:
+            anomaly_count = await self._anomaly_aggregator.aggregate_daily_anomalies(active_symbols)
+        except Exception:
+            logger.exception("collector anomaly aggregation failed")
+            return
+        logger.info("collector aggregated significant anomalies", extra={"active_symbol_count": len(active_symbols), "anomaly_count": anomaly_count})
 
     async def _collect_symbol(self, symbol: str) -> None:
         if not await self._redis.sismember(self._settings.active_symbols_key, symbol):
