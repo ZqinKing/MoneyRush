@@ -704,6 +704,85 @@ input {
   transition: border-color 140ms ease, box-shadow 140ms ease, transform 140ms ease;
 }
 
+.anomaly-report-panel {
+  display: grid;
+  gap: 16px;
+}
+
+.anomaly-report-summary,
+.anomaly-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.anomaly-report-body {
+  display: grid;
+  gap: 18px;
+}
+
+.anomaly-section {
+  display: grid;
+  gap: 12px;
+}
+
+.anomaly-grid {
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+}
+
+.anomaly-card {
+  border-color: rgba(111, 229, 179, 0.18);
+}
+
+.anomaly-fund-list {
+  display: grid;
+  gap: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(111, 229, 179, 0.18);
+  background: rgba(10, 34, 28, 0.5);
+  padding: 10px;
+}
+
+.anomaly-fund-list h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.anomaly-fund-row {
+  display: grid;
+  gap: 2px;
+}
+
+.anomaly-fund-row small {
+  color: #8fa6d8;
+}
+
+.anomaly-ai-reason {
+  display: grid;
+  gap: 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(129, 164, 255, 0.14);
+  background: rgba(43, 96, 255, 0.08);
+  padding: 10px;
+  color: #dbe6ff;
+  font-size: 0.84rem;
+}
+
+.anomaly-ai-reason span {
+  color: #8fa6d8;
+}
+
+.anomaly-ai-reason p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.anomaly-disclaimer {
+  border-top: 1px solid rgba(157, 180, 255, 0.1);
+  padding-top: 10px;
+}
+
 .event-card-high {
   border-color: rgba(255, 120, 120, 0.42);
   box-shadow: 0 12px 30px rgba(120, 22, 34, 0.2);

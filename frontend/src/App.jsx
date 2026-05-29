@@ -146,8 +146,13 @@ function buildContentStatusUrl(symbol = '') {
   return `${apiBaseUrl}/api/v1/content/status?${params.toString()}`;
 }
 
-function buildEventSummariesUrl() {
-  return `${apiBaseUrl}/api/v1/symbols/event-summaries`;
+function buildDailyAnomalyReportUrl({ portfolioOnly = false, sortBy = 'relevance' } = {}) {
+  const params = new URLSearchParams();
+  params.set('sort_by', sortBy);
+  if (portfolioOnly) {
+    params.set('portfolio_only', 'true');
+  }
+  return `${apiBaseUrl}/api/v1/anomaly/daily?${params.toString()}`;
 }
 
 function buildMarketOverviewUrl() {
@@ -654,6 +659,13 @@ function formatRatioMultiple(value) {
   return `${value.toFixed(value >= 10 ? 1 : 2)}×均量`;
 }
 
+function formatImpactPercent(value) {
+  if (typeof value !== 'number') {
+    return '影响待估';
+  }
+  return `估算影响 ${formatSignedPercent(value)}`;
+}
+
 function formatPercentFromRatio(value) {
   if (typeof value !== 'number') {
     return '--';
@@ -670,6 +682,42 @@ function getJumpSeverityClass(severity) {
     return 'event-card-high';
   }
   return '';
+}
+
+function getAnomalySeverityLabel(severity) {
+  if (severity === 'critical') {
+    return '重点';
+  }
+  if (severity === 'high') {
+    return '较高';
+  }
+  if (severity === 'medium') {
+    return '观察';
+  }
+  return '普通';
+}
+
+function getAnomalyTypeLabel(type) {
+  if (type === 'volume_spike') {
+    return '量能突增';
+  }
+  if (type === 'price_jump') {
+    return '价格异动';
+  }
+  return '显著变化';
+}
+
+function getAiReasonStatusLabel(status) {
+  if (status === 'completed') {
+    return 'AI归因已生成';
+  }
+  if (status === 'failed') {
+    return 'AI归因失败';
+  }
+  if (status === 'skipped') {
+    return 'AI归因已跳过';
+  }
+  return 'AI归因待生成';
 }
 
 function getVolumeToneClass(ratio) {
@@ -1427,8 +1475,12 @@ function App() {
   const [contentFeed, setContentFeed] = useState([]);
   const [contentStatus, setContentStatus] = useState({ jobs: [], latestIngestedAt: null, summary: null });
   const [contentRequestState, setContentRequestState] = useState('idle');
-  const [eventSummaries, setEventSummaries] = useState({});
-  const [eventSummaryRequestState, setEventSummaryRequestState] = useState('idle');
+  const [dailyAnomalyReport, setDailyAnomalyReport] = useState(null);
+  const [dailyAnomalyRequestState, setDailyAnomalyRequestState] = useState('idle');
+  const [dailyAnomalyPortfolioOnly, setDailyAnomalyPortfolioOnly] = useState(false);
+  const [dailyAnomalySortBy, setDailyAnomalySortBy] = useState('relevance');
+  const [dailyAnomalyChangeThreshold, setDailyAnomalyChangeThreshold] = useState('0');
+  const [dailyAnomalyVolumeThreshold, setDailyAnomalyVolumeThreshold] = useState('0');
   const [dragonTigerRange, setDragonTigerRange] = useState('1month');
   const [dragonTigerDate, setDragonTigerDate] = useState('');
   const [dragonTigerDateManuallySet, setDragonTigerDateManuallySet] = useState(false);
@@ -1468,22 +1520,25 @@ function App() {
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
-  const eventCards = useMemo(
-    () =>
-      activeSymbols
-        .map((currentSymbol) => {
-          const eventPayload = messages.find((message) => message.events?.[currentSymbol]);
-
-          return {
-            symbol: currentSymbol,
-            snapshot: snapshots[currentSymbol],
-            event: eventPayload?.events?.[currentSymbol] || null,
-            summary: eventSummaries[currentSymbol] || null,
-          };
-        })
-        .filter((item) => item.snapshot || item.event || item.summary),
-    [activeSymbols, eventSummaries, messages, snapshots],
-  );
+  const dailyAnomalyItems = useMemo(() => {
+    const changeThreshold = Number(dailyAnomalyChangeThreshold) || 0;
+    const volumeThreshold = Number(dailyAnomalyVolumeThreshold) || 0;
+    const matchesThresholds = (item) => {
+      const changeMagnitude = Math.max(
+        typeof item?.changePct === 'number' ? Math.abs(item.changePct) : 0,
+        typeof item?.latestPriceJumpPct === 'number' ? Math.abs(item.latestPriceJumpPct) : 0,
+      );
+      const volumeRatio = typeof item?.volumeRatio === 'number' ? item.volumeRatio : 0;
+      return changeMagnitude >= changeThreshold && volumeRatio >= volumeThreshold;
+    };
+    const portfolioItems = Array.isArray(dailyAnomalyReport?.portfolioAnomalies)
+      ? dailyAnomalyReport.portfolioAnomalies.filter(matchesThresholds)
+      : [];
+    const otherItems = Array.isArray(dailyAnomalyReport?.otherAnomalies)
+      ? dailyAnomalyReport.otherAnomalies.filter(matchesThresholds)
+      : [];
+    return { portfolioItems, otherItems };
+  }, [dailyAnomalyChangeThreshold, dailyAnomalyReport, dailyAnomalyVolumeThreshold]);
 
   const dragonTigerRangeLabels = {
     '1month': '近一月',
@@ -1871,36 +1926,39 @@ function App() {
 
     let cancelled = false;
 
-    async function loadEventSummaries({ keepReadyState = false } = {}) {
+    async function loadDailyAnomalyReport({ keepReadyState = false } = {}) {
       if (!keepReadyState) {
-        setEventSummaryRequestState('loading');
+        setDailyAnomalyRequestState('loading');
       }
 
       try {
-        const response = await fetch(buildEventSummariesUrl());
-        const payload = await parseJsonOrThrow(response, 'event summaries fetch failed');
+        const response = await fetch(buildDailyAnomalyReportUrl({
+          portfolioOnly: dailyAnomalyPortfolioOnly,
+          sortBy: dailyAnomalySortBy,
+        }));
+        const payload = await parseJsonOrThrow(response, 'daily anomaly report fetch failed');
         if (cancelled) {
           return;
         }
-        setEventSummaries(payload?.summaries && typeof payload.summaries === 'object' ? payload.summaries : {});
-        setEventSummaryRequestState('ready');
+        setDailyAnomalyReport(payload && typeof payload === 'object' ? payload : null);
+        setDailyAnomalyRequestState('ready');
       } catch {
         if (!cancelled) {
-          setEventSummaryRequestState('error');
+          setDailyAnomalyRequestState('error');
         }
       }
     }
 
-    loadEventSummaries();
+    loadDailyAnomalyReport();
     const intervalId = window.setInterval(() => {
-      loadEventSummaries({ keepReadyState: true });
-    }, 45000);
+      loadDailyAnomalyReport({ keepReadyState: true });
+    }, 60000);
 
     return () => {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeSymbolsKey, activeView]);
+  }, [activeSymbolsKey, activeView, dailyAnomalyPortfolioOnly, dailyAnomalySortBy]);
 
   const selectedSnapshot = selectedSnapshotSymbol ? snapshots[selectedSnapshotSymbol] : null;
   const selectedDetail = selectedSnapshotSymbol ? snapshotDetails[selectedSnapshotSymbol] : null;
@@ -4014,6 +4072,186 @@ function App() {
     );
   }
 
+  function renderAnomalyCard(item) {
+    const funds = Array.isArray(item?.relatedFunds) ? item.relatedFunds : [];
+    return (
+      <section className={`event-card anomaly-card ${getJumpSeverityClass(item?.severity)}`.trim()} key={item?.symbol}>
+        <header>
+          <div>
+            <strong>{item?.stockName || '待识别公司'}</strong>
+            <p className="snapshot-subtitle">
+              {item?.symbol || '--'} · {getAnomalyTypeLabel(item?.anomalyType)}
+            </p>
+          </div>
+          <span>{formatTime(item?.triggerTime)}</span>
+        </header>
+        <div className="event-card-topline">
+          <span className="event-summary-chip">{getAnomalySeverityLabel(item?.severity)}异动</span>
+          <span className={`event-jump-badge ${getJumpSeverityClass(item?.severity)}`.trim()}>
+            {typeof item?.changePct === 'number'
+              ? `日内 ${formatSignedPercent(item.changePct)}`
+              : `最新一步 ${formatSignedPercent(item?.latestPriceJumpPct)}`}
+          </span>
+        </div>
+        <dl>
+          <div>
+            <dt>触发价</dt>
+            <dd>{formatPrice(item?.triggerPrice)}</dd>
+          </div>
+          <div>
+            <dt>最新一步</dt>
+            <dd>{formatSignedPercent(item?.latestPriceJumpPct)}</dd>
+          </div>
+          <div>
+            <dt>量能相对20日</dt>
+            <dd className={getVolumeToneClass(item?.volumeRatio)}>{formatRatioMultiple(item?.volumeRatio)}</dd>
+          </div>
+          <div>
+            <dt>今日事件</dt>
+            <dd>{formatPlainNumber(item?.eventCountToday ?? 0)} 条</dd>
+          </div>
+        </dl>
+        {funds.length ? (
+          <div className="anomaly-fund-list">
+            <h4>关联持仓基金</h4>
+            {funds.slice(0, 3).map((fund) => (
+              <div className="anomaly-fund-row" key={`${item?.symbol}-${fund.fundCode}-${fund.reportDate}`}>
+                <span>{fund.fundName || fund.fundCode}</span>
+                <small>
+                  {fund.fundCode} · {fund.reportDate || '报告期未知'} · 仓位 {formatSignedPercent(fund.stockWeightInFund).replace('+', '')} · {formatImpactPercent(fund.estimatedImpact)}
+                </small>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        <div className="anomaly-ai-reason">
+          <span>{getAiReasonStatusLabel(item?.aiReasonStatus)}</span>
+          {item?.aiReason ? <p>{item.aiReason}</p> : null}
+        </div>
+        <p className="panel-tip compact">{item?.impactEstimate || '仅用于复盘观察，不构成投资建议。'}</p>
+      </section>
+    );
+  }
+
+  function renderAnomalySection(title, items, emptyText) {
+    return (
+      <section className="anomaly-section">
+        <div className="detail-card-header compact-card-header">
+          <div>
+            <h3>{title}</h3>
+            <p className="panel-tip compact">基于今日监控数据中的显著变化，持仓信息来自最近披露报告期。</p>
+          </div>
+          <span className="table-meta-badge">{items.length} 条</span>
+        </div>
+        {items.length ? (
+          <div className="event-grid anomaly-grid">
+            {items.map((item) => renderAnomalyCard(item))}
+          </div>
+        ) : (
+          <p className="panel-tip compact">{emptyText}</p>
+        )}
+      </section>
+    );
+  }
+
+  function renderDailyAnomalyView() {
+    const summary = dailyAnomalyReport?.summary || {};
+    const { portfolioItems, otherItems } = dailyAnomalyItems;
+    return (
+      <article className="panel wide anomaly-report-panel">
+        <div className="section-heading">
+          <div>
+            <h2>持仓异动日报</h2>
+            <p className="panel-tip compact">从“盯最新一步”改为复盘今日显著变化；量能为相对 20 日日均量的粗略参考。</p>
+          </div>
+          <div className="event-status-slot" aria-live="polite">
+            <span
+              className={[
+                'symbol-count-badge',
+                'event-status-badge',
+                'warning',
+                dailyAnomalyRequestState === 'error' ? 'visible' : 'hidden',
+              ].filter(Boolean).join(' ')}
+              aria-hidden={dailyAnomalyRequestState !== 'error'}
+            >
+              日报加载失败
+            </span>
+          </div>
+        </div>
+        <div className="anomaly-report-summary">
+          <span className="symbol-count-badge">日期 {dailyAnomalyReport?.date || '--'}</span>
+          <span className="symbol-count-badge">生成 {dailyAnomalyReport?.generatedAt ? formatTime(dailyAnomalyReport.generatedAt) : '--:--:--'}</span>
+          <span className="symbol-count-badge">重点 {summary.criticalCount ?? 0}</span>
+          <span className="symbol-count-badge">较高 {summary.highCount ?? 0}</span>
+          <span className="symbol-count-badge">持仓相关 {summary.portfolioAnomalyCount ?? 0}</span>
+          <span className="symbol-count-badge">监控标的 {summary.activeSymbolCount ?? activeSymbols.length}</span>
+        </div>
+        <div className="content-filter-row anomaly-filter-row">
+          <label className="content-symbol-select-label" htmlFor="anomaly-scope-select">筛选</label>
+          <select
+            id="anomaly-scope-select"
+            className="content-symbol-select"
+            value={dailyAnomalyPortfolioOnly ? 'portfolio' : 'all'}
+            onChange={(event) => setDailyAnomalyPortfolioOnly(event.target.value === 'portfolio')}
+          >
+            <option value="all">全部异动</option>
+            <option value="portfolio">仅持仓相关</option>
+          </select>
+          <label className="content-symbol-select-label" htmlFor="anomaly-sort-select">排序</label>
+          <select
+            id="anomaly-sort-select"
+            className="content-symbol-select"
+            value={dailyAnomalySortBy}
+            onChange={(event) => setDailyAnomalySortBy(event.target.value)}
+          >
+            <option value="relevance">按关联度</option>
+            <option value="magnitude">按幅度</option>
+            <option value="time">按时间</option>
+          </select>
+          <label className="content-symbol-select-label" htmlFor="anomaly-change-threshold-select">涨跌阈值</label>
+          <select
+            id="anomaly-change-threshold-select"
+            className="content-symbol-select"
+            value={dailyAnomalyChangeThreshold}
+            onChange={(event) => setDailyAnomalyChangeThreshold(event.target.value)}
+          >
+            <option value="0">不限</option>
+            <option value="2">≥ 2%</option>
+            <option value="3">≥ 3%</option>
+            <option value="5">≥ 5%</option>
+          </select>
+          <label className="content-symbol-select-label" htmlFor="anomaly-volume-threshold-select">量比阈值</label>
+          <select
+            id="anomaly-volume-threshold-select"
+            className="content-symbol-select"
+            value={dailyAnomalyVolumeThreshold}
+            onChange={(event) => setDailyAnomalyVolumeThreshold(event.target.value)}
+          >
+            <option value="0">不限</option>
+            <option value="1.5">≥ 1.5×</option>
+            <option value="3">≥ 3×</option>
+            <option value="5">≥ 5×</option>
+          </select>
+        </div>
+        <div className="panel-scroll-area anomaly-report-body">
+          {dailyAnomalyRequestState === 'loading' && !dailyAnomalyReport ? (
+            <p className="panel-tip compact">正在生成今日异动日报…</p>
+          ) : (
+            <>
+              {renderAnomalySection('重点监控：持仓相关异动', portfolioItems, '暂无满足阈值的持仓相关显著异动。')}
+              {renderAnomalySection('其他监控标的异动', otherItems, '暂无满足阈值的其他监控标的异动。')}
+              {!portfolioItems.length && !otherItems.length ? (
+                <p className="panel-tip compact anomaly-disclaimer">当前仅表示没有满足阈值的显著异动，不代表所有持仓均无风险。</p>
+              ) : (
+                <p className="panel-tip compact anomaly-disclaimer">异动日报仅用于盘中/盘后复盘，不构成投资建议。</p>
+              )}
+            </>
+          )}
+        </div>
+      </article>
+    );
+  }
+
   return (
     <main className="layout">
       <section className="panel hero">
@@ -4035,7 +4273,7 @@ function App() {
             type="button"
             onClick={() => setActiveView('events')}
           >
-            事件
+            异动日报
           </button>
           <button
             className={activeView === 'content' ? 'view-tab active' : 'view-tab'}
@@ -4207,94 +4445,7 @@ function App() {
               </div>
           </article>
         ) : (
-          <article className="panel wide">
-            <div className="section-heading">
-              <div>
-                <h2>实时事件</h2>
-                <p className="panel-tip compact">按标的聚合今日事件强度、量能变化与资金方向；跳变按最近两次不同价格之间的最后一步变化计算。</p>
-              </div>
-              <div className="event-status-slot" aria-live="polite">
-                <span
-                  className={[
-                    'symbol-count-badge',
-                    'event-status-badge',
-                    'warning',
-                    eventSummaryRequestState === 'error' ? 'visible' : 'hidden',
-                  ].filter(Boolean).join(' ')}
-                  aria-hidden={eventSummaryRequestState !== 'error'}
-                >
-                  事件统计加载失败
-                </span>
-              </div>
-            </div>
-            <div className="panel-scroll-area">
-              <div className="event-grid">
-                {eventCards.length ? (
-                  eventCards.map(({ symbol: currentSymbol, snapshot, event, summary }) => (
-                    <section className={`event-card ${getJumpSeverityClass(summary?.jumpSeverity)}`.trim()} key={currentSymbol}>
-                      <header>
-                        <div>
-                          <strong>{snapshot?.companyName || event?.companyName || '待识别公司'}</strong>
-                          <p className="snapshot-subtitle">
-                            {currentSymbol} · {snapshot?.exchange || event?.exchange || '--'}
-                          </p>
-                        </div>
-                        <span>{formatTime(summary?.latestEventTs || event?.generatedAt || snapshot?.updatedAt)}</span>
-                      </header>
-                      <div className="event-card-topline">
-                        <span className="event-summary-chip">今日事件记录 {formatPlainNumber(summary?.eventCountToday ?? 0)} 条</span>
-                        {typeof summary?.latestPriceJumpPct === 'number' ? (
-                          <span className={`event-jump-badge ${getJumpSeverityClass(summary?.jumpSeverity)}`.trim()}>
-                            最新一步 {formatSignedPercent(summary.latestPriceJumpPct)}
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="event-ratio-block">
-                        <div className="event-ratio-labels">
-                          <span>买盘 {formatPercentFromRatio(summary?.buyRatio)}</span>
-                          <span>卖盘 {formatPercentFromRatio(summary?.sellRatio)}</span>
-                        </div>
-                        <div className="event-ratio-track" aria-hidden="true">
-                          <span className="event-ratio-fill buy" style={{ width: `${Math.max(0, Math.min((summary?.buyRatio ?? 0) * 100, 100))}%` }} />
-                        </div>
-                      </div>
-                      <dl>
-                        <div>
-                          <dt>最新价</dt>
-                          <dd>{formatPrice(summary?.latestPrice ?? event?.tick?.price ?? snapshot?.lastPrice)}</dd>
-                        </div>
-                        <div>
-                          <dt>成交量</dt>
-                          <dd className={getVolumeToneClass(summary?.volumeRatio)}>
-                            {formatTickVolume(summary?.latestVolume ?? event?.tick?.volume)}
-                            {typeof summary?.volumeRatio === 'number' ? ` (${formatRatioMultiple(summary.volumeRatio)})` : ''}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt>买卖方向</dt>
-                          <dd>{event?.tick?.side === 'buy' ? '买盘' : event?.tick?.side === 'sell' ? '卖盘' : '--'}</dd>
-                        </div>
-                        <div>
-                          <dt>K线周期</dt>
-                          <dd>{event?.kline?.period || '--'}</dd>
-                        </div>
-                        <div>
-                          <dt>K线区间</dt>
-                          <dd>{event?.kline ? `${formatPrice(event.kline.low)} ~ ${formatPrice(event.kline.high)}` : '--'}</dd>
-                        </div>
-                        <div>
-                          <dt>收盘价</dt>
-                          <dd>{formatPrice(event?.kline?.close)}</dd>
-                        </div>
-                      </dl>
-                    </section>
-                  ))
-                ) : (
-                  <p>暂无结构化事件数据。</p>
-                )}
-              </div>
-            </div>
-          </article>
+          renderDailyAnomalyView()
         )}
       </section>
     </main>
