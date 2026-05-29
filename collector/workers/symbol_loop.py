@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from redis.asyncio import Redis
 
 from collector.services.anomaly_aggregator import AnomalyAggregator
+from collector.services.anomaly_reason_analyzer import AnomalyReasonAnalyzer
 from collector.services.persistence import PostgresStore
 from collector.services.tencent_quote_client import MarketQuoteClient
 
@@ -31,6 +32,7 @@ class CollectorWorker:
             self._postgres,
             ai_reason_enabled=settings.anomaly_ai_reason_enabled,
         )
+        self._anomaly_reason_analyzer = AnomalyReasonAnalyzer(settings)
         self._quote_client = MarketQuoteClient(settings)
         self._last_stream_id = "$"
         self._last_collected_at: dict[str, float] = {}
@@ -42,6 +44,7 @@ class CollectorWorker:
         self._intraday_history_last_refresh_at: dict[str, float] = {}
         self._latest_daily_trade_day_by_symbol: dict[str, date] = {}
         self._last_anomaly_aggregation_at = 0.0
+        self._last_anomaly_reason_analysis_at = 0.0
         self._postgres_ready = False
 
     async def run(self) -> None:
@@ -51,6 +54,7 @@ class CollectorWorker:
             try:
                 await self._ensure_postgres_connection()
                 await self._consume_command_stream()
+                await self._analyze_pending_anomaly_reasons()
                 await self._collect_active_symbols()
                 await self._aggregate_active_symbol_anomalies()
             except Exception:
@@ -90,6 +94,45 @@ class CollectorWorker:
             logger.exception("collector anomaly aggregation failed")
             return
         logger.info("collector aggregated significant anomalies", extra={"active_symbol_count": len(active_symbols), "anomaly_count": anomaly_count})
+
+    async def _analyze_pending_anomaly_reasons(self) -> None:
+        if not self._settings.anomaly_ai_reason_enabled:
+            return
+        now = monotonic()
+        interval_seconds = max(float(self._settings.anomaly_ai_reason_interval_seconds), 60.0)
+        if now - self._last_anomaly_reason_analysis_at < interval_seconds:
+            return
+        self._last_anomaly_reason_analysis_at = now
+        try:
+            rows = await self._postgres.fetch_pending_anomaly_reasons(
+                limit=max(int(self._settings.anomaly_ai_reason_batch_size), 1),
+            )
+            updates = []
+            for row in rows:
+                since_ts, until_ts = self._anomaly_reason_analyzer.reason_window(row["first_trigger_ts"])
+                context = await self._postgres.fetch_anomaly_reason_context(
+                    symbol=str(row["symbol"]),
+                    since_ts=since_ts,
+                    until_ts=until_ts,
+                    limit_per_kind=5,
+                )
+                result = await asyncio.to_thread(self._anomaly_reason_analyzer.analyze, row, context)
+                updates.append(
+                    {
+                        "id": row["id"],
+                        "ai_reason": result.reason,
+                        "ai_reason_status": result.status,
+                        "ai_reason_generated_at": datetime.now(UTC) if result.status == "completed" else None,
+                        "related_news_ids": result.related_news_ids,
+                        "related_announcement_ids": result.related_announcement_ids,
+                    }
+                )
+            if updates:
+                await self._postgres.update_anomaly_ai_reasons(updates)
+        except Exception:
+            logger.exception("collector anomaly reason analysis failed")
+            return
+        logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": len(rows) if 'rows' in locals() else 0})
 
     async def _collect_symbol(self, symbol: str) -> None:
         if not await self._redis.sismember(self._settings.active_symbols_key, symbol):

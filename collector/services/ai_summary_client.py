@@ -103,6 +103,14 @@ def _normalize_summary_content(value: object) -> str | None:
     return None
 
 
+def normalize_ai_text(value: object) -> str | None:
+    return _normalize_summary_content(value)
+
+
+def is_safe_ai_base_url(value: str | None) -> bool:
+    return _is_safe_ai_base_url(value)
+
+
 def _extract_summary_from_reasoning_text(text: str) -> str | None:
     working = text.strip()
     for marker in _SUMMARY_MARKERS:

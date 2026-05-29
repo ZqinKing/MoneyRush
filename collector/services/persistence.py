@@ -1173,6 +1173,118 @@ class PostgresStore:
                 rows,
             )
 
+    async def fetch_pending_anomaly_reasons(self, *, limit: int = 10) -> list[asyncpg.Record]:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            return await connection.fetch(
+                """
+                SELECT id, anomaly_date, symbol, anomaly_type, severity, trigger_price, reference_price,
+                       change_pct, trigger_volume, volume_ratio, first_trigger_ts, last_trigger_ts,
+                       duration_minutes, event_count, payload
+                FROM significant_anomaly
+                WHERE severity = ANY($1::text[])
+                  AND (ai_reason_status IS NULL OR ai_reason_status IN ('pending', 'failed', 'skipped'))
+                  AND ai_reason IS NULL
+                ORDER BY anomaly_date DESC, first_trigger_ts DESC
+                LIMIT $2
+                """,
+                ["critical", "high"],
+                max(int(limit), 1),
+            )
+
+    async def fetch_anomaly_reason_context(self, *, symbol: str, since_ts: datetime, until_ts: datetime, limit_per_kind: int = 5) -> dict[str, list[asyncpg.Record]]:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        limit_value = max(int(limit_per_kind), 1)
+
+        async with self._pool.acquire() as connection:
+            news_rows = await connection.fetch(
+                """
+                SELECT id, dedupe_key, title, summary, content, article_source, published_at, first_seen_at, ai_summary
+                FROM stock_news_item
+                WHERE (symbol = $1 OR symbol IS NULL)
+                  AND first_seen_at >= $2
+                  AND first_seen_at <= $3
+                ORDER BY first_seen_at DESC
+                LIMIT $4
+                """,
+                symbol,
+                since_ts,
+                until_ts,
+                limit_value,
+            )
+            announcement_rows = await connection.fetch(
+                """
+                SELECT id, dedupe_key, title, announcement_type, published_at, first_seen_at
+                FROM stock_announcement_item
+                WHERE symbol = $1
+                  AND first_seen_at >= $2
+                  AND first_seen_at <= $3
+                ORDER BY first_seen_at DESC
+                LIMIT $4
+                """,
+                symbol,
+                since_ts,
+                until_ts,
+                limit_value,
+            )
+            report_rows = await connection.fetch(
+                """
+                SELECT id, dedupe_key, title, rating, institution, analyst, industry, published_at, first_seen_at
+                FROM stock_research_report
+                WHERE symbol = $1
+                  AND first_seen_at >= $2
+                  AND first_seen_at <= $3
+                ORDER BY first_seen_at DESC
+                LIMIT $4
+                """,
+                symbol,
+                since_ts,
+                until_ts,
+                limit_value,
+            )
+
+        return {
+            "news": news_rows,
+            "announcements": announcement_rows,
+            "reports": report_rows,
+        }
+
+    async def update_anomaly_ai_reasons(self, items: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return
+
+        rows = [
+            (
+                item["id"],
+                item.get("ai_reason"),
+                item["ai_reason_status"],
+                _coerce_optional_utc_datetime(item.get("ai_reason_generated_at"), field_name="significant_anomaly.ai_reason_generated_at"),
+                _json_dumps(item.get("related_news_ids", [])),
+                _json_dumps(item.get("related_announcement_ids", [])),
+            )
+            for item in items
+        ]
+
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                UPDATE significant_anomaly
+                SET ai_reason = $2,
+                    ai_reason_status = $3,
+                    ai_reason_generated_at = $4,
+                    related_news_ids = $5::jsonb,
+                    related_announcement_ids = $6::jsonb,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                rows,
+            )
+
     async def upsert_fund_profile(self, payload: dict[str, object]) -> None:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")

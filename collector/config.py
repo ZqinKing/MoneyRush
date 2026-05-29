@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     anomaly_aggregation_enabled: bool = True
     anomaly_aggregation_interval_seconds: int = 300
     anomaly_ai_reason_enabled: bool = False
+    anomaly_ai_reason_interval_seconds: int = 300
+    anomaly_ai_reason_batch_size: int = 10
     content_collector_enabled: bool = True
     content_collector_poll_interval_seconds: int = 5
     content_collector_batch_size: int = 3
