@@ -638,7 +638,7 @@ class MarketDetailQueryService:
                         else "监控标的出现显著变化，未匹配到最近披露基金持仓"
                     ),
                     "aiReason": row["ai_reason"],
-                    "aiReasonStatus": "skipped" if row["ai_reason"] is None and row["ai_reason_status"] == "pending" else row["ai_reason_status"],
+                    "aiReasonStatus": row["ai_reason_status"],
                     "aiReasonGeneratedAt": _to_iso(row["ai_reason_generated_at"]),
                     "relatedNewsIds": _decode_jsonish_list(row["related_news_ids"]),
                     "relatedAnnouncementIds": _decode_jsonish_list(row["related_announcement_ids"]),
