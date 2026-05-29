@@ -372,6 +372,7 @@ class PostgresStore:
                 "CREATE INDEX IF NOT EXISTS dragon_tiger_collection_log_job_started_idx ON dragon_tiger_collection_log (job_name, started_at DESC)"
             )
             await self._ensure_fund_schema(connection)
+            await self._ensure_anomaly_schema(connection)
             if self._enable_runtime_data_repair:
                 repairs = await self._repair_runtime_data(connection)
                 if any(repairs.values()):
@@ -487,6 +488,54 @@ class PostgresStore:
         )
         await connection.execute("SELECT create_hypertable('fund_command_log', 'ts', if_not_exists => TRUE, migrate_data => TRUE)")
         await connection.execute("CREATE INDEX IF NOT EXISTS fund_command_log_fund_ts_idx ON fund_command_log (fund_code, ts DESC)")
+
+    async def _ensure_anomaly_schema(self, connection: asyncpg.Connection) -> None:
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS significant_anomaly (
+                id BIGSERIAL PRIMARY KEY,
+                anomaly_date DATE NOT NULL,
+                symbol TEXT NOT NULL,
+                anomaly_type TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                trigger_price NUMERIC(18, 4),
+                reference_price NUMERIC(18, 4),
+                change_pct NUMERIC(10, 4),
+                trigger_volume BIGINT,
+                volume_ratio NUMERIC(10, 4),
+                first_trigger_ts TIMESTAMPTZ NOT NULL,
+                last_trigger_ts TIMESTAMPTZ,
+                duration_minutes INTEGER,
+                event_count INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'collector-anomaly-aggregator',
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                ai_reason TEXT,
+                ai_reason_status TEXT NOT NULL DEFAULT 'pending',
+                ai_reason_generated_at TIMESTAMPTZ,
+                related_news_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                related_announcement_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                first_trigger_bucket TIMESTAMPTZ NOT NULL,
+                UNIQUE (anomaly_date, symbol, anomaly_type, first_trigger_bucket)
+            )
+            """
+        )
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason TEXT")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_status TEXT NOT NULL DEFAULT 'pending'")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_generated_at TIMESTAMPTZ")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS related_news_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS related_announcement_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS first_trigger_bucket TIMESTAMPTZ")
+        await connection.execute("UPDATE significant_anomaly SET first_trigger_bucket = date_trunc('hour', first_trigger_ts) WHERE first_trigger_bucket IS NULL")
+        await connection.execute("ALTER TABLE significant_anomaly ALTER COLUMN first_trigger_bucket SET NOT NULL")
+        await connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS significant_anomaly_identity_idx ON significant_anomaly (anomaly_date, symbol, anomaly_type, first_trigger_bucket)"
+        )
+        await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_date_idx ON significant_anomaly (anomaly_date DESC, severity)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_symbol_date_idx ON significant_anomaly (symbol, anomaly_date DESC)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_first_trigger_idx ON significant_anomaly (first_trigger_ts DESC)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_ai_status_idx ON significant_anomaly (ai_reason_status, anomaly_date DESC)")
 
     async def _dedupe_exact_market_rows(self, connection: asyncpg.Connection) -> dict[str, int]:
         removed_tick_duplicates = await connection.fetchval(
@@ -746,6 +795,12 @@ class PostgresStore:
         if self._pool is not None:
             await self._pool.close()
             self._pool = None
+
+    async def fetch_records(self, query: str, *args: object) -> list[asyncpg.Record]:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        async with self._pool.acquire() as connection:
+            return await connection.fetch(query, *args)
 
     async def persist_market_state(
         self,
@@ -1053,6 +1108,69 @@ class PostgresStore:
                 fund_code,
                 command_type,
                 _json_dumps(payload),
+            )
+
+    async def upsert_significant_anomalies(self, items: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return
+
+        rows = [
+            (
+                item["anomaly_date"],
+                item["symbol"],
+                item["anomaly_type"],
+                item["severity"],
+                _to_float(item.get("trigger_price")),
+                _to_float(item.get("reference_price")),
+                _to_float(item.get("change_pct")),
+                _to_int(item.get("trigger_volume")),
+                _to_float(item.get("volume_ratio")),
+                _coerce_utc_datetime(item["first_trigger_ts"], field_name="significant_anomaly.first_trigger_ts"),
+                _coerce_optional_utc_datetime(item.get("last_trigger_ts"), field_name="significant_anomaly.last_trigger_ts"),
+                _to_int(item.get("duration_minutes")),
+                _to_int(item.get("event_count")) or 1,
+                item.get("source", "collector-anomaly-aggregator"),
+                _json_dumps(item.get("payload", {})),
+                _coerce_utc_datetime(item["first_trigger_bucket"], field_name="significant_anomaly.first_trigger_bucket"),
+                item.get("ai_reason_status", "pending"),
+            )
+            for item in items
+        ]
+
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO significant_anomaly (
+                    anomaly_date, symbol, anomaly_type, severity, trigger_price, reference_price,
+                    change_pct, trigger_volume, volume_ratio, first_trigger_ts, last_trigger_ts,
+                    duration_minutes, event_count, source, payload, first_trigger_bucket, ai_reason_status, updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6,
+                    $7, $8, $9, $10, $11,
+                    $12, $13, $14, $15::jsonb, $16, $17, NOW()
+                )
+                ON CONFLICT (anomaly_date, symbol, anomaly_type, first_trigger_bucket) DO UPDATE SET
+                    severity = EXCLUDED.severity,
+                    trigger_price = EXCLUDED.trigger_price,
+                    reference_price = EXCLUDED.reference_price,
+                    change_pct = EXCLUDED.change_pct,
+                    trigger_volume = EXCLUDED.trigger_volume,
+                    volume_ratio = EXCLUDED.volume_ratio,
+                    last_trigger_ts = EXCLUDED.last_trigger_ts,
+                    duration_minutes = EXCLUDED.duration_minutes,
+                    event_count = EXCLUDED.event_count,
+                    source = EXCLUDED.source,
+                    payload = EXCLUDED.payload,
+                    ai_reason_status = CASE
+                        WHEN significant_anomaly.ai_reason IS NULL
+                        THEN EXCLUDED.ai_reason_status
+                        ELSE significant_anomaly.ai_reason_status
+                    END,
+                    updated_at = NOW()
+                """,
+                rows,
             )
 
     async def upsert_fund_profile(self, payload: dict[str, object]) -> None:

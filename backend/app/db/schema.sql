@@ -370,3 +370,40 @@ SELECT create_hypertable('fund_command_log', 'ts', if_not_exists => TRUE, migrat
 
 CREATE INDEX IF NOT EXISTS fund_command_log_fund_ts_idx
     ON fund_command_log (fund_code, ts DESC);
+
+CREATE TABLE IF NOT EXISTS significant_anomaly (
+    id BIGSERIAL PRIMARY KEY,
+    anomaly_date DATE NOT NULL,
+    symbol TEXT NOT NULL,
+    anomaly_type TEXT NOT NULL,
+    severity TEXT NOT NULL,
+    trigger_price NUMERIC(18, 4),
+    reference_price NUMERIC(18, 4),
+    change_pct NUMERIC(10, 4),
+    trigger_volume BIGINT,
+    volume_ratio NUMERIC(10, 4),
+    first_trigger_ts TIMESTAMPTZ NOT NULL,
+    last_trigger_ts TIMESTAMPTZ,
+    duration_minutes INTEGER,
+    event_count INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT 'collector-anomaly-aggregator',
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    ai_reason TEXT,
+    ai_reason_status TEXT NOT NULL DEFAULT 'pending',
+    ai_reason_generated_at TIMESTAMPTZ,
+    related_news_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    related_announcement_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    first_trigger_bucket TIMESTAMPTZ NOT NULL,
+    UNIQUE (anomaly_date, symbol, anomaly_type, first_trigger_bucket)
+);
+
+CREATE INDEX IF NOT EXISTS significant_anomaly_date_idx
+    ON significant_anomaly (anomaly_date DESC, severity);
+CREATE INDEX IF NOT EXISTS significant_anomaly_symbol_date_idx
+    ON significant_anomaly (symbol, anomaly_date DESC);
+CREATE INDEX IF NOT EXISTS significant_anomaly_first_trigger_idx
+    ON significant_anomaly (first_trigger_ts DESC);
+CREATE INDEX IF NOT EXISTS significant_anomaly_ai_status_idx
+    ON significant_anomaly (ai_reason_status, anomaly_date DESC);
