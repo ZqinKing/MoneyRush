@@ -4074,8 +4074,11 @@ function App() {
 
   function renderAnomalyCard(item) {
     const funds = Array.isArray(item?.relatedFunds) ? item.relatedFunds : [];
+    const changeTone = getSnapshotCardTone(
+      typeof item?.changePct === 'number' ? item.changePct : item?.latestPriceJumpPct,
+    );
     return (
-      <section className={`event-card anomaly-card ${getJumpSeverityClass(item?.severity)}`.trim()} key={item?.symbol}>
+      <section className={`event-card anomaly-card trend-${changeTone} ${getJumpSeverityClass(item?.severity)}`.trim()} key={item?.symbol}>
         <header>
           <div>
             <strong>{item?.stockName || '待识别公司'}</strong>
@@ -4087,7 +4090,7 @@ function App() {
         </header>
         <div className="event-card-topline">
           <span className="event-summary-chip">{getAnomalySeverityLabel(item?.severity)}异动</span>
-          <span className={`event-jump-badge ${getJumpSeverityClass(item?.severity)}`.trim()}>
+          <span className={`event-jump-badge trend-${changeTone} ${getJumpSeverityClass(item?.severity)}`.trim()}>
             {typeof item?.changePct === 'number'
               ? `日内 ${formatSignedPercent(item.changePct)}`
               : `最新一步 ${formatSignedPercent(item?.latestPriceJumpPct)}`}

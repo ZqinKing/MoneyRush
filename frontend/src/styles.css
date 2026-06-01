@@ -794,6 +794,20 @@ input {
   animation: event-card-pulse 1.8s ease-in-out infinite;
 }
 
+.anomaly-card.trend-positive {
+  border-color: rgba(255, 120, 120, 0.42);
+  box-shadow: 0 12px 30px rgba(120, 22, 34, 0.2);
+}
+
+.anomaly-card.trend-negative {
+  border-color: rgba(92, 208, 155, 0.42);
+  box-shadow: 0 12px 30px rgba(18, 92, 67, 0.2);
+}
+
+.anomaly-card.trend-neutral {
+  border-color: rgba(157, 180, 255, 0.14);
+}
+
 @keyframes event-card-pulse {
   0%,
   100% {
@@ -1478,6 +1492,24 @@ input {
   border: 1px solid rgba(255, 145, 145, 0.22);
   background: rgba(90, 15, 24, 0.84);
   color: #ffd2d2;
+}
+
+.event-jump-badge.trend-positive {
+  border-color: rgba(255, 145, 145, 0.28);
+  background: rgba(90, 15, 24, 0.84);
+  color: #ffd2d2;
+}
+
+.event-jump-badge.trend-negative {
+  border-color: rgba(111, 229, 179, 0.28);
+  background: rgba(15, 84, 60, 0.84);
+  color: #c8ffe5;
+}
+
+.event-jump-badge.trend-neutral {
+  border-color: rgba(129, 164, 255, 0.2);
+  background: rgba(43, 96, 255, 0.1);
+  color: #dbe6ff;
 }
 
 .event-jump-badge.event-card-high,
