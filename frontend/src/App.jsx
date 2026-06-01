@@ -862,6 +862,7 @@ function buildReadableEventItems(events) {
         price: tick?.price,
         volume: tick?.volume,
         side: tick?.side,
+        sideLabel: tick?.sideLabel,
         close: kline?.close,
         high: kline?.high,
         low: kline?.low,
@@ -4016,7 +4017,7 @@ function App() {
                       <th>价格</th>
                       <th>成交量</th>
                       <th>成交额</th>
-                      <th>方向</th>
+                      <th>相对昨收</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4027,7 +4028,7 @@ function App() {
                         <td>{formatPrice(tick.price)}</td>
                         <td>{formatTickVolume(tick.volume)}</td>
                         <td>{formatTurnoverAmount(tick.amount)}</td>
-                        <td>{tick.side === 'buy' ? '买盘' : tick.side === 'sell' ? '卖盘' : '--'}</td>
+                        <td>{tick.sideLabel || (tick.side === 'buy' ? '高于/持平昨收' : tick.side === 'sell' ? '低于昨收' : '--')}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -4050,7 +4051,7 @@ function App() {
                     </div>
                     <div className="detail-event-meta">
                       <span>{typeof event.price === 'number' ? `价格 ${formatPrice(event.price)}` : '价格 --'}</span>
-                      <span>{event.side === 'buy' ? '买盘' : event.side === 'sell' ? '卖盘' : '方向 --'}</span>
+                      <span>{event.sideLabel || (event.side === 'buy' ? '高于/持平昨收' : event.side === 'sell' ? '低于昨收' : '方向 --')}</span>
                        <span>{typeof event.volume === 'number' ? `量 ${formatTickVolume(event.volume)}` : '量 --'}</span>
                       <span>
                         {typeof event.low === 'number' && typeof event.high === 'number'
