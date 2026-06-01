@@ -10,6 +10,8 @@ import asyncpg
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 INTRADAY_EXPECTED_BUCKET_COUNT = 240
 ANOMALY_SEVERITY_PRIORITY = {"critical": 3, "high": 2, "medium": 1, "normal": 0}
+TICK_SIDE_BASIS = "price_vs_previous_close"
+TICK_SIDE_CONFIDENCE = "estimated"
 
 
 def _to_float(value: object) -> float | None:
@@ -82,6 +84,22 @@ def _safe_ratio(numerator: int, denominator: int) -> float | None:
     if denominator <= 0:
         return None
     return numerator / denominator
+
+
+def _tick_side_label(side: object) -> str:
+    if side == "buy":
+        return "高于/持平昨收"
+    if side == "sell":
+        return "低于昨收"
+    return "--"
+
+
+def _tick_side_basis(side: object) -> str | None:
+    return TICK_SIDE_BASIS if side in {"buy", "sell"} else None
+
+
+def _tick_side_confidence(side: object) -> str | None:
+    return TICK_SIDE_CONFIDENCE if side in {"buy", "sell"} else None
 
 
 def _severity_from_percent(value: float | None) -> str:
@@ -228,6 +246,9 @@ class MarketDetailQueryService:
                 "volume": _to_int(row["volume"]),
                 "amount": _to_float(row["amount"]),
                 "side": row["side"],
+                "sideLabel": _tick_side_label(row["side"]),
+                "sideBasis": _tick_side_basis(row["side"]),
+                "sideConfidence": _tick_side_confidence(row["side"]),
                 "source": row["source"],
             }
             identity = (
@@ -392,6 +413,8 @@ class MarketDetailQueryService:
             "sellCount": sell_count,
             "buyRatio": _safe_ratio(buy_count, directed_count),
             "sellRatio": _safe_ratio(sell_count, directed_count),
+            "sideBasis": TICK_SIDE_BASIS if directed_count else None,
+            "sideConfidence": TICK_SIDE_CONFIDENCE if directed_count else None,
             "latestPrice": latest_price,
             "latestVolume": latest_volume,
             "averageDailyVolume20": average_daily_volume,

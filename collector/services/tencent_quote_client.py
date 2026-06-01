@@ -177,6 +177,8 @@ class TencentQuote:
                 "currency": self.currency,
                 "previousClose": self.previous_close,
                 "open": self.open_price,
+                "sideBasis": "price_vs_previous_close",
+                "sideConfidence": "estimated",
             },
         }
 
@@ -212,6 +214,9 @@ class TencentQuote:
                 "volume": self.volume,
                 "volumeUnit": "shares",
                 "side": tick["side"],
+                "sideLabel": "高于/持平昨收" if tick["side"] == "buy" else "低于昨收" if tick["side"] == "sell" else "--",
+                "sideBasis": "price_vs_previous_close",
+                "sideConfidence": "estimated",
             },
             "kline": {
                 "period": "1d",
@@ -1047,6 +1052,8 @@ class MarketQuoteClient:
                 "ask1": mootdx_quote.ask_price_1,
                 "bidVolume1": mootdx_quote.bid_volume_1,
                 "askVolume1": mootdx_quote.ask_volume_1,
+                "sideBasis": "price_vs_previous_close",
+                "sideConfidence": "estimated",
             },
         }
 
@@ -1082,6 +1089,9 @@ class MarketQuoteClient:
                 "volume": mootdx_quote.volume,
                 "volumeUnit": "shares",
                 "side": tick["side"],
+                "sideLabel": "高于/持平昨收" if tick["side"] == "buy" else "低于昨收" if tick["side"] == "sell" else "--",
+                "sideBasis": "price_vs_previous_close",
+                "sideConfidence": "estimated",
             },
             "kline": {
                 "period": "1d",
