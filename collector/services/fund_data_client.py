@@ -7,9 +7,23 @@ from datetime import UTC, date, datetime, timedelta
 
 import akshare as ak
 import pandas as pd
+import requests
 
 
 logger = logging.getLogger(__name__)
+
+
+_DANJUAN_FUND_URL = "https://danjuanfunds.com/djapi/fund/{fund_code}"
+_DANJUAN_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+}
+_FUND_RISK_LEVEL_LABELS = {
+    "1": "低风险",
+    "2": "中低风险",
+    "3": "中风险",
+    "4": "中高风险",
+    "5": "高风险",
+}
 
 
 def _safe_text(value: object) -> str | None:
@@ -54,6 +68,25 @@ def _to_date(value: object) -> date | None:
         return pd.to_datetime(text).date()
     except Exception:
         return None
+
+
+def _merge_present_values(target: dict[str, object], updates: dict[str, object]) -> None:
+    for key, value in updates.items():
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        if key == "source" and target.get("source"):
+            continue
+        if key == "profileSources":
+            existing_sources = target.setdefault("profileSources", [])
+            if not isinstance(existing_sources, list) or not isinstance(value, list):
+                continue
+            for source in value:
+                if source not in existing_sources:
+                    existing_sources.append(source)
+            continue
+        target[key] = value
 
 
 def _normalize_stock_symbol(value: object) -> str | None:
@@ -213,7 +246,16 @@ class FundDataClient:
         }
         index_profile = self._fetch_index_profile(fund_code)
         if index_profile:
-            profile.update(index_profile)
+            _merge_present_values(profile, index_profile)
+        xq_basic_profile = self._fetch_xq_basic_profile(fund_code)
+        if xq_basic_profile:
+            _merge_present_values(profile, xq_basic_profile)
+        xq_raw_profile = self._fetch_xq_raw_profile(fund_code)
+        if xq_raw_profile:
+            _merge_present_values(profile, xq_raw_profile)
+        xq_fee_profile = self._fetch_xq_fee_profile(fund_code)
+        if xq_fee_profile:
+            _merge_present_values(profile, xq_fee_profile)
         return profile
 
     def fetch_nav_history(self, fund_code: str, limit: int = 60) -> list[dict[str, object]]:
@@ -324,10 +366,90 @@ class FundDataClient:
         return {
             "fundName": _safe_text(row.get("基金名称")) or fund_code,
             "benchmarkIndex": _safe_text(row.get("跟踪标的")),
-            "managementFee": _to_float(row.get("手续费")),
+            "purchaseFee": _to_float(row.get("手续费")),
             "source": "akshare-fund_info_index_em",
             "indexPayload": row,
         }
+
+    def _fetch_xq_basic_profile(self, fund_code: str) -> dict[str, object]:
+        try:
+            self._wait_for_slot()
+            frame = ak.fund_individual_basic_info_xq(symbol=fund_code, timeout=15.0)
+        except Exception as exc:
+            logger.info("fund xq basic profile unavailable", extra={"fund_code": fund_code, "error": str(exc)})
+            return {}
+        rows = frame.to_dict("records")
+        values = {_safe_text(row.get("item")): row.get("value") for row in rows if _safe_text(row.get("item"))}
+        return {
+            "fundName": _safe_text(values.get("基金名称")),
+            "fundFullName": _safe_text(values.get("基金全称")),
+            "fundType": _safe_text(values.get("基金类型")),
+            "fundCompany": _safe_text(values.get("基金公司")),
+            "managerName": _safe_text(values.get("基金经理")),
+            "establishedDate": _to_date(values.get("成立时间")),
+            "custodianBank": _safe_text(values.get("托管银行")),
+            "ratingAgency": _safe_text(values.get("评级机构")),
+            "fundRating": _safe_text(values.get("基金评级")),
+            "investmentStrategy": _safe_text(values.get("投资策略")),
+            "investmentObjective": _safe_text(values.get("投资目标")),
+            "performanceBenchmark": _safe_text(values.get("业绩比较基准")),
+            "profileSources": ["akshare-fund_individual_basic_info_xq"],
+        }
+
+    def _fetch_xq_raw_profile(self, fund_code: str) -> dict[str, object]:
+        try:
+            self._wait_for_slot()
+            response = requests.get(_DANJUAN_FUND_URL.format(fund_code=fund_code), headers=_DANJUAN_HEADERS, timeout=15.0)
+            response.raise_for_status()
+            payload = response.json().get("data")
+        except Exception as exc:
+            logger.info("fund xq raw profile unavailable", extra={"fund_code": fund_code, "error": str(exc)})
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+
+        risk_level_code = _safe_text(payload.get("risk_level"))
+        risk_level = self._extract_risk_level_label(payload) or (risk_level_code and _FUND_RISK_LEVEL_LABELS.get(risk_level_code))
+        return {
+            "riskLevel": risk_level,
+            "riskLevelCode": risk_level_code,
+            "profileSources": ["danjuan-fund-api"],
+        }
+
+    def _fetch_xq_fee_profile(self, fund_code: str) -> dict[str, object]:
+        try:
+            self._wait_for_slot()
+            frame = ak.fund_individual_detail_info_xq(symbol=fund_code, timeout=15.0)
+        except Exception as exc:
+            logger.info("fund xq fee profile unavailable", extra={"fund_code": fund_code, "error": str(exc)})
+            return {}
+        rows = frame.to_dict("records")
+        fee_profile: dict[str, object] = {"profileSources": ["akshare-fund_individual_detail_info_xq"]}
+        for row in rows:
+            if _safe_text(row.get("费用类型")) != "其他费用":
+                continue
+            name = _safe_text(row.get("条件或名称"))
+            if name == "基金管理费":
+                fee_profile["managementFee"] = _to_float(row.get("费用"))
+            elif name == "基金托管费":
+                fee_profile["custodyFee"] = _to_float(row.get("费用"))
+        return fee_profile
+
+    def _extract_risk_level_label(self, payload: dict[str, object]) -> str | None:
+        op_fund = payload.get("op_fund")
+        if not isinstance(op_fund, dict):
+            return None
+        fund_tags = op_fund.get("fund_tags")
+        if not isinstance(fund_tags, list):
+            return None
+        for tag in fund_tags:
+            if not isinstance(tag, dict):
+                continue
+            name = _safe_text(tag.get("name"))
+            category = _safe_text(tag.get("category"))
+            if name and (category == "9" or "风险" in name):
+                return name
+        return None
 
     def _normalize_fund_holdings(self, fund_code: str, report_date: date, frame) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
