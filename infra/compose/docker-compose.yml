@@ -33,6 +33,9 @@ services:
     build:
       context: ../..
       dockerfile: infra/docker/api.Dockerfile
+    env_file:
+      - path: ../../.env
+        required: false
     environment:
       APP_ENV: ${APP_ENV:-development}
       FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
@@ -186,6 +189,23 @@ services:
       FUND_COLLECTOR_POLL_INTERVAL_SECONDS: ${FUND_COLLECTOR_POLL_INTERVAL_SECONDS:-3600}
       FUND_COLLECTOR_REQUEST_INTERVAL_SECONDS: ${FUND_COLLECTOR_REQUEST_INTERVAL_SECONDS:-1}
       COLLECTOR_ENABLE_RUNTIME_DATA_REPAIR: ${COLLECTOR_ENABLE_RUNTIME_DATA_REPAIR:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  macro-collector:
+    build:
+      context: ../..
+      dockerfile: infra/docker/collector.Dockerfile
+    command: ["python", "-m", "collector.macro_main"]
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}
     depends_on:
       db:
         condition: service_healthy
