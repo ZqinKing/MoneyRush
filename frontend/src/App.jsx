@@ -3553,8 +3553,11 @@ function App() {
             <dl>
               <div><dt>基金公司</dt><dd>{profile.fundCompany || '--'}</dd></div>
               <div><dt>经理</dt><dd>{profile.managerName || '--'}</dd></div>
+              <div><dt>成立日期</dt><dd>{profile.establishedDate || '--'}</dd></div>
               <div><dt>跟踪标的</dt><dd>{profile.benchmarkIndex || '--'}</dd></div>
               <div><dt>风险等级</dt><dd>{profile.riskLevel || '--'}</dd></div>
+              <div><dt>管理费率</dt><dd>{formatPercentValue(profile.managementFee)}</dd></div>
+              <div><dt>托管费率</dt><dd>{formatPercentValue(profile.custodyFee)}</dd></div>
             </dl>
           </section>
           <section className="detail-card">

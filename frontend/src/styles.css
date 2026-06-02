@@ -2182,6 +2182,10 @@ input {
   min-height: 100%;
 }
 
+.fund-detail-view .detail-grid > .detail-card:not(.wide-card) {
+  min-height: auto;
+}
+
 .detail-card h3 {
   margin-top: 0;
   margin-bottom: 14px;
