@@ -468,6 +468,49 @@ input {
   border-color: rgba(255, 190, 90, 0.28);
 }
 
+.macro-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.macro-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.macro-metric-card,
+.macro-analysis-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(4, 8, 16, 0.9);
+  border: 1px solid rgba(157, 180, 255, 0.12);
+}
+
+.macro-context-grid {
+  margin-top: 2px;
+}
+
+.macro-alert-list,
+.macro-analysis-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.macro-analysis-summary {
+  margin: 0;
+  color: #eff4ff;
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.compact-heading {
+  margin-bottom: 0;
+}
+
 .watchlist-panel {
   display: grid;
   gap: 12px;

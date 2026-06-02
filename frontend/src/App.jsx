@@ -182,6 +182,22 @@ function buildMarketOverviewUrl() {
   return `${apiBaseUrl}/api/v1/market/overview`;
 }
 
+function buildMacroCapabilitiesUrl() {
+  return `${apiBaseUrl}/api/v1/macro/capabilities`;
+}
+
+function buildMacroSnapshotUrl() {
+  return `${apiBaseUrl}/api/v1/macro/snapshot`;
+}
+
+function buildMacroAnalysisLatestUrl() {
+  return `${apiBaseUrl}/api/v1/macro/analysis/latest`;
+}
+
+function buildMacroAnalysisGenerateUrl() {
+  return `${apiBaseUrl}/api/v1/macro/analysis/generate`;
+}
+
 function buildDragonTigerDailyUrl(tradeDate = '') {
   const params = new URLSearchParams();
   if (tradeDate) {
@@ -413,6 +429,22 @@ function formatSignedPercent(value) {
 
   const fixed = value.toFixed(2);
   return `${value > 0 ? '+' : ''}${fixed}%`;
+}
+
+function formatSignedNumber(value, unit = '') {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+  const fixed = Math.abs(value) >= 10 ? value.toFixed(1) : value.toFixed(2);
+  return `${value > 0 ? '+' : ''}${fixed}${unit}`;
+}
+
+function formatSignedBasisPoints(value) {
+  return formatSignedNumber(value, 'bp');
+}
+
+function formatMacroYield(value) {
+  return typeof value === 'number' ? `${value.toFixed(2)}%` : '--';
 }
 
 function formatTime(value) {
@@ -1541,6 +1573,12 @@ function App() {
   const [fundDetailRequestState, setFundDetailRequestState] = useState('idle');
   const [removingFund, setRemovingFund] = useState('');
   const [autoLinkStocks, setAutoLinkStocks] = useState(true);
+  const [macroCapabilities, setMacroCapabilities] = useState({ enabled: false, loading: true });
+  const [macroSnapshot, setMacroSnapshot] = useState(null);
+  const [macroCollectorStatus, setMacroCollectorStatus] = useState(null);
+  const [macroAnalysis, setMacroAnalysis] = useState(null);
+  const [macroRequestState, setMacroRequestState] = useState('idle');
+  const [macroAnalysisRequestState, setMacroAnalysisRequestState] = useState('idle');
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
@@ -1605,6 +1643,43 @@ function App() {
       cancelled = true;
     };
   }, [activeView, dragonTigerDate, dragonTigerDateManuallySet]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadMacroCapabilities() {
+      try {
+        const response = await fetch(buildMacroCapabilitiesUrl());
+        const payload = await parseJsonOrThrow(response, 'macro capabilities fetch failed');
+        if (cancelled) {
+          return;
+        }
+        setMacroCapabilities({
+          enabled: Boolean(payload?.enabled),
+          loading: false,
+          reason: payload?.reason || null,
+          hasSnapshot: Boolean(payload?.hasSnapshot),
+          analysisEnabled: Boolean(payload?.analysisEnabled),
+          analysisEngine: payload?.analysisEngine || 'rules',
+        });
+      } catch {
+        if (!cancelled) {
+          setMacroCapabilities({ enabled: false, loading: false, reason: 'capability_unavailable' });
+        }
+      }
+    }
+
+    loadMacroCapabilities();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (activeView === 'macro' && !macroCapabilities.loading && !macroCapabilities.enabled) {
+      setActiveView('overview');
+    }
+  }, [activeView, macroCapabilities.enabled, macroCapabilities.loading]);
 
   const dragonTigerDailyAggregated = useMemo(() => aggregateDragonTigerDailyItems(dragonTigerDaily), [dragonTigerDaily]);
 
@@ -1840,6 +1915,48 @@ function App() {
   }, [activeView]);
 
   useEffect(() => {
+    if (activeView !== 'macro' || !macroCapabilities.enabled) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadMacroData({ keepReadyState = false } = {}) {
+      if (!keepReadyState) {
+        setMacroRequestState('loading');
+      }
+      try {
+        const [snapshotResponse, analysisResponse] = await Promise.all([
+          fetch(buildMacroSnapshotUrl()),
+          fetch(buildMacroAnalysisLatestUrl()),
+        ]);
+        const [snapshotPayload, analysisPayload] = await Promise.all([
+          parseJsonOrThrow(snapshotResponse, 'macro snapshot fetch failed'),
+          analysisResponse.ok ? analysisResponse.json() : Promise.resolve({ analysis: null }),
+        ]);
+        if (cancelled) {
+          return;
+        }
+        setMacroSnapshot(snapshotPayload?.snapshot && typeof snapshotPayload.snapshot === 'object' ? snapshotPayload.snapshot : null);
+        setMacroCollectorStatus(snapshotPayload?.collectorStatus && typeof snapshotPayload.collectorStatus === 'object' ? snapshotPayload.collectorStatus : null);
+        setMacroAnalysis(analysisPayload?.analysis && typeof analysisPayload.analysis === 'object' ? analysisPayload.analysis : null);
+        setMacroRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setMacroRequestState('error');
+        }
+      }
+    }
+
+    loadMacroData();
+    const intervalId = window.setInterval(() => loadMacroData({ keepReadyState: true }), 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeView, macroCapabilities.enabled]);
+
+  useEffect(() => {
     if (!selectedFundCode) {
       return undefined;
     }
@@ -1871,6 +1988,7 @@ function App() {
       cancelled = true;
     };
   }, [selectedFundCode]);
+
 
   useEffect(() => {
     if (activeView !== 'content') {
@@ -2498,6 +2616,122 @@ function App() {
     } finally {
       setRemovingFund('');
     }
+  }
+
+  async function handleGenerateMacroAnalysis() {
+    if (macroAnalysisRequestState === 'loading' || !macroSnapshot) {
+      return;
+    }
+    setMacroAnalysisRequestState('loading');
+    try {
+      const response = await fetch(buildMacroAnalysisGenerateUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ focus: 'qdii_impact', depth: 'brief' }),
+      });
+      const payload = await parseJsonOrThrow(response, 'macro analysis generation failed');
+      setMacroAnalysis(payload?.analysis || null);
+      setMacroAnalysisRequestState('ready');
+    } catch {
+      setMacroAnalysisRequestState('error');
+    }
+  }
+
+  function renderMacroYieldCard(label, metric) {
+    const change = metric?.changeD5Bp;
+    return (
+      <article className="macro-metric-card" key={label}>
+        <div>
+          <strong>{label}</strong>
+          <p className="snapshot-subtitle">数据日 {metric?.date || '--'}</p>
+        </div>
+        <div className="snapshot-metric">{formatMacroYield(metric?.value)}</div>
+        <dl className="watchlist-meta-grid">
+          <div><dt>1日</dt><dd className={metric?.changeD1Bp > 0 ? 'negative' : metric?.changeD1Bp < 0 ? 'positive' : ''}>{formatSignedBasisPoints(metric?.changeD1Bp)}</dd></div>
+          <div><dt>5日</dt><dd className={change > 0 ? 'negative' : change < 0 ? 'positive' : ''}>{formatSignedBasisPoints(change)}</dd></div>
+          <div><dt>20日</dt><dd className={metric?.changeD20Bp > 0 ? 'negative' : metric?.changeD20Bp < 0 ? 'positive' : ''}>{formatSignedBasisPoints(metric?.changeD20Bp)}</dd></div>
+        </dl>
+      </article>
+    );
+  }
+
+  function renderMacroContextCard(label, metric, changeKey = 'changeD1') {
+    const change = metric?.[changeKey];
+    return (
+      <article className="market-index-card" key={label}>
+        <strong>{label}</strong>
+        <div className="market-index-metric">{typeof metric?.value === 'number' ? metric.value.toFixed(2) : '--'}</div>
+        <span className={change > 0 ? 'positive' : change < 0 ? 'negative' : ''}>{changeKey === 'changeD1Pct' ? formatSignedPercent(change) : formatSignedBasisPoints(change).replace('bp', '')}</span>
+      </article>
+    );
+  }
+
+  function renderMacroView() {
+    const yields = macroSnapshot?.yields || {};
+    const context = macroSnapshot?.context || {};
+    const alerts = Array.isArray(macroSnapshot?.alerts) ? macroSnapshot.alerts : [];
+    const analysisPayload = macroAnalysis?.analysis || macroAnalysis;
+    return (
+      <article className="panel wide macro-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>美债宏观</h2>
+            <p className="panel-tip compact">FRED 日度数据驱动，后端检测到 FRED_API_KEY 后才展示此页面。</p>
+          </div>
+          <div className="management-meta">
+            <span className="symbol-count-badge">数据日 {macroSnapshot?.date || '--'}</span>
+            <span className="symbol-count-badge">状态 {macroCollectorStatus?.status || macroSnapshot?.status || '--'}</span>
+          </div>
+        </div>
+        {macroRequestState === 'loading' ? <p className="status-line pending">宏观数据加载中...</p> : null}
+        {macroRequestState === 'error' ? <p className="status-line error">宏观数据加载失败，请稍后重试。</p> : null}
+        <div className="macro-grid">
+          {renderMacroYieldCard('2Y 美债', yields.y2)}
+          {renderMacroYieldCard('10Y 美债', yields.y10)}
+          {renderMacroYieldCard('30Y 美债', yields.y30)}
+          <article className="macro-metric-card">
+            <strong>10Y-2Y 利差</strong>
+            <div className="snapshot-metric small">{formatSignedBasisPoints(yields.spread10Y2YBp)}</div>
+            <p className="panel-tip compact">收益率曲线倒挂/修复观察项。</p>
+          </article>
+        </div>
+        <div className="market-index-grid macro-context-grid">
+          {renderMacroContextCard('VIX', context.vix)}
+          {renderMacroContextCard('美元指数', context.dxy)}
+          {renderMacroContextCard('S&P 500', context.sp500, 'changeD1Pct')}
+        </div>
+        {alerts.length ? (
+          <div className="macro-alert-list">
+            {alerts.map((alert) => <span className="market-breadth-chip warning" key={`${alert.series}-${alert.message}`}>{alert.message}</span>)}
+          </div>
+        ) : <p className="panel-tip compact">暂无阈值预警。</p>}
+        <section className="macro-analysis-card">
+          <div className="panel-heading compact-heading">
+            <div>
+              <h3>宏观解读</h3>
+              <p className="panel-tip compact">
+                {macroCapabilities.analysisEngine === 'llm' ? '当前复用容器 LLM 配置生成解读；输出仅作宏观观察，不提供交易操作建议。' : 'LLM 不可用时使用规则兜底解读；输出仅作宏观观察，不提供交易操作建议。'}
+              </p>
+            </div>
+            <button type="button" className="view-tab" onClick={handleGenerateMacroAnalysis} disabled={macroAnalysisRequestState === 'loading' || !macroSnapshot}>
+              {macroAnalysisRequestState === 'loading' ? '生成中…' : '生成解读'}
+            </button>
+          </div>
+          {analysisPayload ? (
+            <>
+              <p className="macro-analysis-summary">{analysisPayload.summary || '--'}</p>
+              <div className="macro-analysis-meta">
+                <span className="market-breadth-chip">影响 {analysisPayload.impactDirection || '--'}</span>
+                <span className="market-breadth-chip">强度 {analysisPayload.impactLevel || '--'}</span>
+                <span className="market-breadth-chip">置信度 {typeof analysisPayload.confidence === 'number' ? `${Math.round(analysisPayload.confidence * 100)}%` : '--'}</span>
+              </div>
+              <p className="panel-tip compact">{analysisPayload.watch?.specific || analysisPayload.reasoning?.qdiiImpact || '仅提供宏观观察，不构成投资建议。'}</p>
+            </>
+          ) : <p className="panel-tip compact">尚未生成解读。</p>}
+          {macroAnalysisRequestState === 'error' ? <p className="status-line error">解读生成失败，请稍后重试。</p> : null}
+        </section>
+      </article>
+    );
   }
 
   function renderWatchlistCard(item) {
@@ -4323,6 +4557,15 @@ function App() {
           >
             基金
           </button>
+          {macroCapabilities.enabled ? (
+            <button
+              className={activeView === 'macro' ? 'view-tab active' : 'view-tab'}
+              type="button"
+              onClick={() => setActiveView('macro')}
+            >
+              美债宏观
+            </button>
+          ) : null}
           <button
             className={activeView === 'management' ? 'view-tab active' : 'view-tab'}
             type="button"
@@ -4415,6 +4658,8 @@ function App() {
           renderFundsView()
         ) : activeView === 'dragonTiger' ? (
           renderDragonTigerView()
+        ) : activeView === 'macro' && macroCapabilities.enabled ? (
+          renderMacroView()
         ) : activeView === 'management' ? (
           <article className="panel wide management-panel">
             <div className="panel-heading">
