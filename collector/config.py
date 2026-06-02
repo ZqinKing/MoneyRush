@@ -87,6 +87,20 @@ class Settings(BaseSettings):
     dragon_tiger_request_timeout_seconds: float = 15.0
     dragon_tiger_request_retry_attempts: int = 3
     dragon_tiger_request_retry_backoff_seconds: float = 0.6
+    macro_monitor_enabled: bool = True
+    fred_api_key: str | None = None
+    macro_collector_enabled: bool = True
+    macro_collector_refresh_seconds: int = 21600
+    macro_fred_observation_lookback_days: int = 45
+    macro_fred_request_timeout_seconds: float = 15.0
+    macro_fred_failure_cooldown_seconds: int = 1800
+    macro_analysis_enabled: bool = False
+    macro_analysis_daily_digest_enabled: bool = False
+    macro_analysis_daily_digest_hour_utc: int = 22
+    macro_ten_year_warning_threshold: float = 4.8
+    macro_snapshot_cache_key: str = "moneyrush:macro:snapshot"
+    macro_analysis_latest_cache_key: str = "moneyrush:macro:analysis:latest"
+    macro_collector_status_cache_key: str = "moneyrush:macro:collector_status"
 
 
 @lru_cache(maxsize=1)
