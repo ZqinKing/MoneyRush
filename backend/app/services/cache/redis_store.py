@@ -24,6 +24,9 @@ class RedisStore:
         content_feed_cache_key_prefix: str = "moneyrush:content:feed",
         content_status_cache_key_prefix: str = "moneyrush:content:status",
         dragon_tiger_cache_key_prefix: str = "moneyrush:dragon_tiger",
+        macro_snapshot_cache_key: str = "moneyrush:macro:snapshot",
+        macro_analysis_latest_cache_key: str = "moneyrush:macro:analysis:latest",
+        macro_collector_status_cache_key: str = "moneyrush:macro:collector_status",
     ) -> None:
         self._redis = Redis.from_url(redis_url, decode_responses=True)
         self._stream_key = stream_key
@@ -40,6 +43,9 @@ class RedisStore:
         self._content_feed_cache_key_prefix = content_feed_cache_key_prefix
         self._content_status_cache_key_prefix = content_status_cache_key_prefix
         self._dragon_tiger_cache_key_prefix = dragon_tiger_cache_key_prefix
+        self._macro_snapshot_cache_key = macro_snapshot_cache_key
+        self._macro_analysis_latest_cache_key = macro_analysis_latest_cache_key
+        self._macro_collector_status_cache_key = macro_collector_status_cache_key
 
     def _snapshot_key(self, symbol: str) -> str:
         return f"{self._market_snapshot_key_prefix}:{symbol}"
@@ -304,3 +310,30 @@ class RedisStore:
 
     async def set_dragon_tiger_stale_cache(self, cache_key: str, payload: dict[str, object], ttl_seconds: int) -> None:
         await self._redis.set(self._dragon_tiger_stale_key(cache_key), json.dumps(payload), ex=ttl_seconds)
+
+    async def get_macro_snapshot(self) -> dict[str, object] | None:
+        payload = await self._redis.get(self._macro_snapshot_cache_key)
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    async def set_macro_snapshot(self, payload: dict[str, object]) -> None:
+        await self._redis.set(self._macro_snapshot_cache_key, json.dumps(payload))
+
+    async def get_macro_analysis_latest(self) -> dict[str, object] | None:
+        payload = await self._redis.get(self._macro_analysis_latest_cache_key)
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    async def set_macro_analysis_latest(self, payload: dict[str, object]) -> None:
+        await self._redis.set(self._macro_analysis_latest_cache_key, json.dumps(payload))
+
+    async def get_macro_collector_status(self) -> dict[str, object] | None:
+        payload = await self._redis.get(self._macro_collector_status_cache_key)
+        if payload is None:
+            return None
+        return json.loads(payload)
+
+    async def set_macro_collector_status(self, payload: dict[str, object]) -> None:
+        await self._redis.set(self._macro_collector_status_cache_key, json.dumps(payload))

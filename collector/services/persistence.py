@@ -373,10 +373,56 @@ class PostgresStore:
             )
             await self._ensure_fund_schema(connection)
             await self._ensure_anomaly_schema(connection)
+            await self._ensure_macro_schema(connection)
             if self._enable_runtime_data_repair:
                 repairs = await self._repair_runtime_data(connection)
                 if any(repairs.values()):
                     logger.warning("collector repaired persisted market data", extra=repairs)
+
+    async def _ensure_macro_schema(self, connection: asyncpg.Connection) -> None:
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS macro_observation (
+                series_id TEXT NOT NULL,
+                observation_date DATE NOT NULL,
+                value NUMERIC(18, 6),
+                source TEXT NOT NULL DEFAULT 'fred',
+                collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                PRIMARY KEY (series_id, observation_date)
+            )
+            """
+        )
+        await connection.execute("CREATE INDEX IF NOT EXISTS macro_observation_series_date_idx ON macro_observation (series_id, observation_date DESC)")
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS macro_snapshot (
+                snapshot_key TEXT PRIMARY KEY,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                payload JSONB NOT NULL DEFAULT '{}'::jsonb
+            )
+            """
+        )
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS macro_analysis (
+                id BIGSERIAL PRIMARY KEY,
+                trigger_type TEXT NOT NULL,
+                focus TEXT NOT NULL DEFAULT 'general',
+                depth TEXT NOT NULL DEFAULT 'brief',
+                snapshot_date DATE,
+                data_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+                analysis JSONB NOT NULL DEFAULT '{}'::jsonb,
+                status TEXT NOT NULL DEFAULT 'completed',
+                model_used TEXT,
+                prompt_version TEXT NOT NULL DEFAULT 'v1',
+                generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                cache_key TEXT
+            )
+            """
+        )
+        await connection.execute("CREATE INDEX IF NOT EXISTS macro_analysis_generated_idx ON macro_analysis (generated_at DESC)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS macro_analysis_snapshot_idx ON macro_analysis (snapshot_date DESC, trigger_type)")
 
     async def _ensure_fund_schema(self, connection: asyncpg.Connection) -> None:
         await connection.execute(
@@ -2068,6 +2114,51 @@ class PostgresStore:
                   AND ai_summary IS DISTINCT FROM $2
                 """,
                 rows,
+            )
+
+    async def upsert_macro_observations(self, observations: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not observations:
+            return
+        rows = [
+            (
+                item["series_id"],
+                item["observation_date"],
+                item.get("value"),
+                item.get("source", "fred"),
+                _json_dumps(item.get("raw_payload", {})),
+            )
+            for item in observations
+        ]
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO macro_observation (series_id, observation_date, value, source, raw_payload)
+                VALUES ($1, $2, $3, $4, $5::jsonb)
+                ON CONFLICT (series_id, observation_date) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    source = EXCLUDED.source,
+                    raw_payload = EXCLUDED.raw_payload,
+                    collected_at = NOW()
+                """,
+                rows,
+            )
+
+    async def upsert_macro_snapshot(self, *, snapshot_key: str, payload: dict[str, object]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO macro_snapshot (snapshot_key, payload)
+                VALUES ($1, $2::jsonb)
+                ON CONFLICT (snapshot_key) DO UPDATE SET
+                    payload = EXCLUDED.payload,
+                    updated_at = NOW()
+                """,
+                snapshot_key,
+                _json_dumps(payload),
             )
 
     async def fetch_news_ai_summary_state(self, dedupe_keys: list[str]) -> dict[str, str | None]:

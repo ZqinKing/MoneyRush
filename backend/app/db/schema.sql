@@ -407,3 +407,42 @@ CREATE INDEX IF NOT EXISTS significant_anomaly_first_trigger_idx
     ON significant_anomaly (first_trigger_ts DESC);
 CREATE INDEX IF NOT EXISTS significant_anomaly_ai_status_idx
     ON significant_anomaly (ai_reason_status, anomaly_date DESC);
+
+CREATE TABLE IF NOT EXISTS macro_observation (
+    series_id TEXT NOT NULL,
+    observation_date DATE NOT NULL,
+    value NUMERIC(18, 6),
+    source TEXT NOT NULL DEFAULT 'fred',
+    collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (series_id, observation_date)
+);
+
+CREATE INDEX IF NOT EXISTS macro_observation_series_date_idx
+    ON macro_observation (series_id, observation_date DESC);
+
+CREATE TABLE IF NOT EXISTS macro_snapshot (
+    snapshot_key TEXT PRIMARY KEY,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    payload JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE TABLE IF NOT EXISTS macro_analysis (
+    id BIGSERIAL PRIMARY KEY,
+    trigger_type TEXT NOT NULL,
+    focus TEXT NOT NULL DEFAULT 'general',
+    depth TEXT NOT NULL DEFAULT 'brief',
+    snapshot_date DATE,
+    data_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+    analysis JSONB NOT NULL DEFAULT '{}'::jsonb,
+    status TEXT NOT NULL DEFAULT 'completed',
+    model_used TEXT,
+    prompt_version TEXT NOT NULL DEFAULT 'v1',
+    generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    cache_key TEXT
+);
+
+CREATE INDEX IF NOT EXISTS macro_analysis_generated_idx
+    ON macro_analysis (generated_at DESC);
+CREATE INDEX IF NOT EXISTS macro_analysis_snapshot_idx
+    ON macro_analysis (snapshot_date DESC, trigger_type);
