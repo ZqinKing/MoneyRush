@@ -8,6 +8,14 @@ function getBrowserHostname() {
   return window.location.hostname;
 }
 
+function getBrowserOrigin() {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  return window.location.origin;
+}
+
 function isLoopbackHostname(hostname) {
   return hostname === 'localhost' || hostname === '127.0.0.1';
 }
@@ -16,9 +24,13 @@ function isBindableLocalHostname(hostname) {
   return isLoopbackHostname(hostname) || hostname === '0.0.0.0';
 }
 
-function normalizeLoopbackUrl(configuredUrl, fallbackUrl) {
+function normalizeConfiguredUrl(configuredUrl) {
   const browserHostname = getBrowserHostname();
-  const rawUrl = configuredUrl || fallbackUrl;
+  const rawUrl = configuredUrl || '';
+
+  if (!rawUrl) {
+    return '';
+  }
 
   try {
     const parsedUrl = new URL(rawUrl);
@@ -34,8 +46,19 @@ function normalizeLoopbackUrl(configuredUrl, fallbackUrl) {
   }
 }
 
-const apiBaseUrl = normalizeLoopbackUrl(import.meta.env.VITE_API_BASE_URL, 'http://localhost:8000');
-const wsBaseUrl = normalizeLoopbackUrl(import.meta.env.VITE_WS_BASE_URL, 'ws://localhost:8000');
+function getDefaultWebSocketBaseUrl() {
+  const browserOrigin = getBrowserOrigin();
+  if (!browserOrigin) {
+    return 'ws://localhost:5173';
+  }
+
+  const parsedOrigin = new URL(browserOrigin);
+  parsedOrigin.protocol = parsedOrigin.protocol === 'https:' ? 'wss:' : 'ws:';
+  return parsedOrigin.toString().replace(/\/$/, '');
+}
+
+const apiBaseUrl = normalizeConfiguredUrl(import.meta.env.VITE_API_BASE_URL);
+const wsBaseUrl = normalizeConfiguredUrl(import.meta.env.VITE_WS_BASE_URL) || getDefaultWebSocketBaseUrl();
 
 const requestStateLabels = {
   idle: '等待操作',
