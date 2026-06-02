@@ -40,6 +40,22 @@ class Settings(BaseSettings):
     content_news_refresh_seconds: int = 1800
     content_announcement_refresh_seconds: int = 7200
     content_market_news_refresh_seconds: int = 900
+    content_ai_summary_enabled: bool = False
+    content_ai_summary_base_url: str | None = None
+    content_ai_summary_api_key: str | None = None
+    content_ai_summary_model: str | None = None
+    content_ai_summary_timeout_seconds: int = 45
+    content_ai_summary_max_retries: int = 2
+    content_ai_summary_temperature: float = 0.0
+    content_ai_summary_max_completion_tokens: int = 8192
+    content_ai_summary_max_input_chars: int = 131072
+    macro_monitor_enabled: bool = True
+    fred_api_key: str | None = None
+    macro_analysis_enabled: bool = True
+    macro_ten_year_warning_threshold: float = 4.8
+    macro_snapshot_cache_key: str = "moneyrush:macro:snapshot"
+    macro_analysis_latest_cache_key: str = "moneyrush:macro:analysis:latest"
+    macro_collector_status_cache_key: str = "moneyrush:macro:collector_status"
 
 
 @lru_cache(maxsize=1)
