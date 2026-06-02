@@ -38,21 +38,21 @@ infra/          Compose file and Dockerfiles
 4. Use the symbol form to enqueue an activation command such as `000001`.
 5. Watch the collector generate snapshots, persist market rows, and stream market-state updates.
 
-Only the user-facing services are published to the host by default:
+Only the frontend service is published to the host by default:
 
 - frontend: `5173`
-- API: `8000`
 
-PostgreSQL/TimescaleDB and Redis stay on the internal Docker network only, which avoids local port conflicts and reduces accidental exposure.
+The frontend dev server proxies same-origin `/api` and `/ws` traffic to the API service over the internal Docker network. API, PostgreSQL/TimescaleDB, and Redis stay internal by default, which avoids local port conflicts and reduces accidental exposure.
 
 ## Useful Endpoints
 
-- API root: `http://localhost:8000/`
-- Live health: `http://localhost:8000/api/v1/health/live`
-- Ready health: `http://localhost:8000/api/v1/health/ready`
-- Active symbols: `http://localhost:8000/api/v1/symbols/active`
-- Active snapshots: `http://localhost:8000/api/v1/symbols/snapshots`
-- WebSocket stream: `ws://localhost:8000/ws/market`
+- Live health: `http://localhost:5173/api/v1/health/live`
+- Ready health: `http://localhost:5173/api/v1/health/ready`
+- Active symbols: `http://localhost:5173/api/v1/symbols/active`
+- Active snapshots: `http://localhost:5173/api/v1/symbols/snapshots`
+- WebSocket stream: `ws://localhost:5173/ws/market`
+
+If you put an external Nginx reverse proxy in front of the stack, point it at the frontend service and keep `/api` plus `/ws` on the same public origin. Make sure WebSocket upgrade headers are preserved for `/ws`. For direct host access to the API during debugging, publish `api:8000` explicitly with a Compose override rather than exposing it by default.
 
 ## License
 

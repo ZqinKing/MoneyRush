@@ -43,21 +43,21 @@ infra/          Compose 文件、Dockerfiles、数据库初始化脚本
 4. 在页面中输入股票代码，例如 `000001`，触发激活请求
 5. 观察 collector 生成模拟快照、写入市场数据，并通过 WebSocket 向前端持续推送 market-state
 
-默认只对宿主机暴露面向用户的服务：
+默认只对宿主机暴露前端服务：
 
 - frontend：`5173`
-- API：`8000`
 
-PostgreSQL/TimescaleDB 和 Redis 默认仅运行在 Docker 内部网络中，不对外暴露端口。这样可以减少本地端口冲突，也能避免不必要的依赖组件暴露。
+前端开发服务器会把同源的 `/api` 和 `/ws` 流量代理到 Docker 内部网络中的 API 服务。API、PostgreSQL/TimescaleDB 和 Redis 默认仅运行在 Docker 内部网络中，不对外暴露端口。这样可以减少本地端口冲突，也能避免不必要的依赖组件暴露。
 
 ## 常用接口
 
-- API 根路径：`http://localhost:8000/`
-- 存活检查：`http://localhost:8000/api/v1/health/live`
-- 就绪检查：`http://localhost:8000/api/v1/health/ready`
-- 当前激活 symbols：`http://localhost:8000/api/v1/symbols/active`
-- 当前激活 snapshots：`http://localhost:8000/api/v1/symbols/snapshots`
-- WebSocket 实时流：`ws://localhost:8000/ws/market`
+- 存活检查：`http://localhost:5173/api/v1/health/live`
+- 就绪检查：`http://localhost:5173/api/v1/health/ready`
+- 当前激活 symbols：`http://localhost:5173/api/v1/symbols/active`
+- 当前激活 snapshots：`http://localhost:5173/api/v1/symbols/snapshots`
+- WebSocket 实时流：`ws://localhost:5173/ws/market`
+
+如果在外部额外使用 Nginx 反向代理，请将公网入口代理到 frontend 服务，并保持 `/api` 与 `/ws` 在同一个公网 origin 下。`/ws` 需要保留 WebSocket Upgrade 相关请求头。如需调试时从宿主机直连 API，可通过 Compose override 临时发布 `api:8000`，而不是默认暴露。
 
 ## 许可协议
 
