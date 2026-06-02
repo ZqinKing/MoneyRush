@@ -666,12 +666,12 @@ function formatImpactPercent(value) {
   return `估算影响 ${formatSignedPercent(value)}`;
 }
 
-function formatPercentFromRatio(value) {
+function formatPercentValue(value) {
   if (typeof value !== 'number') {
     return '--';
   }
 
-  return `${Math.round(value * 100)}%`;
+  return `${value.toFixed(2)}%`;
 }
 
 function getJumpSeverityClass(severity) {
@@ -2658,7 +2658,7 @@ function App() {
   }
 
   function renderDragonTigerCard(item, index) {
-    const dealAmountLabel = item.dealAmountRatio ? `龙虎榜成交额 · ${formatPercentFromRatio(item.dealAmountRatio)}` : '龙虎榜成交额';
+    const dealAmountLabel = typeof item.dealAmountRatio === 'number' ? `龙虎榜成交额 · ${formatPercentValue(item.dealAmountRatio)}` : '龙虎榜成交额';
     const details = Array.isArray(item.dailyDetails) && item.dailyDetails.length
       ? item.dailyDetails
       : [{ reason: item.reason || item.explain || '上榜', tab: item.dailyTab || 'single' }];
@@ -3016,13 +3016,13 @@ function App() {
                       <tr key={item.branchName || ''}>
                         <td>{item.branchName || '--'}</td>
                         <td>{typeof item.avgIncrease1d === 'number' ? formatSignedPercent(item.avgIncrease1d) : '--'}</td>
-                        <td>{typeof item.riseProbability1d === 'number' ? formatPercentFromRatio(item.riseProbability1d) : '--'}</td>
+                        <td>{typeof item.riseProbability1d === 'number' ? formatPercentValue(item.riseProbability1d) : '--'}</td>
                         <td>{typeof item.avgIncrease2d === 'number' ? formatSignedPercent(item.avgIncrease2d) : '--'}</td>
-                        <td>{typeof item.riseProbability2d === 'number' ? formatPercentFromRatio(item.riseProbability2d) : '--'}</td>
+                        <td>{typeof item.riseProbability2d === 'number' ? formatPercentValue(item.riseProbability2d) : '--'}</td>
                         <td>{typeof item.avgIncrease3d === 'number' ? formatSignedPercent(item.avgIncrease3d) : '--'}</td>
-                        <td>{typeof item.riseProbability3d === 'number' ? formatPercentFromRatio(item.riseProbability3d) : '--'}</td>
+                        <td>{typeof item.riseProbability3d === 'number' ? formatPercentValue(item.riseProbability3d) : '--'}</td>
                         <td>{typeof item.avgIncrease5d === 'number' ? formatSignedPercent(item.avgIncrease5d) : '--'}</td>
-                        <td>{typeof item.riseProbability5d === 'number' ? formatPercentFromRatio(item.riseProbability5d) : '--'}</td>
+                        <td>{typeof item.riseProbability5d === 'number' ? formatPercentValue(item.riseProbability5d) : '--'}</td>
                       </tr>
                     )) : (
                       <tr><td colSpan="9" className="panel-tip compact">暂无营业部排行数据。</td></tr>
