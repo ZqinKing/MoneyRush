@@ -34,8 +34,10 @@ infra/          Compose 文件、Dockerfiles、数据库初始化脚本
 2. 启动整套服务：
 
    ```bash
-   docker compose -f infra/compose/docker-compose.yml up --build
+   docker compose -p moneyrush -f infra/compose/docker-compose.yml up --build
    ```
+
+   这样可以固定 Compose 项目名，生成的容器名会保持 `moneyrush` 前缀，不再受目录名影响。
 
 3. 打开前端：`http://localhost:5173`
 4. 在页面中输入股票代码，例如 `000001`，触发激活请求

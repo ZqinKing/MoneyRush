@@ -29,8 +29,10 @@ infra/          Compose file and Dockerfiles
 2. Start the stack:
 
    ```bash
-   docker compose -f infra/compose/docker-compose.yml up --build
+   docker compose -p moneyrush -f infra/compose/docker-compose.yml up --build
    ```
+
+   This pins the Compose project name so generated container names stay under the `moneyrush` prefix.
 
 3. Open the frontend at `http://localhost:5173`.
 4. Use the symbol form to enqueue an activation command such as `000001`.
