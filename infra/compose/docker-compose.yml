@@ -41,6 +41,7 @@ services:
       FRONTEND_ORIGIN: http://localhost:${FRONTEND_PORT:-5173}
       REDIS_URL: redis://redis:6379/0
       POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}
+      GOLD_DASHBOARD_CACHE_KEY: ${GOLD_DASHBOARD_CACHE_KEY:-moneyrush:gold:dashboard}
       WS_HEARTBEAT_INTERVAL_SECONDS: ${WS_HEARTBEAT_INTERVAL_SECONDS:-2}
       COLLECTOR_INTRADAY_POST_CLOSE_RECONCILIATION_SECONDS: ${COLLECTOR_INTRADAY_POST_CLOSE_RECONCILIATION_SECONDS:-900}
     depends_on:
@@ -113,6 +114,31 @@ services:
       MARKET_OVERVIEW_LEGU_BREADTH_REFRESH_SECONDS: ${MARKET_OVERVIEW_LEGU_BREADTH_REFRESH_SECONDS:-300}
       MARKET_OVERVIEW_LEGU_BREADTH_TIMEOUT_SECONDS: ${MARKET_OVERVIEW_LEGU_BREADTH_TIMEOUT_SECONDS:-10}
       MARKET_OVERVIEW_LEGU_BREADTH_FAILURE_COOLDOWN_SECONDS: ${MARKET_OVERVIEW_LEGU_BREADTH_FAILURE_COOLDOWN_SECONDS:-600}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  gold-collector:
+    build:
+      context: ../..
+      dockerfile: infra/docker/collector.Dockerfile
+    command: ["python", "-m", "collector.gold_main"]
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      GOLD_DASHBOARD_CACHE_KEY: moneyrush:gold:dashboard
+      GOLD_DASHBOARD_COLLECTOR_ENABLED: ${GOLD_DASHBOARD_COLLECTOR_ENABLED:-true}
+      GOLD_DASHBOARD_REFRESH_SECONDS: ${GOLD_DASHBOARD_REFRESH_SECONDS:-15}
+      GOLD_DASHBOARD_OFFSESSION_REFRESH_SECONDS: ${GOLD_DASHBOARD_OFFSESSION_REFRESH_SECONDS:-60}
+      GOLD_AU0_ENABLED: ${GOLD_AU0_ENABLED:-true}
+      GOLD_AUTD_ENABLED: ${GOLD_AUTD_ENABLED:-true}
+      GOLD_XAU_ENABLED: ${GOLD_XAU_ENABLED:-true}
+      GOLD_ETF_ENABLED: ${GOLD_ETF_ENABLED:-true}
+      GOLD_AU0_URL: ${GOLD_AU0_URL:-https://hq.sinajs.cn/list=nf_AU0}
+      GOLD_XAU_URL: ${GOLD_XAU_URL:-https://hq.sinajs.cn/list=hf_XAU}
+      GOLD_ETF_URL: ${GOLD_ETF_URL:-https://qt.gtimg.cn/q=sh518880}
     depends_on:
       redis:
         condition: service_healthy
