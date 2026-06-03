@@ -660,11 +660,13 @@ class MarketDetailQueryService:
                         if symbol_funds
                         else "监控标的出现显著变化，未匹配到最近披露基金持仓"
                     ),
-                    "aiReason": row["ai_reason"],
-                    "aiReasonStatus": row["ai_reason_status"],
-                    "aiReasonGeneratedAt": _to_iso(row["ai_reason_generated_at"]),
-                    "relatedNewsIds": _decode_jsonish_list(row["related_news_ids"]),
-                    "relatedAnnouncementIds": _decode_jsonish_list(row["related_announcement_ids"]),
+                    **self._daily_anomaly_ai_fields(
+                        reason=row["ai_reason"],
+                        status=row["ai_reason_status"],
+                        generated_at=row["ai_reason_generated_at"],
+                        related_news_ids=_decode_jsonish_list(row["related_news_ids"]),
+                        related_announcement_ids=_decode_jsonish_list(row["related_announcement_ids"]),
+                    ),
                 }
             )
         sorted_items = self._sort_daily_anomalies(items, sort_by)
@@ -1114,6 +1116,29 @@ class MarketDetailQueryService:
         return funds_by_symbol
 
     @staticmethod
+    def _daily_anomaly_ai_fields(
+        *,
+        reason: str | None = None,
+        status: str | None = None,
+        generated_at: object = None,
+        related_news_ids: list[object] | None = None,
+        related_announcement_ids: list[object] | None = None,
+    ) -> dict[str, object]:
+        generated_at_iso = _to_iso(generated_at)
+        normalized_related_news_ids = list(related_news_ids or [])
+        normalized_related_announcement_ids = list(related_announcement_ids or [])
+        return {
+            "aiReason": reason,
+            "aiReasonStatus": status,
+            "aiReasonGeneratedAt": generated_at_iso,
+            "relatedNewsIds": normalized_related_news_ids,
+            "relatedAnnouncementIds": normalized_related_announcement_ids,
+            "aiAttribution": reason,
+            "aiAttributionStatus": status,
+            "aiAttributionGeneratedAt": generated_at_iso,
+        }
+
+    @staticmethod
     def _build_daily_anomaly_candidates(
         *,
         symbols: list[str],
@@ -1218,6 +1243,7 @@ class MarketDetailQueryService:
                         if symbol_funds
                         else "监控标的出现显著变化，未匹配到最近披露基金持仓"
                     ),
+                    **MarketDetailQueryService._daily_anomaly_ai_fields(status="pending"),
                 }
             )
         return candidates

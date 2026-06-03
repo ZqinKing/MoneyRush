@@ -175,8 +175,8 @@ class AnomalyAggregator:
                 latest_volumes[symbol] = volume
         return latest_volumes
 
-    @staticmethod
     def _build_anomalies(
+        self,
         *,
         symbols: list[str],
         rows: list[asyncpg.Record],
