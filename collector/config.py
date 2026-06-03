@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     market_event_key_prefix: str = "moneyrush:event"
     market_events_stream_key: str = "moneyrush:market:events"
     market_overview_cache_key: str = "moneyrush:market:overview"
+    gold_dashboard_cache_key: str = "moneyrush:gold:dashboard"
     active_funds_key: str = "moneyrush:active_funds"
     fund_snapshot_key_prefix: str = "moneyrush:fund:snapshot"
     fund_holdings_key_prefix: str = "moneyrush:fund"
@@ -60,6 +61,16 @@ class Settings(BaseSettings):
     market_overview_legu_breadth_refresh_seconds: int = 300
     market_overview_legu_breadth_timeout_seconds: int = 10
     market_overview_legu_breadth_failure_cooldown_seconds: int = 600
+    gold_dashboard_collector_enabled: bool = True
+    gold_dashboard_refresh_seconds: int = 15
+    gold_dashboard_offsession_refresh_seconds: int = 60
+    gold_au0_enabled: bool = True
+    gold_autd_enabled: bool = True
+    gold_xau_enabled: bool = True
+    gold_etf_enabled: bool = True
+    gold_au0_url: str = "https://hq.sinajs.cn/list=nf_AU0"
+    gold_xau_url: str = "https://hq.sinajs.cn/list=hf_XAU"
+    gold_etf_url: str = "https://qt.gtimg.cn/q=sh518880"
     fund_collector_enabled: bool = True
     fund_collector_poll_interval_seconds: int = 3600
     fund_collector_request_interval_seconds: float = 1.0
