@@ -674,6 +674,42 @@ input {
   margin-top: 12px;
 }
 
+.gold-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.gold-source-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gold-quote-grid,
+.gold-fund-grid,
+.gold-news-grid {
+  margin-top: 0;
+}
+
+.gold-quote-card,
+.gold-note-card,
+.gold-section {
+  display: grid;
+  gap: 12px;
+}
+
+.gold-note-card {
+  padding: 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(214, 177, 67, 0.18);
+  background: linear-gradient(180deg, rgba(70, 54, 11, 0.32), rgba(4, 8, 16, 0.9));
+}
+
+.gold-fund-action-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .fund-watchlist-row {
   display: flex;
   flex-wrap: wrap;

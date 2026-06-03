@@ -182,6 +182,10 @@ function buildMarketOverviewUrl() {
   return `${apiBaseUrl}/api/v1/market/overview`;
 }
 
+function buildGoldDashboardUrl() {
+  return `${apiBaseUrl}/api/v1/gold/dashboard`;
+}
+
 function buildMacroCapabilitiesUrl() {
   return `${apiBaseUrl}/api/v1/macro/capabilities`;
 }
@@ -649,6 +653,25 @@ function formatPrice(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatGoldPrice(value, currency = 'CNY') {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  if (currency === 'USD') {
+    return `$${new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(value)}`;
+  }
+
+  if (currency === 'CNY') {
+    return `¥${formatPrice(value)}`;
+  }
+
+  return `${formatPrice(value)} ${currency}`;
 }
 
 function formatNav(value) {
@@ -1515,6 +1538,8 @@ function App() {
   const [marketStatus, setMarketStatus] = useState('closed');
   const [marketStatusUpdatedAt, setMarketStatusUpdatedAt] = useState(null);
   const [marketOverview, setMarketOverview] = useState({ indexes: [], generatedAt: null });
+  const [goldDashboard, setGoldDashboard] = useState({ generatedAt: null, isTradingSession: false, quotes: [], sources: {}, degraded: false, funds: [], news: [] });
+  const [goldRequestState, setGoldRequestState] = useState('idle');
   const [activeView, setActiveView] = useState('overview');
   const [controlView, setControlView] = useState('activate');
   const [selectedSnapshotSymbol, setSelectedSnapshotSymbol] = useState(null);
@@ -1873,6 +1898,51 @@ function App() {
       })
       .catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    if (activeView !== 'gold') {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadGoldDashboard({ keepReadyState = false } = {}) {
+      if (!keepReadyState) {
+        setGoldRequestState('loading');
+      }
+
+      try {
+        const response = await fetch(buildGoldDashboardUrl());
+        const payload = await parseJsonOrThrow(response, 'gold dashboard fetch failed');
+        if (cancelled) {
+          return;
+        }
+
+        setGoldDashboard({
+          generatedAt: typeof payload?.generatedAt === 'string' ? payload.generatedAt : null,
+          isTradingSession: Boolean(payload?.isTradingSession),
+          quotes: Array.isArray(payload?.quotes) ? payload.quotes : [],
+          sources: payload?.sources && typeof payload.sources === 'object' ? payload.sources : {},
+          degraded: Boolean(payload?.degraded),
+          funds: Array.isArray(payload?.funds) ? payload.funds : [],
+          news: Array.isArray(payload?.news) ? payload.news : [],
+        });
+        setGoldRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setGoldRequestState('error');
+        }
+      }
+    }
+
+    loadGoldDashboard();
+    const intervalId = window.setInterval(() => loadGoldDashboard({ keepReadyState: true }), 15000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeView]);
 
   useEffect(() => {
     if (activeView !== 'funds') {
@@ -2729,6 +2799,183 @@ function App() {
             </>
           ) : <p className="panel-tip compact">尚未生成解读。</p>}
           {macroAnalysisRequestState === 'error' ? <p className="status-line error">解读生成失败，请稍后重试。</p> : null}
+        </section>
+      </article>
+    );
+  }
+
+  function handleOpenGoldFundDetail(fundCodeValue) {
+    handleOpenFundDetail(fundCodeValue);
+    setActiveView('funds');
+  }
+
+  function renderGoldQuoteCard(item) {
+    const tone = getSnapshotCardTone(item?.changePct);
+    const sourceState = goldDashboard?.sources?.[item?.id] || {};
+    const statusLabel = sourceState?.status === 'ok'
+      ? '正常'
+      : sourceState?.status === 'stale'
+        ? '降级'
+        : sourceState?.status === 'disabled'
+          ? '停用'
+          : '异常';
+
+    return (
+      <section className={`snapshot-card trend-${tone} gold-quote-card`} key={item?.id || item?.code || item?.name}>
+        <header>
+          <div>
+            <strong>{item?.name || '黄金行情'}</strong>
+            <p className="snapshot-subtitle">{item?.code || '--'} · {item?.market || '--'}</p>
+          </div>
+          <div className="snapshot-header-side">
+            <span>{item?.source || '--'}</span>
+            <span className={`market-breadth-chip ${sourceState?.status === 'ok' ? 'positive' : sourceState?.status === 'stale' ? 'warning' : sourceState?.status === 'disabled' ? 'muted' : 'negative'}`}>{statusLabel}</span>
+          </div>
+        </header>
+        <div className="snapshot-metric">{formatGoldPrice(item?.price, item?.currency)}</div>
+        <dl>
+          <div>
+            <dt>涨跌幅</dt>
+            <dd className={item?.changePct > 0 ? 'positive' : item?.changePct < 0 ? 'negative' : ''}>{formatSignedPercent(item?.changePct)}</dd>
+          </div>
+          <div>
+            <dt>最高/最低</dt>
+            <dd>{formatGoldPrice(item?.high, item?.currency)} / {formatGoldPrice(item?.low, item?.currency)}</dd>
+          </div>
+          <div>
+            <dt>开盘</dt>
+            <dd>{formatGoldPrice(item?.open, item?.currency)}</dd>
+          </div>
+          <div>
+            <dt>更新时间</dt>
+            <dd>{formatTime(item?.updatedAt)}</dd>
+          </div>
+        </dl>
+        {sourceState?.error ? <p className="panel-tip compact">来源异常：{sourceState.error}</p> : null}
+      </section>
+    );
+  }
+
+  function renderGoldFundCard(item) {
+    return (
+      <section className="snapshot-card fund-card gold-fund-card" key={item?.fundCode || item?.fundName}>
+        <header>
+          <div>
+            <strong>{item?.fundName || '黄金基金'}</strong>
+            <p className="snapshot-subtitle">{item?.fundCode || '--'} · {item?.fundType || '基金'}</p>
+          </div>
+          <div className="snapshot-header-side">
+            <span>{item?.source || '--'}</span>
+            <span className="freshness-chip">净值日 {item?.navDate || '--'}</span>
+          </div>
+        </header>
+        <div className="snapshot-metric">{formatNav(item?.nav)}</div>
+        <dl>
+          <div>
+            <dt>日涨跌</dt>
+            <dd className={item?.dailyReturn > 0 ? 'positive' : item?.dailyReturn < 0 ? 'negative' : ''}>{formatSignedPercent(item?.dailyReturn)}</dd>
+          </div>
+          <div>
+            <dt>估算联动</dt>
+            <dd className={item?.estimatedIntradayReturn > 0 ? 'positive' : item?.estimatedIntradayReturn < 0 ? 'negative' : ''}>{formatSignedPercent(item?.estimatedIntradayReturn)}</dd>
+          </div>
+          <div>
+            <dt>更新时间</dt>
+            <dd>{formatRelativeDateTime(item?.updatedAt)}</dd>
+          </div>
+          <div>
+            <dt>基金公司</dt>
+            <dd>{item?.fundCompany || '--'}</dd>
+          </div>
+        </dl>
+        {item?.fundCode ? (
+          <div className="gold-fund-action-row">
+            <button type="button" className="view-tab" onClick={() => handleOpenGoldFundDetail(item.fundCode)}>
+              查看基金详情
+            </button>
+          </div>
+        ) : null}
+      </section>
+    );
+  }
+
+  function renderGoldView() {
+    const goldQuotes = Array.isArray(goldDashboard?.quotes)
+      ? [...goldDashboard.quotes].sort((left, right) => {
+        const leftOrder = typeof left?.sortOrder === 'number' ? left.sortOrder : Number.POSITIVE_INFINITY;
+        const rightOrder = typeof right?.sortOrder === 'number' ? right.sortOrder : Number.POSITIVE_INFINITY;
+        return leftOrder - rightOrder;
+      })
+      : [];
+    const goldSources = Object.values(goldDashboard?.sources || {});
+    const degradedSources = goldSources.filter((item) => item?.status && item.status !== 'ok');
+
+    return (
+      <article className="panel wide gold-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>黄金</h2>
+            <p className="panel-tip compact">已验证数据源驱动的跨市场黄金看板，当前先聚焦实时价格、黄金基金和相关新闻。</p>
+          </div>
+          <div className="content-status-summary">
+            <span className="symbol-count-badge">最近更新 {formatRelativeDateTime(goldDashboard.generatedAt)}</span>
+            <span className="symbol-count-badge">刷新模式 {goldDashboard.isTradingSession ? '交易时段' : '非交易时段'}</span>
+            {goldDashboard.degraded ? <span className="symbol-count-badge warning">来源降级 {degradedSources.length}</span> : null}
+          </div>
+        </div>
+
+        {goldRequestState === 'loading' ? <p className="status-line pending">黄金看板加载中...</p> : null}
+        {goldRequestState === 'error' ? <p className="status-line error">黄金看板加载失败，请稍后重试。</p> : null}
+
+        <div className="gold-source-row">
+          {goldSources.map((item) => (
+            <span className={`market-breadth-chip ${item?.status === 'ok' ? 'positive' : item?.status === 'stale' ? 'warning' : item?.status === 'disabled' ? 'muted' : 'negative'}`} key={`${item?.id || 'gold-source'}-${item?.status || 'unknown'}`}>
+              {(item?.id || '').toUpperCase() || 'SOURCE'} · {item?.status === 'ok' ? '正常' : item?.status === 'stale' ? '降级' : item?.status === 'disabled' ? '停用' : '异常'}
+            </span>
+          ))}
+        </div>
+
+        <div className="snapshot-grid gold-quote-grid">
+          {goldQuotes.map((item) => renderGoldQuoteCard(item))}
+        </div>
+
+        <section className="gold-note-card">
+          <div className="section-heading compact-heading">
+            <div>
+              <h3>走势对比</h3>
+              <p className="panel-tip compact">历史叠加图会在黄金历史落库后补齐；当前版本先保证实时价格、黄金基金和资讯链路稳定可用。</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="gold-section">
+          <div className="section-heading">
+            <div>
+              <h3>我的黄金基金</h3>
+              <p className="panel-tip compact">复用现有基金监控快照，自动筛出已激活的黄金相关基金。</p>
+            </div>
+            <span className="table-meta-badge">共 {Array.isArray(goldDashboard.funds) ? goldDashboard.funds.length : 0} 只</span>
+          </div>
+          <div className="snapshot-grid fund-grid gold-fund-grid">
+            {Array.isArray(goldDashboard.funds) && goldDashboard.funds.length
+              ? goldDashboard.funds.map((item) => renderGoldFundCard(item))
+              : <p className="panel-tip compact">当前没有已激活的黄金相关基金。</p>}
+          </div>
+        </section>
+
+        <section className="gold-section">
+          <div className="section-heading">
+            <div>
+              <h3>关联资讯</h3>
+              <p className="panel-tip compact">复用现有市场快讯链路，按黄金关键词过滤标题。</p>
+            </div>
+            <span className="table-meta-badge">共 {Array.isArray(goldDashboard.news) ? goldDashboard.news.length : 0} 条</span>
+          </div>
+          <div className="content-grid gold-news-grid">
+            {Array.isArray(goldDashboard.news) && goldDashboard.news.length
+              ? goldDashboard.news.map((item) => renderContentCard(item))
+              : <p className="content-empty-state">当前没有匹配的黄金资讯。</p>}
+          </div>
         </section>
       </article>
     );
@@ -4560,6 +4807,13 @@ function App() {
           >
             基金
           </button>
+          <button
+            className={activeView === 'gold' ? 'view-tab active' : 'view-tab'}
+            type="button"
+            onClick={() => setActiveView('gold')}
+          >
+            黄金
+          </button>
           {macroCapabilities.enabled ? (
             <button
               className={activeView === 'macro' ? 'view-tab active' : 'view-tab'}
@@ -4657,6 +4911,8 @@ function App() {
           </article>
         ) : activeView === 'content' ? (
           renderContentView()
+        ) : activeView === 'gold' ? (
+          renderGoldView()
         ) : activeView === 'funds' ? (
           renderFundsView()
         ) : activeView === 'dragonTiger' ? (
