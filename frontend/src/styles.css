@@ -1,6 +1,10 @@
 :root {
+  -webkit-text-size-adjust: 100%;
+  -moz-text-size-adjust: 100%;
+  text-size-adjust: 100%;
   color-scheme: dark;
   font-family: 'Segoe UI', 'PingFang SC', 'Noto Sans SC', sans-serif;
+  font-size: 16px;
   line-height: 1.5;
   font-weight: 400;
   background: #09111f;
@@ -15,13 +19,16 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
   background:
     radial-gradient(circle at top, rgba(43, 96, 255, 0.28), transparent 35%),
     linear-gradient(180deg, #09111f 0%, #060b16 100%);
 }
 
 button,
-input {
+input,
+select,
+textarea {
   font: inherit;
 }
 
@@ -115,10 +122,12 @@ input {
   border: 1px solid rgba(129, 164, 255, 0.22);
   border-radius: 999px;
   padding: 9px 14px;
-   min-height: 42px;
+  min-height: 42px;
   background: rgba(6, 11, 22, 0.82);
   color: #d9e6ff;
   cursor: pointer;
+  flex-shrink: 0;
+  font-size: 0.9rem;
   transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 
@@ -290,14 +299,20 @@ input {
   display: flex;
   gap: 10px;
   width: 100%;
+  align-items: stretch;
 }
 
 .overview-sort-controls .content-symbol-select {
   flex: 1 1 auto;
+  min-width: 0;
 }
 
 .overview-sort-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 86px;
+  min-height: 44px;
 }
 
 .market-overview-bar {
@@ -1172,6 +1187,7 @@ input {
   background: transparent;
   color: #8fa6d8;
   font: inherit;
+  font-size: 0.9rem;
   cursor: pointer;
   transition: background 120ms ease, color 120ms ease, transform 120ms ease;
 }
@@ -2384,6 +2400,129 @@ input {
   border-radius: 999px;
   background: rgba(43, 96, 255, 0.08);
   border: 1px solid rgba(129, 164, 255, 0.12);
+}
+
+@media (max-width: 1080px) {
+  .layout {
+    width: min(100% - 24px, 1120px);
+    padding: 32px 0 52px;
+  }
+
+  .overview-toolbar {
+    align-items: flex-start;
+  }
+
+  .overview-heading-meta {
+    justify-content: flex-start;
+  }
+
+  .grid,
+  .detail-hero-grid,
+  .detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wide,
+  .wide-card {
+    grid-column: auto;
+  }
+
+  .section-heading,
+  .panel-heading,
+  .detail-card-header,
+  .compact-card-header,
+  .chart-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .management-meta,
+  .submenu-row,
+  .event-status-slot,
+  .content-toolbar-groups,
+  .content-filter-row,
+  .dragon-tiger-controls-row,
+  .dragon-tiger-pagination-row,
+  .content-status-summary,
+  .overview-heading-meta,
+  .overview-sort-row,
+  .overview-search-row,
+  .market-overview-meta,
+  .dragon-tiger-toolbar-meta,
+  .dragon-tiger-pagination-actions,
+  .dragon-tiger-sort-controls,
+  .overview-sort-controls,
+  .snapshot-header-side {
+    width: 100%;
+  }
+
+  .content-toolbar-groups {
+    flex-wrap: wrap;
+  }
+
+  .content-filter-row {
+    flex: 1 1 260px;
+  }
+
+  .dragon-tiger-toolbar-row,
+  .dragon-tiger-pagination-row {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .dragon-tiger-toolbar-groups {
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .dragon-tiger-toolbar-meta {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .dragon-tiger-filter-row {
+    flex: 0 1 260px;
+  }
+
+  .dragon-tiger-toolbar-row .content-switch-option,
+  .dragon-tiger-pagination-row .content-switch-option {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 44px;
+  }
+
+  .overview-search-row,
+  .overview-sort-row {
+    flex: 1 1 320px;
+  }
+
+  .overview-sort-controls {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: stretch;
+  }
+
+  .market-overview-header,
+  .market-overview-meta,
+  .market-index-meta-row,
+  .snapshot-header-side,
+  .watchlist-card-header,
+  .watchlist-card-footer,
+  .watchlist-price-row,
+  .detail-event-main,
+  .content-card-header,
+  .content-card-footer {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .detail-meta,
+  .chart-summary-badge,
+  .content-card-time {
+    justify-items: start;
+    text-align: left;
+  }
 }
 
 @media (max-width: 800px) {
