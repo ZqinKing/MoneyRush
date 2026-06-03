@@ -3,13 +3,14 @@ from __future__ import annotations
 import json
 import logging
 import math
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import asyncpg
 
 
 logger = logging.getLogger(__name__)
+CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 
 
 def _json_dumps(value: object) -> str:
@@ -86,6 +87,13 @@ def _decode_jsonish(value: object) -> dict[str, object] | None:
             return None
         return decoded if isinstance(decoded, dict) else None
     return None
+
+
+def _trade_day_window_for_ts(ts: datetime) -> tuple[datetime, datetime]:
+    normalized_ts = ts.astimezone(CHINA_MARKET_TZ) if ts.tzinfo else ts.replace(tzinfo=UTC).astimezone(CHINA_MARKET_TZ)
+    day_start_local = normalized_ts.replace(hour=0, minute=0, second=0, microsecond=0)
+    day_end_local = day_start_local + timedelta(days=1)
+    return day_start_local.astimezone(UTC), day_end_local.astimezone(UTC)
 
 
 class PostgresStore:
@@ -964,18 +972,8 @@ class PostgresStore:
                     await connection.execute(
                         """
                         INSERT INTO stock_tick (ts, symbol, price, volume, amount, side, source, raw)
-                        SELECT $1, $2, $3, $4, $5, $6, $7, $8::jsonb
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM stock_tick
-                            WHERE ts = $1
-                              AND symbol = $2
-                              AND price IS NOT DISTINCT FROM $3
-                              AND volume IS NOT DISTINCT FROM $4
-                              AND amount IS NOT DISTINCT FROM $5
-                              AND side IS NOT DISTINCT FROM $6
-                              AND source = $7
-                        )
+                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+                        ON CONFLICT DO NOTHING
                         """,
                         tick_ts,
                         tick["symbol"],
@@ -1051,16 +1049,8 @@ class PostgresStore:
                     await connection.execute(
                         """
                         INSERT INTO stock_event (ts, symbol, event_type, source, payload)
-                        SELECT $1, $2, $3, $4, $5::jsonb
-                        WHERE NOT EXISTS (
-                            SELECT 1
-                            FROM stock_event
-                            WHERE ts = $1
-                              AND symbol = $2
-                              AND event_type = $3
-                              AND source = $4
-                              AND payload = $5::jsonb
-                        )
+                        VALUES ($1, $2, $3, $4, $5::jsonb)
+                        ON CONFLICT DO NOTHING
                         """,
                         tick_ts,
                         event["symbol"],
@@ -1231,34 +1221,47 @@ class PostgresStore:
                        duration_minutes, event_count, payload
                 FROM significant_anomaly
                 WHERE severity = ANY($1::text[])
-                  AND (ai_reason_status IS NULL OR ai_reason_status IN ('pending', 'failed', 'skipped'))
+                  AND (ai_reason_status IS NULL OR ai_reason_status = 'pending')
                   AND ai_reason IS NULL
-                ORDER BY anomaly_date DESC, first_trigger_ts DESC
+                ORDER BY anomaly_date ASC, first_trigger_ts ASC
                 LIMIT $2
                 """,
                 ["critical", "high"],
                 max(int(limit), 1),
             )
 
-    async def fetch_anomaly_reason_context(self, *, symbol: str, since_ts: datetime, until_ts: datetime, limit_per_kind: int = 5) -> dict[str, list[asyncpg.Record]]:
+    async def fetch_anomaly_reason_context(
+        self,
+        *,
+        symbol: str,
+        since_ts: datetime,
+        until_ts: datetime,
+        trigger_ts: datetime,
+        anomaly_date: date | None = None,
+        limit_per_kind: int = 5,
+    ) -> dict[str, object]:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")
         limit_value = max(int(limit_per_kind), 1)
+        analysis_date = anomaly_date or trigger_ts.astimezone(CHINA_MARKET_TZ).date()
+        trade_day_start_utc, trade_day_end_utc = _trade_day_window_for_ts(trigger_ts)
+        content_until_ts = min(until_ts, trade_day_end_utc)
 
         async with self._pool.acquire() as connection:
             news_rows = await connection.fetch(
                 """
-                SELECT id, dedupe_key, title, summary, content, article_source, published_at, first_seen_at, ai_summary
+                SELECT id, dedupe_key, title, summary, content, article_source, published_at, first_seen_at, ai_summary,
+                       CASE WHEN symbol = $1 THEN 0 ELSE 1 END AS relevance_rank
                 FROM stock_news_item
                 WHERE (symbol = $1 OR symbol IS NULL)
                   AND first_seen_at >= $2
                   AND first_seen_at <= $3
-                ORDER BY first_seen_at DESC
+                ORDER BY relevance_rank ASC, first_seen_at DESC
                 LIMIT $4
                 """,
                 symbol,
                 since_ts,
-                until_ts,
+                content_until_ts,
                 limit_value,
             )
             announcement_rows = await connection.fetch(
@@ -1273,7 +1276,7 @@ class PostgresStore:
                 """,
                 symbol,
                 since_ts,
-                until_ts,
+                content_until_ts,
                 limit_value,
             )
             report_rows = await connection.fetch(
@@ -1288,15 +1291,182 @@ class PostgresStore:
                 """,
                 symbol,
                 since_ts,
-                until_ts,
+                content_until_ts,
                 limit_value,
+            )
+            snapshot_row = await connection.fetchrow(
+                """
+                SELECT payload
+                FROM stock_snapshot
+                WHERE symbol = $1
+                  AND updated_at >= $2
+                  AND updated_at <= $3
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                symbol,
+                trade_day_start_utc,
+                content_until_ts,
+            )
+            tick_summary_row = await connection.fetchrow(
+                """
+                WITH day_ticks AS (
+                    SELECT ts, price, volume, amount, side
+                    FROM stock_tick
+                    WHERE symbol = $1
+                      AND ts >= $2
+                      AND ts < $3
+                      AND price IS NOT NULL
+                    ORDER BY ts ASC
+                ), first_tick AS (
+                    SELECT ts, price
+                    FROM day_ticks
+                    ORDER BY ts ASC
+                    LIMIT 1
+                ), last_tick AS (
+                    SELECT ts, price, volume, amount
+                    FROM day_ticks
+                    ORDER BY ts DESC
+                    LIMIT 1
+                )
+                SELECT
+                    (SELECT ts FROM first_tick) AS first_tick_ts,
+                    (SELECT price FROM first_tick) AS open_price,
+                    (SELECT ts FROM last_tick) AS last_tick_ts,
+                    (SELECT price FROM last_tick) AS last_price,
+                    (SELECT volume FROM last_tick) AS session_volume,
+                    (SELECT amount FROM last_tick) AS session_amount,
+                    MIN(price) AS low_price,
+                    MAX(price) AS high_price,
+                    COUNT(*) AS tick_count,
+                    SUM(CASE WHEN side = 'buy' THEN 1 ELSE 0 END) AS buy_tick_count,
+                    SUM(CASE WHEN side = 'sell' THEN 1 ELSE 0 END) AS sell_tick_count
+                FROM day_ticks
+                """,
+                symbol,
+                trade_day_start_utc,
+                trade_day_end_utc,
+            )
+            recent_daily_rows = await connection.fetch(
+                """
+                SELECT bucket_ts, open, high, low, close, volume
+                FROM stock_kline
+                WHERE symbol = $1
+                  AND period = '1d'
+                  AND bucket_ts < $2
+                ORDER BY bucket_ts DESC
+                LIMIT 6
+                """,
+                symbol,
+                trade_day_end_utc,
+            )
+            dragon_tiger_daily_row = await connection.fetchrow(
+                """
+                SELECT trade_date, change_percent, net_buy_amount, buy_amount, sell_amount,
+                       net_buy_ratio, deal_amount_ratio, turnover_rate, explain, reason
+                FROM dragon_tiger_daily_item
+                WHERE symbol = $1
+                  AND trade_date >= ($2::date - 5)
+                  AND trade_date <= $2::date
+                ORDER BY trade_date DESC
+                LIMIT $3
+                """,
+                symbol,
+                analysis_date,
+                1,
+            )
+            dragon_tiger_institution_row = await connection.fetchrow(
+                """
+                SELECT trade_date, change_percent, buy_org_count, sell_org_count,
+                       org_buy_amount, org_sell_amount, org_net_amount, org_net_amount_ratio,
+                       turnover_rate, reason
+                FROM dragon_tiger_institution_item
+                WHERE symbol = $1
+                  AND trade_date >= ($2::date - 5)
+                  AND trade_date <= $2::date
+                ORDER BY trade_date DESC
+                LIMIT $3
+                """,
+                symbol,
+                analysis_date,
+                1,
             )
 
         return {
             "news": news_rows,
             "announcements": announcement_rows,
             "reports": report_rows,
+            "market_summary": self._build_anomaly_market_summary(
+                snapshot_payload=_decode_jsonish(snapshot_row["payload"]) if snapshot_row is not None else None,
+                tick_summary_row=tick_summary_row,
+                recent_daily_rows=recent_daily_rows,
+            ),
+            "dragon_tiger_daily": dict(dragon_tiger_daily_row) if dragon_tiger_daily_row is not None else None,
+            "dragon_tiger_institution": dict(dragon_tiger_institution_row) if dragon_tiger_institution_row is not None else None,
         }
+
+    @staticmethod
+    def _build_anomaly_market_summary(
+        *,
+        snapshot_payload: dict[str, object] | None,
+        tick_summary_row: asyncpg.Record | None,
+        recent_daily_rows: list[asyncpg.Record],
+    ) -> dict[str, object] | None:
+        summary: dict[str, object] = {}
+        snapshot = snapshot_payload or {}
+
+        summary["snapshot_change_pct"] = _to_float(snapshot.get("changePct"))
+        summary["turnover_rate"] = _to_float(snapshot.get("turnoverRate"))
+        summary["last_price"] = _to_float(snapshot.get("lastPrice"))
+        summary["company_name"] = snapshot.get("companyName")
+
+        if tick_summary_row is not None:
+            open_price = _to_float(tick_summary_row["open_price"])
+            last_price = _to_float(tick_summary_row["last_price"])
+            low_price = _to_float(tick_summary_row["low_price"])
+            high_price = _to_float(tick_summary_row["high_price"])
+            buy_tick_count = _to_int(tick_summary_row["buy_tick_count"]) or 0
+            sell_tick_count = _to_int(tick_summary_row["sell_tick_count"]) or 0
+            directional_tick_count = buy_tick_count + sell_tick_count
+            buy_tick_ratio = (buy_tick_count / directional_tick_count) if directional_tick_count else None
+
+            amplitude_pct = None
+            if isinstance(open_price, float) and open_price > 0 and isinstance(low_price, float) and isinstance(high_price, float):
+                amplitude_pct = ((high_price - low_price) / open_price) * 100
+
+            summary.update(
+                {
+                    "open_price": open_price,
+                    "last_price": last_price if last_price is not None else summary.get("last_price"),
+                    "low_price": low_price,
+                    "high_price": high_price,
+                    "first_tick_ts": tick_summary_row["first_tick_ts"],
+                    "last_tick_ts": tick_summary_row["last_tick_ts"],
+                    "tick_count": _to_int(tick_summary_row["tick_count"]),
+                    "session_volume": _to_int(tick_summary_row["session_volume"]),
+                    "session_amount": _to_float(tick_summary_row["session_amount"]),
+                    "buy_tick_count": buy_tick_count,
+                    "sell_tick_count": sell_tick_count,
+                    "buy_tick_ratio": buy_tick_ratio,
+                    "amplitude_pct": amplitude_pct,
+                    "dominant_side": (
+                        "buy" if isinstance(buy_tick_ratio, float) and buy_tick_ratio >= 0.55
+                        else "sell" if isinstance(buy_tick_ratio, float) and buy_tick_ratio <= 0.45
+                        else "balanced" if directional_tick_count
+                        else None
+                    ),
+                }
+            )
+
+        if recent_daily_rows:
+            latest_close = _to_float(recent_daily_rows[0]["close"])
+            reference_index = min(5, len(recent_daily_rows) - 1)
+            reference_close = _to_float(recent_daily_rows[reference_index]["close"])
+            if isinstance(latest_close, float) and isinstance(reference_close, float) and reference_close != 0:
+                summary["recent_5d_change_pct"] = ((latest_close - reference_close) / reference_close) * 100
+
+        normalized_summary = {key: value for key, value in summary.items() if value is not None}
+        return normalized_summary or None
 
     async def update_anomaly_ai_reasons(self, items: list[dict[str, object]]) -> None:
         if self._pool is None:

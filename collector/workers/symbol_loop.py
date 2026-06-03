@@ -54,9 +54,11 @@ class CollectorWorker:
             try:
                 await self._ensure_postgres_connection()
                 await self._consume_command_stream()
+                await self._aggregate_active_symbol_anomalies()
                 await self._analyze_pending_anomaly_reasons()
                 await self._collect_active_symbols()
-                await self._aggregate_active_symbol_anomalies()
+                await self._aggregate_active_symbol_anomalies(force=True)
+                await self._analyze_pending_anomaly_reasons(force=True)
             except Exception:
                 self._postgres_ready = False
                 logger.exception("collector loop failed; retrying")
@@ -79,12 +81,12 @@ class CollectorWorker:
             await self._safe_ensure_intraday_history(symbol)
             await self._collect_symbol(symbol)
 
-    async def _aggregate_active_symbol_anomalies(self) -> None:
+    async def _aggregate_active_symbol_anomalies(self, *, force: bool = False) -> None:
         if not self._settings.anomaly_aggregation_enabled:
             return
         now = monotonic()
         interval_seconds = max(float(self._settings.anomaly_aggregation_interval_seconds), 60.0)
-        if now - self._last_anomaly_aggregation_at < interval_seconds:
+        if not force and now - self._last_anomaly_aggregation_at < interval_seconds:
             return
         self._last_anomaly_aggregation_at = now
         active_symbols = sorted(await self._redis.smembers(self._settings.active_symbols_key))
@@ -95,18 +97,22 @@ class CollectorWorker:
             return
         logger.info("collector aggregated significant anomalies", extra={"active_symbol_count": len(active_symbols), "anomaly_count": anomaly_count})
 
-    async def _analyze_pending_anomaly_reasons(self) -> None:
+    async def _analyze_pending_anomaly_reasons(self, *, force: bool = False) -> None:
         if not self._settings.anomaly_ai_reason_enabled:
             return
         now = monotonic()
         interval_seconds = max(float(self._settings.anomaly_ai_reason_interval_seconds), 60.0)
-        if now - self._last_anomaly_reason_analysis_at < interval_seconds:
+        if not force and now - self._last_anomaly_reason_analysis_at < interval_seconds:
             return
         self._last_anomaly_reason_analysis_at = now
+        batch_limit = max(int(self._settings.anomaly_ai_reason_batch_size), 1)
+        analyzed_count = 0
         try:
-            rows = await self._postgres.fetch_pending_anomaly_reasons(
-                limit=max(int(self._settings.anomaly_ai_reason_batch_size), 1),
-            )
+            rows = await self._postgres.fetch_pending_anomaly_reasons(limit=batch_limit)
+            if not rows:
+                logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": 0})
+                return
+
             updates = []
             for row in rows:
                 since_ts, until_ts = self._anomaly_reason_analyzer.reason_window(row["first_trigger_ts"])
@@ -114,7 +120,9 @@ class CollectorWorker:
                     symbol=str(row["symbol"]),
                     since_ts=since_ts,
                     until_ts=until_ts,
-                    limit_per_kind=5,
+                    trigger_ts=row["first_trigger_ts"],
+                    anomaly_date=row["anomaly_date"],
+                    limit_per_kind=8,
                 )
                 result = await asyncio.to_thread(self._anomaly_reason_analyzer.analyze, row, context)
                 updates.append(
@@ -127,12 +135,14 @@ class CollectorWorker:
                         "related_announcement_ids": result.related_announcement_ids,
                     }
                 )
+
             if updates:
                 await self._postgres.update_anomaly_ai_reasons(updates)
+            analyzed_count = len(rows)
         except Exception:
             logger.exception("collector anomaly reason analysis failed")
             return
-        logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": len(rows) if 'rows' in locals() else 0})
+        logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": analyzed_count})
 
     async def _collect_symbol(self, symbol: str) -> None:
         if not await self._redis.sismember(self._settings.active_symbols_key, symbol):
