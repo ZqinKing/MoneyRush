@@ -475,3 +475,21 @@ CREATE INDEX IF NOT EXISTS macro_analysis_generated_idx
     ON macro_analysis (generated_at DESC);
 CREATE INDEX IF NOT EXISTS macro_analysis_snapshot_idx
     ON macro_analysis (snapshot_date DESC, trigger_type);
+
+CREATE TABLE IF NOT EXISTS llm_invocation_audit (
+    id BIGSERIAL PRIMARY KEY,
+    invoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    audit_date DATE NOT NULL,
+    menu_module TEXT NOT NULL,
+    call_category TEXT NOT NULL,
+    status TEXT NOT NULL,
+    model_used TEXT,
+    prompt_version TEXT,
+    latency_ms INTEGER,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS llm_invocation_audit_date_module_category_idx
+    ON llm_invocation_audit (audit_date DESC, menu_module, call_category);
+CREATE INDEX IF NOT EXISTS llm_invocation_audit_status_date_idx
+    ON llm_invocation_audit (status, audit_date DESC);
