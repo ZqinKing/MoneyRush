@@ -284,6 +284,28 @@ class PostgresStore:
             )
             await connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS llm_invocation_audit (
+                    id BIGSERIAL PRIMARY KEY,
+                    invoked_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    audit_date DATE NOT NULL,
+                    menu_module TEXT NOT NULL,
+                    call_category TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    model_used TEXT,
+                    prompt_version TEXT,
+                    latency_ms INTEGER,
+                    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS llm_invocation_audit_date_module_category_idx ON llm_invocation_audit (audit_date DESC, menu_module, call_category)"
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS llm_invocation_audit_status_date_idx ON llm_invocation_audit (status, audit_date DESC)"
+            )
+            await connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS stock_capital_flow_daily (
                     trade_date DATE NOT NULL,
                     symbol TEXT NOT NULL,
@@ -2449,11 +2471,11 @@ class PostgresStore:
                 rows,
             )
 
-    async def update_news_ai_summaries(self, items: list[dict[str, str]]) -> None:
+    async def update_news_ai_summaries(self, items: list[dict[str, str]]) -> bool:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")
         if not items:
-            return
+            return False
 
         rows = [
             (
@@ -2464,12 +2486,56 @@ class PostgresStore:
         ]
 
         async with self._pool.acquire() as connection:
+            changed = False
+            for row in rows:
+                result = await connection.execute(
+                    """
+                    UPDATE stock_news_item
+                    SET ai_summary = $2
+                    WHERE dedupe_key = $1
+                      AND ai_summary IS DISTINCT FROM $2
+                    """,
+                    *row,
+                )
+                if result != "UPDATE 0":
+                    changed = True
+            return changed
+
+    async def insert_llm_audit_rows(self, items: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return
+
+        rows = [
+            (
+                _coerce_utc_datetime(item["invoked_at"], field_name="llm_invocation_audit.invoked_at"),
+                item["audit_date"],
+                item["menu_module"],
+                item["call_category"],
+                item["status"],
+                item.get("model_used"),
+                item.get("prompt_version"),
+                item.get("latency_ms"),
+                _json_dumps(item.get("meta", {})),
+            )
+            for item in items
+        ]
+
+        async with self._pool.acquire() as connection:
             await connection.executemany(
                 """
-                UPDATE stock_news_item
-                SET ai_summary = $2
-                WHERE dedupe_key = $1
-                  AND ai_summary IS DISTINCT FROM $2
+                INSERT INTO llm_invocation_audit (
+                    invoked_at,
+                    audit_date,
+                    menu_module,
+                    call_category,
+                    status,
+                    model_used,
+                    prompt_version,
+                    latency_ms,
+                    meta
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
                 """,
                 rows,
             )
