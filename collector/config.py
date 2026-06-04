@@ -98,6 +98,15 @@ class Settings(BaseSettings):
     dragon_tiger_request_timeout_seconds: float = 15.0
     dragon_tiger_request_retry_attempts: int = 3
     dragon_tiger_request_retry_backoff_seconds: float = 0.6
+    capital_flow_collector_enabled: bool = True
+    capital_flow_collector_poll_interval_seconds: int = 1800
+    capital_flow_collection_start_hour_china: int = 17
+    capital_flow_collection_start_minute_china: int = 10
+    capital_flow_request_timeout_seconds: float = 15.0
+    capital_flow_request_retry_attempts: int = 3
+    capital_flow_request_retry_backoff_seconds: float = 0.8
+    capital_flow_eastmoney_base_url: str = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
+    capital_flow_akshare_fallback_enabled: bool = True
     macro_monitor_enabled: bool = True
     fred_api_key: str | None = None
     macro_collector_enabled: bool = True

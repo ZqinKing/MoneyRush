@@ -196,6 +196,31 @@ services:
       redis:
         condition: service_healthy
 
+  capital-flow-collector:
+    build:
+      context: ../..
+      dockerfile: infra/docker/collector.Dockerfile
+    command: ["python", "-m", "collector.capital_flow_main"]
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}
+      ACTIVE_SYMBOLS_KEY: moneyrush:active_symbols
+      CAPITAL_FLOW_COLLECTOR_ENABLED: ${CAPITAL_FLOW_COLLECTOR_ENABLED:-true}
+      CAPITAL_FLOW_COLLECTOR_POLL_INTERVAL_SECONDS: ${CAPITAL_FLOW_COLLECTOR_POLL_INTERVAL_SECONDS:-1800}
+      CAPITAL_FLOW_COLLECTION_START_HOUR_CHINA: ${CAPITAL_FLOW_COLLECTION_START_HOUR_CHINA:-17}
+      CAPITAL_FLOW_COLLECTION_START_MINUTE_CHINA: ${CAPITAL_FLOW_COLLECTION_START_MINUTE_CHINA:-10}
+      CAPITAL_FLOW_REQUEST_TIMEOUT_SECONDS: ${CAPITAL_FLOW_REQUEST_TIMEOUT_SECONDS:-15}
+      CAPITAL_FLOW_REQUEST_RETRY_ATTEMPTS: ${CAPITAL_FLOW_REQUEST_RETRY_ATTEMPTS:-3}
+      CAPITAL_FLOW_REQUEST_RETRY_BACKOFF_SECONDS: ${CAPITAL_FLOW_REQUEST_RETRY_BACKOFF_SECONDS:-0.8}
+      CAPITAL_FLOW_EASTMONEY_BASE_URL: ${CAPITAL_FLOW_EASTMONEY_BASE_URL:-https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get}
+      CAPITAL_FLOW_AKSHARE_FALLBACK_ENABLED: ${CAPITAL_FLOW_AKSHARE_FALLBACK_ENABLED:-true}
+      COLLECTOR_ENABLE_RUNTIME_DATA_REPAIR: ${COLLECTOR_ENABLE_RUNTIME_DATA_REPAIR:-false}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   fund-collector:
     build:
       context: ../..
