@@ -2316,6 +2316,23 @@ textarea {
   white-space: nowrap;
 }
 
+.capital-flow-header-meta,
+.capital-flow-footnote-row {
+  display: flex;
+  align-items: center;
+  gap: 10px 12px;
+  flex-wrap: wrap;
+}
+
+.capital-flow-summary-grid {
+  margin-bottom: 12px;
+}
+
+.capital-flow-stale-reason {
+  margin-top: 10px;
+  color: #ffd58c;
+}
+
 .positive-tone .line-chart-area-stop.start {
   stop-color: rgba(255, 138, 138, 0.34);
 }
@@ -2431,7 +2448,7 @@ textarea {
   .panel-heading,
   .detail-card-header,
   .compact-card-header,
-  .chart-card-header {
+   .chart-card-header {
     flex-direction: column;
     align-items: flex-start;
   }
@@ -2517,12 +2534,17 @@ textarea {
     align-items: flex-start;
   }
 
-  .detail-meta,
-  .chart-summary-badge,
-  .content-card-time {
-    justify-items: start;
-    text-align: left;
-  }
+   .detail-meta,
+   .chart-summary-badge,
+   .content-card-time {
+     justify-items: start;
+     text-align: left;
+   }
+
+   .capital-flow-header-meta,
+   .capital-flow-footnote-row {
+     width: 100%;
+   }
 }
 
 @media (max-width: 800px) {
@@ -2680,6 +2702,11 @@ textarea {
   .compact-card-header {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .capital-flow-header-meta,
+  .capital-flow-footnote-row {
+    width: 100%;
   }
 
   .watchlist-meta-grid {

@@ -729,6 +729,14 @@ function formatTurnoverAmount(value) {
   return `${formatCompactNumber(value)}元`;
 }
 
+function formatSignedTurnoverAmount(value) {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  return `${value > 0 ? '+' : ''}${formatCompactNumber(value)}元`;
+}
+
 function formatRatioMultiple(value) {
   if (typeof value !== 'number') {
     return '--';
@@ -3945,6 +3953,7 @@ function App() {
     const orderBook = detailPayload?.orderBook || {};
     const capabilities = detailPayload?.capabilities || {};
     const stockFundHoldings = Array.isArray(detailPayload?.fundHoldingSummary?.items) ? detailPayload.fundHoldingSummary.items : [];
+    const capitalFlow = detailPayload?.capitalFlow || null;
     const events = dedupeEvents(selectedDetail?.events || []);
     const readableEvents = buildReadableEventItems(events);
     const snapshot = selectedSnapshot || detailPayload?.snapshot || null;
@@ -4471,6 +4480,63 @@ function App() {
           <section className="detail-card wide-card">
             <div className="detail-card-header compact-card-header">
               <div>
+                <h3>主力资金流向</h3>
+                <p className="panel-tip compact">日级盘后资金结构，用来辅助区分主力吸筹与散户追涨；不会随实时快照逐笔跳动。</p>
+              </div>
+              <div className="capital-flow-header-meta">
+                <span className="table-meta-badge">交易日 {capitalFlow?.tradeDate ? formatDate(capitalFlow.tradeDate) : '--'}</span>
+                <span className={`market-breadth-chip ${capitalFlow?.stale ? 'warning' : 'muted'}`}>{capitalFlow?.stale ? '降级缓存' : '日级已更新'}</span>
+              </div>
+            </div>
+            {capitalFlow ? (
+              <>
+                <div className="market-summary-grid capital-flow-summary-grid">
+                  <article className="summary-metric summary-metric-strong">
+                    <span>主力净流入</span>
+                    <strong className={capitalFlow?.mainNetInflow > 0 ? 'positive' : capitalFlow?.mainNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.mainNetInflow)}</strong>
+                    <em className={capitalFlow?.mainNetRatio > 0 ? 'positive' : capitalFlow?.mainNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.mainNetRatio)}</em>
+                  </article>
+                  <article className="summary-metric">
+                    <span>超大单</span>
+                    <strong className={capitalFlow?.superLargeNetInflow > 0 ? 'positive' : capitalFlow?.superLargeNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.superLargeNetInflow)}</strong>
+                    <em className={capitalFlow?.superLargeNetRatio > 0 ? 'positive' : capitalFlow?.superLargeNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.superLargeNetRatio)}</em>
+                  </article>
+                  <article className="summary-metric">
+                    <span>大单</span>
+                    <strong className={capitalFlow?.largeNetInflow > 0 ? 'positive' : capitalFlow?.largeNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.largeNetInflow)}</strong>
+                    <em className={capitalFlow?.largeNetRatio > 0 ? 'positive' : capitalFlow?.largeNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.largeNetRatio)}</em>
+                  </article>
+                  <article className="summary-metric">
+                    <span>中单</span>
+                    <strong className={capitalFlow?.mediumNetInflow > 0 ? 'positive' : capitalFlow?.mediumNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.mediumNetInflow)}</strong>
+                    <em className={capitalFlow?.mediumNetRatio > 0 ? 'positive' : capitalFlow?.mediumNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.mediumNetRatio)}</em>
+                  </article>
+                  <article className="summary-metric">
+                    <span>小单</span>
+                    <strong className={capitalFlow?.smallNetInflow > 0 ? 'positive' : capitalFlow?.smallNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.smallNetInflow)}</strong>
+                    <em className={capitalFlow?.smallNetRatio > 0 ? 'positive' : capitalFlow?.smallNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.smallNetRatio)}</em>
+                  </article>
+                  <article className="summary-metric">
+                    <span>对应收盘 / 涨跌幅</span>
+                    <strong>{`${formatPrice(capitalFlow?.closePrice)} / ${formatSignedPercent(capitalFlow?.changePct)}`}</strong>
+                    <em>{capitalFlow?.companyName || snapshot?.companyName || selectedSnapshotSymbol}</em>
+                  </article>
+                </div>
+                <div className="capital-flow-footnote-row">
+                  <span className="panel-tip compact">来源 {capitalFlow?.source || '--'}</span>
+                  <span className="panel-tip compact">采集于 {formatDateTime(capitalFlow?.collectedAt)}</span>
+                  <span className="panel-tip compact">最近尝试 {formatDateTime(capitalFlow?.lastAttemptAt || capitalFlow?.collectedAt)}</span>
+                </div>
+                {capitalFlow?.staleReason ? <p className="panel-tip compact capital-flow-stale-reason">当前使用最近一次成功采集的数据：{capitalFlow.staleReason}</p> : null}
+              </>
+            ) : (
+              <p className="panel-tip compact">暂无主力资金流向数据。</p>
+            )}
+          </section>
+
+          <section className="detail-card wide-card">
+            <div className="detail-card-header compact-card-header">
+              <div>
                 <h3>基金持仓</h3>
                 <p className="panel-tip compact">按最新报告期展示持有该股票的基金，来自基金反向持仓明细。</p>
               </div>
@@ -4883,6 +4949,7 @@ function App() {
                         <option value="changePct">涨跌幅</option>
                         <option value="turnoverRate">换手率</option>
                         <option value="lastPrice">最新价</option>
+                        <option value="capitalFlowMainNetInflow">主力净流入</option>
                       </select>
                       <button
                         type="button"
