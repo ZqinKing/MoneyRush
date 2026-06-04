@@ -803,7 +803,8 @@ class MarketDetailQueryService:
                     ),
                 }
             )
-        sorted_items = self._sort_daily_anomalies(items, sort_by)
+        deduped_items = self._dedupe_daily_anomalies_by_symbol(items)
+        sorted_items = self._sort_daily_anomalies(deduped_items, sort_by)
         portfolio_anomalies = [item for item in sorted_items if item["relatedFunds"]]
         other_anomalies = [] if portfolio_only else [item for item in sorted_items if not item["relatedFunds"]]
         severity_counts = {"critical": 0, "high": 0, "medium": 0}
@@ -1405,6 +1406,67 @@ class MarketDetailQueryService:
             ),
             reverse=True,
         )
+
+    @staticmethod
+    def _daily_anomaly_rank(item: dict[str, object]) -> tuple[int, float, str]:
+        magnitude = max(
+            abs(item["changePct"]) if isinstance(item.get("changePct"), float) else 0,
+            abs(item["latestPriceJumpPct"]) if isinstance(item.get("latestPriceJumpPct"), float) else 0,
+            item["volumeRatio"] if isinstance(item.get("volumeRatio"), float) else 0,
+        )
+        return (
+            ANOMALY_SEVERITY_PRIORITY.get(str(item.get("severity")), 0),
+            magnitude,
+            str(item.get("triggerTime") or ""),
+        )
+
+    @staticmethod
+    def _merge_related_funds(items: list[dict[str, object]]) -> list[dict[str, object]]:
+        merged_funds: list[dict[str, object]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in items:
+            related_funds = item.get("relatedFunds")
+            if not isinstance(related_funds, list):
+                continue
+            for fund in related_funds:
+                if not isinstance(fund, dict):
+                    continue
+                fund_key = (str(fund.get("fundCode") or ""), str(fund.get("reportDate") or ""))
+                if fund_key in seen:
+                    continue
+                seen.add(fund_key)
+                merged_funds.append(fund)
+        return merged_funds
+
+    @staticmethod
+    def _dedupe_daily_anomalies_by_symbol(items: list[dict[str, object]]) -> list[dict[str, object]]:
+        grouped_items: dict[str, list[dict[str, object]]] = {}
+        unkeyed_items: list[dict[str, object]] = []
+
+        for item in items:
+            symbol = item.get("symbol")
+            if isinstance(symbol, str) and symbol:
+                grouped_items.setdefault(symbol, []).append(item)
+            else:
+                unkeyed_items.append(item)
+
+        deduped_items: list[dict[str, object]] = list(unkeyed_items)
+        for symbol_items in grouped_items.values():
+            representative = max(symbol_items, key=MarketDetailQueryService._daily_anomaly_rank)
+            event_count = sum(
+                value
+                for value in (_to_int(item.get("eventCountToday")) for item in symbol_items)
+                if value is not None
+            )
+            deduped_items.append(
+                {
+                    **representative,
+                    "eventCountToday": event_count,
+                    "relatedFunds": MarketDetailQueryService._merge_related_funds(symbol_items),
+                }
+            )
+
+        return deduped_items
 
     @staticmethod
     def _funds_with_estimated_impact(funds: list[dict[str, object]], change_pct: float | None) -> list[dict[str, object]]:

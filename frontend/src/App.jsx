@@ -837,6 +837,85 @@ function getJumpSeverityClass(severity) {
   return '';
 }
 
+const anomalySeverityPriority = {
+  critical: 3,
+  high: 2,
+  medium: 1,
+  normal: 0,
+};
+
+function getDailyAnomalyMagnitude(item) {
+  return Math.max(
+    typeof item?.changePct === 'number' ? Math.abs(item.changePct) : 0,
+    typeof item?.latestPriceJumpPct === 'number' ? Math.abs(item.latestPriceJumpPct) : 0,
+    typeof item?.volumeRatio === 'number' ? item.volumeRatio : 0,
+  );
+}
+
+function getDailyAnomalyRank(item) {
+  const triggerTime = item?.triggerTime ? Date.parse(item.triggerTime) : 0;
+  return [
+    anomalySeverityPriority[item?.severity] || 0,
+    getDailyAnomalyMagnitude(item),
+    Number.isNaN(triggerTime) ? 0 : triggerTime,
+  ];
+}
+
+function isHigherDailyAnomalyRank(candidate, current) {
+  const candidateRank = getDailyAnomalyRank(candidate);
+  const currentRank = getDailyAnomalyRank(current);
+
+  return candidateRank.some((value, index) => value > currentRank[index] && candidateRank
+    .slice(0, index)
+    .every((previousValue, previousIndex) => previousValue === currentRank[previousIndex]));
+}
+
+function mergeDailyAnomalyFunds(items) {
+  const seen = new Set();
+  return items.flatMap((item) => (Array.isArray(item?.relatedFunds) ? item.relatedFunds : [])).filter((fund) => {
+    const fundKey = `${fund?.fundCode || ''}:${fund?.reportDate || ''}`;
+    if (seen.has(fundKey)) {
+      return false;
+    }
+    seen.add(fundKey);
+    return true;
+  });
+}
+
+function dedupeDailyAnomalyItems(items) {
+  const groupedItems = new Map();
+  const unkeyedItems = [];
+
+  items.forEach((item) => {
+    if (!item?.symbol) {
+      unkeyedItems.push(item);
+      return;
+    }
+    const symbolItems = groupedItems.get(item.symbol) || [];
+    symbolItems.push(item);
+    groupedItems.set(item.symbol, symbolItems);
+  });
+
+  const dedupedItems = [...unkeyedItems];
+  groupedItems.forEach((symbolItems) => {
+    const representative = symbolItems.reduce(
+      (current, candidate) => (isHigherDailyAnomalyRank(candidate, current) ? candidate : current),
+      symbolItems[0],
+    );
+    const eventCountToday = symbolItems.reduce(
+      (total, item) => total + (typeof item?.eventCountToday === 'number' ? item.eventCountToday : 0),
+      0,
+    );
+    dedupedItems.push({
+      ...representative,
+      eventCountToday,
+      relatedFunds: mergeDailyAnomalyFunds(symbolItems),
+    });
+  });
+
+  return dedupedItems;
+}
+
 function getAnomalySeverityLabel(severity) {
   if (severity === 'critical') {
     return '重点';
@@ -1704,10 +1783,10 @@ function App() {
       return changeMagnitude >= changeThreshold && volumeRatio >= volumeThreshold;
     };
     const portfolioItems = Array.isArray(dailyAnomalyReport?.portfolioAnomalies)
-      ? dailyAnomalyReport.portfolioAnomalies.filter(matchesThresholds)
+      ? dedupeDailyAnomalyItems(dailyAnomalyReport.portfolioAnomalies).filter(matchesThresholds)
       : [];
     const otherItems = Array.isArray(dailyAnomalyReport?.otherAnomalies)
-      ? dailyAnomalyReport.otherAnomalies.filter(matchesThresholds)
+      ? dedupeDailyAnomalyItems(dailyAnomalyReport.otherAnomalies).filter(matchesThresholds)
       : [];
     return { portfolioItems, otherItems };
   }, [dailyAnomalyChangeThreshold, dailyAnomalyReport, dailyAnomalyVolumeThreshold]);
@@ -5332,7 +5411,7 @@ function App() {
           <span className="symbol-count-badge">生成 {dailyAnomalyReport?.generatedAt ? formatTime(dailyAnomalyReport.generatedAt) : '--:--:--'}</span>
           <span className="symbol-count-badge">重点 {summary.criticalCount ?? 0}</span>
           <span className="symbol-count-badge">较高 {summary.highCount ?? 0}</span>
-          <span className="symbol-count-badge">持仓相关 {summary.portfolioAnomalyCount ?? 0}</span>
+          <span className="symbol-count-badge">持仓相关 {portfolioItems.length}</span>
           <span className="symbol-count-badge">监控标的 {summary.activeSymbolCount ?? activeSymbols.length}</span>
         </div>
         <div className="content-filter-row anomaly-filter-row">
