@@ -44,6 +44,17 @@ def _to_iso(value: object) -> str | None:
     return value.astimezone(UTC).isoformat()
 
 
+def _to_iso_date(value: object) -> str | None:
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except TypeError:
+            return None
+    return None
+
+
 def _parse_iso_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
@@ -207,6 +218,129 @@ class MarketDetailQueryService:
             period,
         )
         return self._serialize_kline_row(row)
+
+    async def fetch_latest_capital_flow(self, symbol: str) -> dict[str, object] | None:
+        row = await self._fetchrow(
+            """
+            SELECT
+                trade_date,
+                symbol,
+                company_name,
+                main_net_inflow,
+                main_net_ratio,
+                super_large_net_inflow,
+                super_large_net_ratio,
+                large_net_inflow,
+                large_net_ratio,
+                medium_net_inflow,
+                medium_net_ratio,
+                small_net_inflow,
+                small_net_ratio,
+                close_price,
+                change_pct,
+                source,
+                source_status,
+                generated_at,
+                collected_at,
+                last_attempt_at,
+                stale_reason
+            FROM stock_capital_flow_daily
+            WHERE symbol = $1
+            ORDER BY trade_date DESC
+            LIMIT 1
+            """,
+            symbol,
+        )
+        if row is None:
+            return None
+
+        trade_date = row["trade_date"]
+        source_status = row["source_status"]
+        is_stale = source_status == "stale"
+        stale_reason = "资金流向源暂不可用，当前展示最近一次可用结果。" if is_stale else None
+        return {
+            "symbol": row["symbol"],
+            "companyName": row["company_name"],
+            "tradeDate": _to_iso_date(trade_date),
+            "mainNetInflow": _to_float(row["main_net_inflow"]),
+            "mainNetRatio": _to_float(row["main_net_ratio"]),
+            "superLargeNetInflow": _to_float(row["super_large_net_inflow"]),
+            "superLargeNetRatio": _to_float(row["super_large_net_ratio"]),
+            "largeNetInflow": _to_float(row["large_net_inflow"]),
+            "largeNetRatio": _to_float(row["large_net_ratio"]),
+            "mediumNetInflow": _to_float(row["medium_net_inflow"]),
+            "mediumNetRatio": _to_float(row["medium_net_ratio"]),
+            "smallNetInflow": _to_float(row["small_net_inflow"]),
+            "smallNetRatio": _to_float(row["small_net_ratio"]),
+            "closePrice": _to_float(row["close_price"]),
+            "changePct": _to_float(row["change_pct"]),
+            "source": row["source"],
+            "sourceStatus": source_status,
+            "generatedAt": _to_iso(row["generated_at"]),
+            "collectedAt": _to_iso(row["collected_at"]),
+            "lastAttemptAt": _to_iso(row["last_attempt_at"]),
+            "staleReason": stale_reason,
+            "stale": is_stale,
+        }
+
+    async def fetch_latest_capital_flows(self, symbols: list[str]) -> dict[str, dict[str, object]]:
+        normalized_symbols = sorted({symbol for symbol in symbols if symbol})
+        if not normalized_symbols:
+            return {}
+
+        rows = await self._fetch(
+            """
+            WITH ranked AS (
+                SELECT
+                    trade_date,
+                    symbol,
+                    company_name,
+                    main_net_inflow,
+                    main_net_ratio,
+                    source,
+                    source_status,
+                    generated_at,
+                    collected_at,
+                    last_attempt_at,
+                    ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) AS row_choice
+                FROM stock_capital_flow_daily
+                WHERE symbol = ANY($1::text[])
+            )
+            SELECT
+                trade_date,
+                symbol,
+                company_name,
+                main_net_inflow,
+                main_net_ratio,
+                source,
+                source_status,
+                generated_at,
+                collected_at,
+                last_attempt_at
+            FROM ranked
+            WHERE row_choice = 1
+            """,
+            normalized_symbols,
+        )
+
+        items: dict[str, dict[str, object]] = {}
+        for row in rows:
+            trade_date = row["trade_date"]
+            source_status = row["source_status"]
+            items[str(row["symbol"])] = {
+                "symbol": row["symbol"],
+                "companyName": row["company_name"],
+                "tradeDate": _to_iso_date(trade_date),
+                "mainNetInflow": _to_float(row["main_net_inflow"]),
+                "mainNetRatio": _to_float(row["main_net_ratio"]),
+                "source": row["source"],
+                "sourceStatus": source_status,
+                "generatedAt": _to_iso(row["generated_at"]),
+                "collectedAt": _to_iso(row["collected_at"]),
+                "lastAttemptAt": _to_iso(row["last_attempt_at"]),
+                "stale": source_status == "stale",
+            }
+        return items
 
     async def fetch_klines(self, symbol: str, period: str = "1d", limit: int = 1) -> list[dict[str, object]]:
         rows = await self._fetch(

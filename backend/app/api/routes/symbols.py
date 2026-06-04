@@ -60,6 +60,13 @@ def _filter_intraday_bars_for_reference_day(
     return [bar for bar in bars if _is_same_china_trade_day(bar.get("bucketTs"), reference_ts)]
 
 
+def _china_trade_day_label(value: object) -> str | None:
+    timestamp = _parse_iso_datetime(value)
+    if timestamp is None:
+        return None
+    return timestamp.astimezone(CHINA_MARKET_TZ).date().isoformat()
+
+
 @router.get("/active")
 async def active_symbols(request: Request) -> dict[str, list[str]]:
     redis_store = request.app.state.redis_store
@@ -69,8 +76,24 @@ async def active_symbols(request: Request) -> dict[str, list[str]]:
 @router.get("/snapshots")
 async def active_snapshots(request: Request) -> dict[str, dict[str, object]]:
     redis_store = request.app.state.redis_store
+    query_service = request.app.state.market_detail_query_service
     symbols = await redis_store.get_active_symbols()
-    return {"snapshots": await redis_store.get_symbol_snapshots(symbols)}
+    snapshots = await redis_store.get_symbol_snapshots(symbols)
+    capital_flows = await query_service.fetch_latest_capital_flows(symbols)
+
+    for symbol in symbols:
+        snapshot = snapshots.get(symbol)
+        if not isinstance(snapshot, dict):
+            continue
+        capital_flow = capital_flows.get(symbol)
+        if not capital_flow:
+            continue
+        snapshot["capitalFlowMainNetInflow"] = capital_flow.get("mainNetInflow")
+        snapshot["capitalFlowMainNetRatio"] = capital_flow.get("mainNetRatio")
+        snapshot["capitalFlowTradeDate"] = capital_flow.get("tradeDate")
+        snapshot["capitalFlowSourceStatus"] = capital_flow.get("sourceStatus")
+
+    return {"snapshots": snapshots}
 
 
 @router.get("/event-summaries")
@@ -101,6 +124,7 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
         latest_event = await query_service.fetch_latest_event(normalized_symbol)
 
     latest_kline = await query_service.fetch_latest_kline(normalized_symbol, period="1d")
+    capital_flow = await query_service.fetch_latest_capital_flow(normalized_symbol)
     daily_bars_preview = await query_service.fetch_klines(normalized_symbol, period="1d", limit=30)
     intraday_minute_bars = await query_service.fetch_intraday_sampled_bars(
         normalized_symbol,
@@ -110,6 +134,17 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
     intraday_sampled_bars = await query_service.fetch_intraday_sampled_bars(normalized_symbol, interval_minutes=5)
     order_book = await query_service.fetch_best_bid_ask(normalized_symbol)
     fund_holding_summary = await request.app.state.fund_query_service.fetch_stock_funds(normalized_symbol)
+
+    capital_flow_reference_trade_day = _china_trade_day_label((latest_kline or {}).get("bucketTs"))
+    if (
+        capital_flow
+        and capital_flow.get("source") != "capital-flow-unavailable"
+        and capital_flow_reference_trade_day
+        and capital_flow.get("tradeDate") != capital_flow_reference_trade_day
+    ):
+        capital_flow["sourceStatus"] = "stale"
+        capital_flow["stale"] = True
+        capital_flow["staleReason"] = "资金流向数据尚未更新至当前交易日。"
 
     reference_intraday_ts = (
         (snapshot or {}).get("updatedAt")
@@ -141,6 +176,7 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
         "intradayCompleteness": intraday_completeness,
         "orderBook": order_book,
         "fundHoldingSummary": fund_holding_summary,
+        "capitalFlow": capital_flow,
         "capabilities": {
             "supportsIntradayKline": len(intraday_minute_bars) > 1,
             "supportsIntradayMinuteBars": len(intraday_minute_bars) > 1,
@@ -148,6 +184,7 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
             "supportsSampledIntradayBars": len(intraday_sampled_bars) > 1,
             "supportsBestBidAsk": any(value is not None for value in order_book.values()),
             "supportsFundHoldings": True,
+            "supportsCapitalFlow": capital_flow is not None,
         },
     }
 
