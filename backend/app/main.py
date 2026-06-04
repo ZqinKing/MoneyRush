@@ -21,6 +21,7 @@ from app.services.cache.redis_store import RedisStore
 from app.services.content_query_service import ContentQueryService
 from app.services.dragon_tiger_query_service import DragonTigerQueryService
 from app.services.fund_lookup import FundLookupService
+from app.services.fund_portfolio_risk_analysis_service import FundPortfolioRiskAnalysisService
 from app.services.fund_query_service import FundQueryService
 from app.services.llm_audit_query_service import LlmAuditQueryService
 from app.services.macro_analysis_service import MacroAnalysisService
@@ -88,6 +89,7 @@ async def lifespan(app: FastAPI):
     app.state.macro_query_service = MacroQueryService(settings.postgres_dsn)
     app.state.llm_audit_query_service = LlmAuditQueryService(settings.postgres_dsn)
     app.state.macro_analysis_service = MacroAnalysisService(settings)
+    app.state.fund_portfolio_risk_analysis_service = FundPortfolioRiskAnalysisService(settings)
     app.state.symbol_lookup_service = SymbolLookupService()
     app.state.fund_lookup_service = FundLookupService()
     app.state.dragon_tiger_client = DragonTigerClient(

@@ -1,19 +1,36 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.services.fund_portfolio_risk_analysis_service import build_rule_fund_portfolio_analysis
+
 
 router = APIRouter(prefix="/funds", tags=["funds"])
 _FUND_CODE_RE = re.compile(r"^\d{6}$")
+VALID_PORTFOLIO_ANALYSIS_FOCUS = {"general", "overlap", "concentration"}
+VALID_PORTFOLIO_ANALYSIS_DEPTH = {"brief", "detailed"}
+CHINA_TZ = timezone(timedelta(hours=8))
 
 
 class ActivateFundRequest(BaseModel):
     fundCode: str = Field(min_length=1, max_length=16)
     autoLinkStocks: bool = True
+
+
+class GenerateFundPortfolioAnalysisRequest(BaseModel):
+    focus: str = Field(default="general", min_length=1, max_length=32)
+    depth: str = Field(default="brief", min_length=1, max_length=32)
+
+
+def _derive_llm_audit_status(*, attempted: bool, has_output: bool) -> str:
+    if not attempted:
+        return "skipped"
+    return "completed" if has_output else "failed"
 
 
 def _normalize_fund_code_or_422(fund_code: str | None) -> str:
@@ -39,12 +56,81 @@ async def active_fund_snapshots(request: Request) -> dict[str, dict[str, object]
         if fund_code in snapshots:
             snapshots[fund_code] = {
                 **snapshots[fund_code],
-                **({"estimatedIntradayReturn": query_snapshot.get("estimatedIntradayReturn")} if "estimatedIntradayReturn" in query_snapshot else {}),
-                **({"updatedAt": query_snapshot.get("updatedAt")} if "updatedAt" in query_snapshot else {}),
+                **query_snapshot,
             }
         else:
             snapshots[fund_code] = query_snapshot
     return {"snapshots": snapshots}
+
+
+@router.get("/portfolio")
+async def fund_portfolio_view(request: Request) -> dict[str, object]:
+    fund_codes = await request.app.state.redis_store.get_active_funds()
+    return await request.app.state.fund_query_service.fetch_active_fund_portfolio_view(fund_codes)
+
+
+@router.post("/portfolio/analysis")
+async def generate_fund_portfolio_analysis(
+    payload: GenerateFundPortfolioAnalysisRequest,
+    request: Request,
+) -> dict[str, object]:
+    focus = payload.focus.strip().lower()
+    depth = payload.depth.strip().lower()
+    if focus not in VALID_PORTFOLIO_ANALYSIS_FOCUS:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid focus")
+    if depth not in VALID_PORTFOLIO_ANALYSIS_DEPTH:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="invalid depth")
+
+    fund_codes = await request.app.state.redis_store.get_active_funds()
+    portfolio_view = await request.app.state.fund_query_service.fetch_active_fund_portfolio_view(fund_codes)
+    analysis_result = request.app.state.fund_portfolio_risk_analysis_service.analyze(
+        portfolio_view=portfolio_view,
+        focus=focus,
+        depth=depth,
+    )
+    if analysis_result.analysis is None:
+        analysis = build_rule_fund_portfolio_analysis(portfolio_view, focus=focus, depth=depth)
+        analysis["engine"] = "rules"
+        analysis["fallbackReason"] = analysis_result.skip_reason or "llm_unavailable"
+        model_used = "rules"
+        prompt_version = "fund-portfolio-rules-v1"
+    else:
+        analysis = analysis_result.analysis
+        analysis["engine"] = "llm"
+        model_used = analysis_result.model_used
+        prompt_version = analysis_result.prompt_version
+    invoked_at = datetime.now(UTC)
+    await request.app.state.llm_audit_query_service.insert_audit_rows(
+        [
+            {
+                "invoked_at": invoked_at,
+                "audit_date": invoked_at.astimezone(CHINA_TZ).date(),
+                "menu_module": "funds",
+                "call_category": "fund_portfolio_risk_analysis",
+                "status": _derive_llm_audit_status(
+                    attempted=analysis_result.attempted,
+                    has_output=analysis_result.analysis is not None,
+                ),
+                "model_used": analysis_result.model_used,
+                "prompt_version": analysis_result.prompt_version,
+                "latency_ms": analysis_result.latency_ms,
+                "meta": {
+                    "focus": focus,
+                    "depth": depth,
+                    "portfolioStatus": portfolio_view.get("status"),
+                    "activeFundCount": ((portfolio_view.get("summary") or {}).get("activeFundCount") if isinstance(portfolio_view.get("summary"), dict) else None),
+                    "fallbackReason": analysis_result.skip_reason,
+                },
+            }
+        ]
+    )
+    return {
+        "analysis": analysis,
+        "engine": analysis.get("engine"),
+        "cacheHit": False,
+        "modelUsed": model_used,
+        "promptVersion": prompt_version,
+    }
 
 
 @router.get("/{fund_code}/detail")

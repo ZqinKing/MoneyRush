@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     content_ai_summary_max_completion_tokens: int = 8192
     content_ai_summary_max_input_chars: int = 131072
     anomaly_ai_reason_enabled: bool = False
+    fund_portfolio_ai_risk_enabled: bool = False
     macro_monitor_enabled: bool = True
     fred_api_key: str | None = None
     macro_analysis_enabled: bool = True

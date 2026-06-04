@@ -24,6 +24,7 @@ def get_llm_feature_capabilities(settings) -> dict[str, object]:
     shared_configured = is_shared_llm_configured(settings)
     content_summary_enabled = shared_configured
     anomaly_reason_enabled = shared_configured and getattr(settings, "anomaly_ai_reason_enabled", False)
+    fund_portfolio_risk_enabled = shared_configured and getattr(settings, "fund_portfolio_ai_risk_enabled", False)
     macro_analysis_enabled = (
         shared_configured
         and settings.macro_analysis_enabled
@@ -32,11 +33,12 @@ def get_llm_feature_capabilities(settings) -> dict[str, object]:
     )
 
     return {
-        "enabled": content_summary_enabled or anomaly_reason_enabled or macro_analysis_enabled,
-        "reason": None if (content_summary_enabled or anomaly_reason_enabled or macro_analysis_enabled) else "config_disabled",
+        "enabled": content_summary_enabled or anomaly_reason_enabled or fund_portfolio_risk_enabled or macro_analysis_enabled,
+        "reason": None if (content_summary_enabled or anomaly_reason_enabled or fund_portfolio_risk_enabled or macro_analysis_enabled) else "config_disabled",
         "features": {
             "contentSummary": content_summary_enabled,
             "anomalyReason": anomaly_reason_enabled,
+            "fundPortfolioRiskAnalysis": fund_portfolio_risk_enabled,
             "macroAnalysis": macro_analysis_enabled,
         },
     }
