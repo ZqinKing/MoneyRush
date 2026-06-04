@@ -88,8 +88,8 @@ async def macro_capabilities(request: Request) -> dict[str, object]:
         "reason": reason,
         "dataSource": "fred",
         "hasSnapshot": snapshot is not None,
-        "analysisEnabled": settings.macro_analysis_enabled and llm_configured,
-        "analysisEngine": "llm" if settings.macro_analysis_enabled and llm_configured else "rules",
+        "analysisEnabled": llm_configured,
+        "analysisEngine": "llm" if llm_configured else "rules",
         "requiredConfig": {
             "macroMonitorEnabled": settings.macro_monitor_enabled,
             "fredApiKeyPresent": bool(settings.fred_api_key),

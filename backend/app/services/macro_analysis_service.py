@@ -5,9 +5,10 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from urllib.parse import urlparse
 
 import requests
+
+from app.services.llm_capabilities import LLM_MAX_INPUT_CHARS, LLM_REQUEST_MAX_RETRIES, LLM_REQUEST_TIMEOUT_SECONDS, build_ai_headers, build_openai_chat_payload, get_ai_base_url, get_ai_model_candidates, is_shared_llm_configured
 
 
 logger = logging.getLogger(__name__)
@@ -68,13 +69,6 @@ class MacroAnalysisResult:
     attempted: bool = False
     skip_reason: str | None = None
     latency_ms: int | None = None
-
-
-def _is_safe_ai_base_url(value: str | None) -> bool:
-    if not value:
-        return False
-    parsed = urlparse(value.strip())
-    return parsed.scheme == "https" and bool(parsed.netloc)
 
 
 def _strip_reasoning_text(value: object) -> str | None:
@@ -199,83 +193,77 @@ class MacroAnalysisService:
         self._settings = settings
 
     def is_configured(self) -> bool:
-        return bool(
-            self._settings.macro_analysis_enabled
-            and self._settings.content_ai_summary_enabled
-            and self._settings.content_ai_summary_base_url
-            and self._settings.content_ai_summary_api_key
-            and self._settings.content_ai_summary_model
-            and _is_safe_ai_base_url(self._settings.content_ai_summary_base_url)
-        )
+        return is_shared_llm_configured(self._settings)
 
     def analyze(self, *, snapshot: dict[str, object], focus: str, depth: str) -> MacroAnalysisResult:
-        if not self._settings.macro_analysis_enabled:
-            return MacroAnalysisResult(analysis=None, model_used=None, prompt_version="macro-llm-v1", skip_reason="config_disabled")
         if not self.is_configured():
             logger.warning("macro LLM analysis config incomplete or unsafe")
             return MacroAnalysisResult(analysis=None, model_used=None, prompt_version="macro-llm-v1", skip_reason="missing_model_config")
 
         snapshot_json = json.dumps(snapshot, ensure_ascii=False, default=str)
-        max_input_chars = max(int(self._settings.content_ai_summary_max_input_chars), 0)
-        if max_input_chars and len(snapshot_json) > max_input_chars:
-            snapshot_json = snapshot_json[:max_input_chars]
+        if len(snapshot_json) > LLM_MAX_INPUT_CHARS:
+            snapshot_json = snapshot_json[:LLM_MAX_INPUT_CHARS]
         user_prompt = USER_PROMPT_TEMPLATE.format(
             focus=focus,
             depth=depth,
             derived_facts=_build_derived_facts(snapshot),
             snapshot_json=snapshot_json,
         )
-        payload = {
-            "model": self._settings.content_ai_summary_model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": self._settings.content_ai_summary_temperature,
-            "max_completion_tokens": min(max(int(self._settings.content_ai_summary_max_completion_tokens), 512), 4096),
-            "reasoning_split": True,
-            "stream": False,
-        }
-
-        url = f"{self._settings.content_ai_summary_base_url.rstrip('/')}/chat/completions"
-        timeout = max(int(self._settings.content_ai_summary_timeout_seconds), 1)
-        retries = max(int(self._settings.content_ai_summary_max_retries), 0)
-        for attempt in range(retries + 1):
-            try:
+        base_url = get_ai_base_url(self._settings)
+        if base_url is None:
+            return MacroAnalysisResult(analysis=None, model_used=None, prompt_version="macro-llm-v1", skip_reason="missing_model_config")
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        timeout = LLM_REQUEST_TIMEOUT_SECONDS
+        retries = LLM_REQUEST_MAX_RETRIES
+        last_latency_ms: int | None = None
+        last_model: str | None = None
+        last_skip_reason = "request_failed"
+        for model in get_ai_model_candidates(self._settings):
+            payload = build_openai_chat_payload(
+                self._settings,
+                model=model,
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                max_tokens=min(max(int(self._settings.ai_max_tokens), 512), 4096),
+            )
+            for attempt in range(retries + 1):
                 started_at = time.monotonic()
-                response = requests.post(
-                    url,
-                    headers={
-                        "Authorization": f"Bearer {self._settings.content_ai_summary_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=timeout,
-                )
-                if response.status_code >= 400:
-                    raise requests.HTTPError(f"macro LLM upstream error {response.status_code}")
-                data = response.json()
-                latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
-                choices = data.get("choices") if isinstance(data, dict) else None
-                if not isinstance(choices, list) or not choices:
-                    return MacroAnalysisResult(analysis=None, model_used=None, prompt_version="macro-llm-v1", attempted=True, skip_reason="empty_choices", latency_ms=latency_ms)
-                message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                content = message.get("content") if isinstance(message, dict) else None
-                parsed = _extract_json_object(content)
-                if parsed is None or _contains_forbidden_advice(parsed) or _violates_snapshot_facts(parsed, snapshot):
-                    logger.warning("macro LLM response failed safety or JSON checks")
-                    return MacroAnalysisResult(analysis=None, model_used=None, prompt_version="macro-llm-v1", attempted=True, skip_reason="invalid_model_output", latency_ms=latency_ms)
-                return MacroAnalysisResult(
-                    analysis=_normalize_analysis(parsed, focus=focus, depth=depth),
-                    model_used=str(self._settings.content_ai_summary_model),
-                    prompt_version="macro-llm-v1",
-                    attempted=True,
-                    latency_ms=latency_ms,
-                )
-            except Exception as exc:
-                if attempt >= retries:
-                    logger.warning("macro LLM analysis request failed", exc_info=exc)
-                    return MacroAnalysisResult(analysis=None, model_used=None, prompt_version="macro-llm-v1", attempted=True, skip_reason="request_failed", latency_ms=max(int((time.monotonic() - started_at) * 1000), 0))
-                time.sleep(min(2 ** attempt, 8))
+                last_model = model
+                try:
+                    response = requests.post(
+                        url,
+                        headers=build_ai_headers(self._settings),
+                        json=payload,
+                        timeout=timeout,
+                    )
+                    if response.status_code >= 400:
+                        raise requests.HTTPError(f"macro LLM upstream error {response.status_code}")
+                    data = response.json()
+                    last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+                    choices = data.get("choices") if isinstance(data, dict) else None
+                    if not isinstance(choices, list) or not choices:
+                        last_skip_reason = "empty_choices"
+                        logger.warning("macro LLM response missing choices", extra={"model": model})
+                        break
+                    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+                    content = message.get("content") if isinstance(message, dict) else None
+                    parsed = _extract_json_object(content)
+                    if parsed is None or _contains_forbidden_advice(parsed) or _violates_snapshot_facts(parsed, snapshot):
+                        last_skip_reason = "invalid_model_output"
+                        logger.warning("macro LLM response failed safety or JSON checks", extra={"model": model})
+                        break
+                    return MacroAnalysisResult(
+                        analysis=_normalize_analysis(parsed, focus=focus, depth=depth),
+                        model_used=model,
+                        prompt_version="macro-llm-v1",
+                        attempted=True,
+                        latency_ms=last_latency_ms,
+                    )
+                except Exception as exc:
+                    last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+                    if attempt >= retries:
+                        logger.warning("macro LLM analysis request failed; trying fallback model if configured", extra={"model": model}, exc_info=exc)
+                        break
+                    time.sleep(min(2 ** attempt, 8))
 
-        return MacroAnalysisResult(analysis=None, model_used=None, prompt_version="macro-llm-v1", attempted=True, skip_reason="request_failed")
+        return MacroAnalysisResult(analysis=None, model_used=last_model, prompt_version="macro-llm-v1", attempted=True, skip_reason=last_skip_reason, latency_ms=last_latency_ms)

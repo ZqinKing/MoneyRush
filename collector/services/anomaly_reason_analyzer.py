@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import requests
 
-from collector.services.ai_summary_client import is_safe_ai_base_url, normalize_ai_text
+from collector.services.ai_summary_client import CONTENT_SUMMARY_PROMPT_VERSION, LLM_REQUEST_MAX_RETRIES, LLM_REQUEST_TIMEOUT_SECONDS, build_openai_chat_payload, get_ai_base_url, get_ai_model, get_ai_model_candidates, is_ai_configured, normalize_ai_text
 
 
 logger = logging.getLogger(__name__)
@@ -184,25 +184,17 @@ class AnomalyReasonAnalyzer:
     def __init__(self, settings) -> None:
         self._settings = settings
         self._last_latency_ms: int | None = None
+        self._last_model_used: str | None = None
 
     def is_configured(self) -> bool:
-        return bool(
-            self._settings.anomaly_ai_reason_enabled
-            and self._settings.content_ai_summary_enabled
-            and self._settings.content_ai_summary_base_url
-            and self._settings.content_ai_summary_api_key
-            and self._settings.content_ai_summary_model
-            and is_safe_ai_base_url(self._settings.content_ai_summary_base_url)
-        )
+        return is_ai_configured(self._settings)
 
     def reason_window(self, trigger_ts: datetime) -> tuple[datetime, datetime]:
         normalized_ts = trigger_ts.astimezone(UTC) if trigger_ts.tzinfo else trigger_ts.replace(tzinfo=UTC)
         return normalized_ts - timedelta(days=3), datetime.now(UTC) + timedelta(minutes=5)
 
     def analyze(self, anomaly, context: dict[str, list[object]]) -> AnomalyReasonResult:
-        prompt_version = str(self._settings.content_ai_summary_prompt_version or "v1")
-        if not self._settings.anomaly_ai_reason_enabled:
-            return AnomalyReasonResult(reason=None, status="skipped", related_news_ids=[], related_announcement_ids=[], skip_reason="config_disabled", prompt_version=prompt_version)
+        prompt_version = CONTENT_SUMMARY_PROMPT_VERSION
         if not self.is_configured():
             logger.warning("anomaly ai reason config incomplete or unsafe")
             return AnomalyReasonResult(reason=None, status="skipped", related_news_ids=[], related_announcement_ids=[], skip_reason="missing_model_config", prompt_version=prompt_version)
@@ -241,7 +233,7 @@ class AnomalyReasonAnalyzer:
                     related_announcement_ids=[item for item in (_row_id(row) for row in announcement_rows) if item is not None],
                     attempted=True,
                     llm_succeeded=False,
-                    model_used=str(self._settings.content_ai_summary_model),
+                    model_used=self._last_model_used or get_ai_model(self._settings),
                     prompt_version=prompt_version,
                     latency_ms=self._last_latency_ms,
                 )
@@ -252,7 +244,7 @@ class AnomalyReasonAnalyzer:
                 related_announcement_ids=[item for item in (_row_id(row) for row in announcement_rows) if item is not None],
                 attempted=True,
                 llm_succeeded=False,
-                model_used=str(self._settings.content_ai_summary_model),
+                model_used=self._last_model_used or get_ai_model(self._settings),
                 prompt_version=prompt_version,
                 latency_ms=self._last_latency_ms,
             )
@@ -268,57 +260,65 @@ class AnomalyReasonAnalyzer:
             related_announcement_ids=[item for item in (_row_id(row) for row in announcement_rows) if item is not None],
             attempted=True,
             llm_succeeded=True,
-            model_used=str(self._settings.content_ai_summary_model),
+            model_used=self._last_model_used or get_ai_model(self._settings),
             prompt_version=prompt_version,
             latency_ms=self._last_latency_ms,
         )
 
     def _call_model(self, user_prompt: str) -> str | None:
         self._last_latency_ms = None
-        payload = {
-            "model": self._settings.content_ai_summary_model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": self._settings.content_ai_summary_temperature,
-            "max_completion_tokens": min(max(self._settings.content_ai_summary_max_completion_tokens, 256), 1024),
-            "reasoning_split": True,
-            "stream": False,
-        }
-        url = f"{self._settings.content_ai_summary_base_url.rstrip('/')}/chat/completions"
-        timeout = max(self._settings.content_ai_summary_timeout_seconds, 1)
-        retries = max(self._settings.content_ai_summary_max_retries, 0)
-        for attempt in range(retries + 1):
-            try:
+        self._last_model_used = None
+        base_url = get_ai_base_url(self._settings)
+        if base_url is None:
+            return None
+        url = f"{base_url.rstrip('/')}/chat/completions"
+        timeout = LLM_REQUEST_TIMEOUT_SECONDS
+        retries = LLM_REQUEST_MAX_RETRIES
+        for model in get_ai_model_candidates(self._settings):
+            payload = build_openai_chat_payload(
+                self._settings,
+                model=model,
+                system_prompt=SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                max_tokens=min(max(self._settings.ai_max_tokens, 256), 1024),
+            )
+            for attempt in range(retries + 1):
                 started_at = time.monotonic()
-                response = requests.post(
-                    url,
-                    headers={
-                        "Authorization": f"Bearer {self._settings.content_ai_summary_api_key}",
-                        "Content-Type": "application/json",
-                    },
-                    json=payload,
-                    timeout=timeout,
-                )
-                if response.status_code >= 400:
-                    if response.status_code in {408, 429} or response.status_code >= 500:
-                        raise requests.HTTPError(f"anomaly ai reason upstream error {response.status_code}")
-                    response.raise_for_status()
-                data = response.json()
-                self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
-                choices = data.get("choices") if isinstance(data, dict) else None
-                if not isinstance(choices, list) or not choices:
-                    return None
-                message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                content = message.get("content") if isinstance(message, dict) else None
-                return normalize_ai_text(content)
-            except Exception as exc:
-                self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
-                if attempt >= retries:
-                    logger.warning("anomaly ai reason request failed", exc_info=exc)
-                    return None
-                time.sleep(min(2 ** attempt, 8))
+                self._last_model_used = model
+                try:
+                    headers = {"Content-Type": "application/json"}
+                    api_key = getattr(self._settings, "ai_api_key", None)
+                    if api_key:
+                        headers["Authorization"] = f"Bearer {str(api_key).strip()}"
+                    response = requests.post(
+                        url,
+                        headers=headers,
+                        json=payload,
+                        timeout=timeout,
+                    )
+                    if response.status_code >= 400:
+                        if response.status_code in {408, 429} or response.status_code >= 500:
+                            raise requests.HTTPError(f"anomaly ai reason upstream error {response.status_code}")
+                        response.raise_for_status()
+                    data = response.json()
+                    self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+                    choices = data.get("choices") if isinstance(data, dict) else None
+                    if not isinstance(choices, list) or not choices:
+                        logger.warning("anomaly ai reason response missing choices", extra={"model": model})
+                        break
+                    message = choices[0].get("message") if isinstance(choices[0], dict) else None
+                    content = message.get("content") if isinstance(message, dict) else None
+                    result = normalize_ai_text(content)
+                    if result is None:
+                        logger.warning("anomaly ai reason response missing usable final content", extra={"model": model})
+                        break
+                    return result
+                except Exception as exc:
+                    self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+                    if attempt >= retries:
+                        logger.warning("anomaly ai reason request failed; trying fallback model if configured", extra={"model": model}, exc_info=exc)
+                        break
+                    time.sleep(min(2 ** attempt, 8))
         return None
 
     @staticmethod
