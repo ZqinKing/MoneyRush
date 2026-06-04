@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from redis.asyncio import Redis
 
 from collector.services.anomaly_aggregator import AnomalyAggregator
+from collector.services.ai_summary_client import is_ai_configured
 from collector.services.anomaly_reason_analyzer import AnomalyReasonAnalyzer
 from collector.services.persistence import PostgresStore
 from collector.services.tencent_quote_client import MarketQuoteClient
@@ -18,6 +19,8 @@ from collector.services.tencent_quote_client import MarketQuoteClient
 logger = logging.getLogger(__name__)
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 INTRADAY_EXPECTED_BUCKET_COUNT = 240
+ANOMALY_REASON_INTERVAL_SECONDS = 300
+ANOMALY_REASON_BATCH_SIZE = 10
 
 
 def _derive_llm_audit_status(*, attempted: bool, llm_succeeded: bool) -> str:
@@ -36,7 +39,7 @@ class CollectorWorker:
         )
         self._anomaly_aggregator = AnomalyAggregator(
             self._postgres,
-            ai_reason_enabled=settings.anomaly_ai_reason_enabled,
+            ai_reason_enabled=is_ai_configured(settings),
         )
         self._anomaly_reason_analyzer = AnomalyReasonAnalyzer(settings)
         self._quote_client = MarketQuoteClient(settings)
@@ -104,14 +107,14 @@ class CollectorWorker:
         logger.info("collector aggregated significant anomalies", extra={"active_symbol_count": len(active_symbols), "anomaly_count": anomaly_count})
 
     async def _analyze_pending_anomaly_reasons(self, *, force: bool = False) -> None:
-        if not self._settings.anomaly_ai_reason_enabled:
+        if not is_ai_configured(self._settings):
             return
         now = monotonic()
-        interval_seconds = max(float(self._settings.anomaly_ai_reason_interval_seconds), 60.0)
+        interval_seconds = ANOMALY_REASON_INTERVAL_SECONDS
         if not force and now - self._last_anomaly_reason_analysis_at < interval_seconds:
             return
         self._last_anomaly_reason_analysis_at = now
-        batch_limit = max(int(self._settings.anomaly_ai_reason_batch_size), 1)
+        batch_limit = ANOMALY_REASON_BATCH_SIZE
         analyzed_count = 0
         try:
             rows = await self._postgres.fetch_pending_anomaly_reasons(limit=batch_limit)
