@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 from redis.asyncio import Redis
 
-from collector.services.ai_summary_client import AiSummaryClient
+from collector.services.ai_summary_client import CONTENT_SUMMARY_MAX_NEWS_AGE_SECONDS, AiSummaryClient, is_ai_configured
 from collector.services.akshare_content_client import AkshareContentClient
 from collector.services.persistence import PostgresStore
 
@@ -263,7 +263,7 @@ class ContentCollectorWorker:
                 for item in items
             ]
             await self._postgres.upsert_news_items(news_rows)
-            if self._settings.content_ai_summary_enabled and lane == "symbol-news":
+            if is_ai_configured(self._settings) and lane == "symbol-news":
                 await self._schedule_ai_summary_backfill(news_rows)
             return
 
@@ -312,9 +312,8 @@ class ContentCollectorWorker:
         first_seen_at = _coerce_utc_datetime(item.get("first_seen_at"))
         if published_at is None or first_seen_at is None:
             return False
-        max_age_seconds = max(int(self._settings.content_ai_summary_max_news_age_seconds), 0)
         age_seconds = (first_seen_at - published_at).total_seconds()
-        return age_seconds <= max_age_seconds
+        return age_seconds <= CONTENT_SUMMARY_MAX_NEWS_AGE_SECONDS
 
     async def _run_ai_summary_backfill(self, items: list[dict[str, object]]) -> None:
         async with self._ai_summary_backfill_semaphore:
