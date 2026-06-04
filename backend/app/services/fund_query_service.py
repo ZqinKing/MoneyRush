@@ -36,48 +36,6 @@ def _to_date_string(value: object) -> str | None:
     return None
 
 
-def _coerce_date(value: object) -> date | None:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    return None
-
-
-def _days_since(value: object) -> int | None:
-    target_date = _coerce_date(value)
-    if target_date is None:
-        return None
-    return max((datetime.now(UTC).date() - target_date).days, 0)
-
-
-def _clamp_percent(value: float | None) -> float | None:
-    if value is None:
-        return None
-    return round(min(max(value, 0.0), 100.0), 2)
-
-
-def _normalize_text(value: object) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _is_qdii_fund_type(value: object) -> bool:
-    text = _normalize_text(value)
-    return bool(text and "qdii" in text.lower())
-
-
-def _risk_signal(*, kind: str, severity: str, title: str, message: str) -> dict[str, str]:
-    return {
-        "kind": kind,
-        "severity": severity,
-        "title": title,
-        "message": message,
-    }
-
-
 def _decode_jsonish(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return dict(value)
