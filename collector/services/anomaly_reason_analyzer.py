@@ -76,6 +76,12 @@ class AnomalyReasonResult:
     status: str
     related_news_ids: list[int]
     related_announcement_ids: list[int]
+    llm_succeeded: bool = False
+    attempted: bool = False
+    skip_reason: str | None = None
+    model_used: str | None = None
+    prompt_version: str = "v1"
+    latency_ms: int | None = None
 
 
 def _to_float(value: object) -> float | None:
@@ -177,6 +183,7 @@ def _looks_low_information_result(text: str) -> bool:
 class AnomalyReasonAnalyzer:
     def __init__(self, settings) -> None:
         self._settings = settings
+        self._last_latency_ms: int | None = None
 
     def is_configured(self) -> bool:
         return bool(
@@ -193,11 +200,12 @@ class AnomalyReasonAnalyzer:
         return normalized_ts - timedelta(days=3), datetime.now(UTC) + timedelta(minutes=5)
 
     def analyze(self, anomaly, context: dict[str, list[object]]) -> AnomalyReasonResult:
+        prompt_version = str(self._settings.content_ai_summary_prompt_version or "v1")
         if not self._settings.anomaly_ai_reason_enabled:
-            return AnomalyReasonResult(reason=None, status="skipped", related_news_ids=[], related_announcement_ids=[])
+            return AnomalyReasonResult(reason=None, status="skipped", related_news_ids=[], related_announcement_ids=[], skip_reason="config_disabled", prompt_version=prompt_version)
         if not self.is_configured():
             logger.warning("anomaly ai reason config incomplete or unsafe")
-            return AnomalyReasonResult(reason=None, status="skipped", related_news_ids=[], related_announcement_ids=[])
+            return AnomalyReasonResult(reason=None, status="skipped", related_news_ids=[], related_announcement_ids=[], skip_reason="missing_model_config", prompt_version=prompt_version)
 
         news_rows = context.get("news", [])
         announcement_rows = context.get("announcements", [])
@@ -207,7 +215,7 @@ class AnomalyReasonAnalyzer:
         dragon_tiger_institution = context.get("dragon_tiger_institution") if isinstance(context.get("dragon_tiger_institution"), dict) else None
         fallback_reason = self._build_evidence_bound_fallback(anomaly, context)
         if not news_rows and not announcement_rows and not report_rows and not market_summary and not dragon_tiger_daily and not dragon_tiger_institution:
-            return AnomalyReasonResult(reason=fallback_reason, status="completed", related_news_ids=[], related_announcement_ids=[])
+            return AnomalyReasonResult(reason=fallback_reason, status="completed", related_news_ids=[], related_announcement_ids=[], skip_reason="no_supporting_context", prompt_version=prompt_version)
 
         prompt = USER_PROMPT_TEMPLATE.format(
             symbol=anomaly["symbol"],
@@ -231,12 +239,22 @@ class AnomalyReasonAnalyzer:
                     status="completed",
                     related_news_ids=[item for item in (_row_id(row) for row in news_rows) if item is not None],
                     related_announcement_ids=[item for item in (_row_id(row) for row in announcement_rows) if item is not None],
+                    attempted=True,
+                    llm_succeeded=False,
+                    model_used=str(self._settings.content_ai_summary_model),
+                    prompt_version=prompt_version,
+                    latency_ms=self._last_latency_ms,
                 )
             return AnomalyReasonResult(
                 reason=None,
                 status="failed",
                 related_news_ids=[item for item in (_row_id(row) for row in news_rows) if item is not None],
                 related_announcement_ids=[item for item in (_row_id(row) for row in announcement_rows) if item is not None],
+                attempted=True,
+                llm_succeeded=False,
+                model_used=str(self._settings.content_ai_summary_model),
+                prompt_version=prompt_version,
+                latency_ms=self._last_latency_ms,
             )
         if _contains_advice(result) or _looks_like_prompt_echo(result) or _looks_low_information_result(result):
             logger.warning("anomaly ai reason failed safety/quality checks; using safe fallback", extra={"symbol": anomaly["symbol"]})
@@ -248,9 +266,15 @@ class AnomalyReasonAnalyzer:
             status="completed",
             related_news_ids=[item for item in (_row_id(row) for row in news_rows) if item is not None],
             related_announcement_ids=[item for item in (_row_id(row) for row in announcement_rows) if item is not None],
+            attempted=True,
+            llm_succeeded=True,
+            model_used=str(self._settings.content_ai_summary_model),
+            prompt_version=prompt_version,
+            latency_ms=self._last_latency_ms,
         )
 
     def _call_model(self, user_prompt: str) -> str | None:
+        self._last_latency_ms = None
         payload = {
             "model": self._settings.content_ai_summary_model,
             "messages": [
@@ -267,6 +291,7 @@ class AnomalyReasonAnalyzer:
         retries = max(self._settings.content_ai_summary_max_retries, 0)
         for attempt in range(retries + 1):
             try:
+                started_at = time.monotonic()
                 response = requests.post(
                     url,
                     headers={
@@ -281,6 +306,7 @@ class AnomalyReasonAnalyzer:
                         raise requests.HTTPError(f"anomaly ai reason upstream error {response.status_code}")
                     response.raise_for_status()
                 data = response.json()
+                self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
                 choices = data.get("choices") if isinstance(data, dict) else None
                 if not isinstance(choices, list) or not choices:
                     return None
@@ -288,6 +314,7 @@ class AnomalyReasonAnalyzer:
                 content = message.get("content") if isinstance(message, dict) else None
                 return normalize_ai_text(content)
             except Exception as exc:
+                self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
                 if attempt >= retries:
                     logger.warning("anomaly ai reason request failed", exc_info=exc)
                     return None

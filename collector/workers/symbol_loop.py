@@ -20,6 +20,12 @@ CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 INTRADAY_EXPECTED_BUCKET_COUNT = 240
 
 
+def _derive_llm_audit_status(*, attempted: bool, llm_succeeded: bool) -> str:
+    if not attempted:
+        return "skipped"
+    return "completed" if llm_succeeded else "failed"
+
+
 class CollectorWorker:
     def __init__(self, settings) -> None:
         self._settings = settings
@@ -114,6 +120,7 @@ class CollectorWorker:
                 return
 
             updates = []
+            audit_rows = []
             for row in rows:
                 since_ts, until_ts = self._anomaly_reason_analyzer.reason_window(row["first_trigger_ts"])
                 context = await self._postgres.fetch_anomaly_reason_context(
@@ -125,6 +132,7 @@ class CollectorWorker:
                     limit_per_kind=8,
                 )
                 result = await asyncio.to_thread(self._anomaly_reason_analyzer.analyze, row, context)
+                invoked_at = datetime.now(UTC)
                 updates.append(
                     {
                         "id": row["id"],
@@ -135,9 +143,32 @@ class CollectorWorker:
                         "related_announcement_ids": result.related_announcement_ids,
                     }
                 )
+                audit_rows.append(
+                    {
+                        "invoked_at": invoked_at,
+                        "audit_date": invoked_at.astimezone(CHINA_MARKET_TZ).date(),
+                        "menu_module": "events",
+                        "call_category": "anomaly_reason",
+                        "status": _derive_llm_audit_status(attempted=result.attempted, llm_succeeded=result.llm_succeeded),
+                        "model_used": result.model_used,
+                        "prompt_version": result.prompt_version,
+                        "latency_ms": result.latency_ms,
+                        "meta": {
+                            "anomalyId": row["id"],
+                            "symbol": str(row["symbol"] or ""),
+                            "anomalyType": str(row["anomaly_type"] or ""),
+                            "llmSucceeded": result.llm_succeeded,
+                            "skipReason": result.skip_reason,
+                            "relatedNewsCount": len(result.related_news_ids),
+                            "relatedAnnouncementCount": len(result.related_announcement_ids),
+                        },
+                    }
+                )
 
             if updates:
                 await self._postgres.update_anomaly_ai_reasons(updates)
+            if audit_rows:
+                await self._postgres.insert_llm_audit_rows(audit_rows)
             analyzed_count = len(rows)
         except Exception:
             logger.exception("collector anomaly reason analysis failed")
