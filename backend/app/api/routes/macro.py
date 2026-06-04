@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field
@@ -11,6 +11,13 @@ router = APIRouter(prefix="/macro", tags=["macro"])
 VALID_SERIES = {"DGS2", "DGS10", "DGS30", "T10Y2Y", "VIXCLS", "DTWEXBGS", "SP500"}
 VALID_FOCUS = {"general", "qdii_impact", "fed_policy"}
 VALID_DEPTH = {"brief", "detailed"}
+CHINA_TZ = timezone(timedelta(hours=8))
+
+
+def _derive_llm_audit_status(*, attempted: bool, has_output: bool) -> str:
+    if not attempted:
+        return "skipped"
+    return "completed" if has_output else "failed"
 
 
 class GenerateMacroAnalysisRequest(BaseModel):
@@ -163,6 +170,7 @@ async def generate_macro_analysis(payload: GenerateMacroAnalysisRequest, request
         analysis["engine"] = "llm"
         model_used = analysis_result.model_used
         prompt_version = analysis_result.prompt_version
+    invoked_at = datetime.now(UTC)
     saved = await request.app.state.macro_query_service.insert_analysis(
         trigger_type="manual",
         focus=focus,
@@ -173,6 +181,26 @@ async def generate_macro_analysis(payload: GenerateMacroAnalysisRequest, request
         model_used=model_used,
         prompt_version=prompt_version,
         cache_key=f"manual:{focus}:{depth}:{snapshot.get('date') or datetime.now(UTC).date().isoformat()}",
+    )
+    await request.app.state.llm_audit_query_service.insert_audit_rows(
+        [
+            {
+                "invoked_at": invoked_at,
+                "audit_date": invoked_at.astimezone(CHINA_TZ).date(),
+                "menu_module": "macro",
+                "call_category": "macro_analysis",
+                "status": _derive_llm_audit_status(attempted=analysis_result.attempted, has_output=analysis_result.analysis is not None),
+                "model_used": analysis_result.model_used,
+                "prompt_version": analysis_result.prompt_version,
+                "latency_ms": analysis_result.latency_ms,
+                "meta": {
+                    "focus": focus,
+                    "depth": depth,
+                    "skipReason": analysis_result.skip_reason,
+                    "snapshotDate": str(snapshot.get("date")) if snapshot.get("date") else None,
+                },
+            }
+        ]
     )
     await redis_store.set_macro_analysis_latest(saved)
     return {"analysis": saved, "cacheHit": False}
