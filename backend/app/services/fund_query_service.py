@@ -36,6 +36,48 @@ def _to_date_string(value: object) -> str | None:
     return None
 
 
+def _coerce_date(value: object) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def _days_since(value: object) -> int | None:
+    target_date = _coerce_date(value)
+    if target_date is None:
+        return None
+    return max((datetime.now(UTC).date() - target_date).days, 0)
+
+
+def _clamp_percent(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return round(min(max(value, 0.0), 100.0), 2)
+
+
+def _normalize_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _is_qdii_fund_type(value: object) -> bool:
+    text = _normalize_text(value)
+    return bool(text and "qdii" in text.lower())
+
+
+def _risk_signal(*, kind: str, severity: str, title: str, message: str) -> dict[str, str]:
+    return {
+        "kind": kind,
+        "severity": severity,
+        "title": title,
+        "message": message,
+    }
+
+
 def _decode_jsonish(value: object) -> dict[str, object]:
     if isinstance(value, dict):
         return dict(value)
@@ -46,6 +88,42 @@ def _decode_jsonish(value: object) -> dict[str, object]:
             return {}
         return decoded if isinstance(decoded, dict) else {}
     return {}
+
+
+def _coerce_date(value: object) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return None
+
+
+def _clamp_percent(value: object) -> float | None:
+    number = _to_float(value)
+    if number is None:
+        return None
+    return round(min(max(number, 0.0), 100.0), 2)
+
+
+def _days_since(value: object) -> int | None:
+    target_date = _coerce_date(value)
+    if target_date is None:
+        return None
+    return max((datetime.now(UTC).date() - target_date).days, 0)
+
+
+def _is_qdii_fund_type(value: object) -> bool:
+    text = str(value or "").strip().lower()
+    return "qdii" in text
+
+
+def _risk_signal(kind: str, severity: str, title: str, message: str) -> dict[str, str]:
+    return {
+        "kind": kind,
+        "severity": severity,
+        "title": title,
+        "message": message,
+    }
 
 
 class FundQueryService:
@@ -199,11 +277,26 @@ class FundQueryService:
                 "estimatedIntradayReturn": _to_float(row["estimated_intraday_return"]),
                 "updatedAt": _to_iso(row["updated_at"]),
             }
-        estimated_returns = await self._compute_estimated_returns_for_funds(fund_codes)
+        latest_holding_rows = await self._fetch_latest_top_holding_rows_for_funds(fund_codes)
+        transparency_by_fund = self._build_transparency_map_from_rows(latest_holding_rows)
+        estimated_returns = await self._compute_estimated_returns_from_rows(latest_holding_rows)
         for fund_code, estimated_return in estimated_returns.items():
             snapshot = snapshots.get(fund_code)
             if snapshot is not None:
                 snapshot["estimatedIntradayReturn"] = estimated_return
+        for fund_code in fund_codes:
+            snapshot = snapshots.setdefault(fund_code, {"fundCode": fund_code})
+            if fund_code in estimated_returns:
+                snapshot["estimatedIntradayReturn"] = estimated_returns[fund_code]
+            transparency = transparency_by_fund.get(fund_code) or self._build_empty_transparency(
+                fund_type=snapshot.get("fundType"),
+            )
+            snapshot["transparency"] = transparency
+            snapshot["riskSignals"] = self._build_fund_risk_signals(
+                transparency=transparency,
+                fund_type=snapshot.get("fundType"),
+            )
+            snapshot["riskFlags"] = [signal["kind"] for signal in snapshot["riskSignals"]]
         return snapshots
 
     async def fetch_fund_detail(self, fund_code: str) -> dict[str, object]:
@@ -234,32 +327,8 @@ class FundQueryService:
             """,
             fund_code,
         )
-        top_holdings = await self._fetch(
-            """
-            WITH latest_report AS (
-                SELECT MAX(report_date) AS report_date
-                FROM fund_stock_holding
-                WHERE fund_code = $1
-            ), ranked AS (
-                SELECT fund_code, stock_symbol, stock_market, stock_name, report_date, rank, weight_percent, hold_shares,
-                       hold_market_value, change_type, raw,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY rank
-                           ORDER BY weight_percent DESC NULLS LAST, hold_market_value DESC NULLS LAST, stock_symbol ASC
-                       ) AS rank_choice
-                FROM fund_stock_holding
-                WHERE fund_code = $1
-                  AND report_date = (SELECT report_date FROM latest_report)
-            )
-            SELECT fund_code, stock_symbol, stock_market, stock_name, report_date, rank, weight_percent, hold_shares,
-                   hold_market_value, change_type, raw
-            FROM ranked
-            WHERE rank_choice = 1
-            ORDER BY rank ASC NULLS LAST, stock_symbol ASC
-            LIMIT 10
-            """,
-            fund_code,
-        )
+        profile_payload = self._serialize_profile(profile)
+        top_holdings = await self._fetch_latest_top_holding_rows_for_funds([fund_code])
         holding_symbols = [str(row["stock_symbol"]) for row in top_holdings]
         stock_snapshots = await self._fetch_stock_snapshots(holding_symbols)
         holding_performance = self._build_holding_performance(top_holdings, stock_snapshots)
@@ -267,12 +336,25 @@ class FundQueryService:
         serialized_snapshot = self._serialize_snapshot(snapshot)
         if serialized_snapshot is not None:
             serialized_snapshot["estimatedIntradayReturn"] = estimated_intraday_return
+        transparency = self._build_transparency_map_from_rows(top_holdings).get(fund_code) or self._build_empty_transparency(
+            fund_type=(profile_payload or {}).get("fundType"),
+        )
+        risk_signals = self._build_fund_risk_signals(
+            transparency=transparency,
+            fund_type=(profile_payload or {}).get("fundType"),
+        )
+        if serialized_snapshot is not None:
+            serialized_snapshot["transparency"] = transparency
+            serialized_snapshot["riskSignals"] = risk_signals
+            serialized_snapshot["riskFlags"] = [signal["kind"] for signal in risk_signals]
         return {
-            "profile": self._serialize_profile(profile),
+            "profile": profile_payload,
             "snapshot": serialized_snapshot,
             "navHistory": [self._serialize_nav_row(row) for row in nav_history],
             "topHoldings": [self._serialize_holding_row(row) for row in top_holdings],
             "holdingStocksPerformance": holding_performance,
+            "transparency": transparency,
+            "riskSignals": risk_signals,
         }
 
     async def fetch_stock_funds(self, symbol: str) -> dict[str, object]:
@@ -294,6 +376,208 @@ class FundQueryService:
             "symbol": symbol,
             "latestReportDate": latest_report_date,
             "items": [self._serialize_stock_fund_row(row) for row in rows],
+        }
+
+    async def fetch_active_fund_portfolio_view(self, fund_codes: list[str]) -> dict[str, object]:
+        normalized_fund_codes = sorted({str(code).strip() for code in fund_codes if str(code).strip()})
+        profile_meta = await self._fetch_fund_profile_meta(normalized_fund_codes)
+        active_fund_count = len(normalized_fund_codes)
+        assumptions = {
+            "weightingMethod": "equal_weight_synced_funds",
+            "weightingLabel": "当前按已完成持仓同步的激活基金等权估算",
+            "disclosureBasis": "仅基于最新披露重仓进行观察",
+            "exposureBasis": "单股组合估算权重 = 所有已同步基金持仓权重 / 已同步基金数量之和",
+            "note": "当前监控组合视角只纳入已同步披露持仓的基金，不代表你的真实持仓比例。",
+        }
+        if not normalized_fund_codes:
+            return {
+                "status": "no_active_funds",
+                "statusMessage": "当前没有激活基金，暂时无法生成监控组合视角。",
+                "assumptions": assumptions,
+                "summary": {
+                    "activeFundCount": 0,
+                    "participatingFundCount": 0,
+                    "pendingFundCount": 0,
+                    "fundsWithHoldingsCount": 0,
+                    "stockExposureCount": 0,
+                    "repeatedHoldingCount": 0,
+                    "top1ExposurePercent": None,
+                    "top3ExposurePercent": None,
+                    "qdiiFundCount": 0,
+                    "qdiiFundRatio": 0,
+                    "latestReportDate": None,
+                    "oldestReportDate": None,
+                    "staleFundCount": 0,
+                },
+                "funds": [],
+                "stockExposure": [],
+                "repeatedHoldings": [],
+                "riskSignals": [
+                    _risk_signal(
+                        kind="no_active_funds",
+                        severity="info",
+                        title="暂无激活基金",
+                        message="先在基金列表中激活基金，才能形成监控组合视角。",
+                    )
+                ],
+            }
+
+        latest_holding_rows = await self._fetch_latest_top_holding_rows_for_funds(normalized_fund_codes)
+        transparency_by_fund = self._build_transparency_map_from_rows(latest_holding_rows)
+        funds = [
+            {
+                "fundCode": fund_code,
+                "fundName": (profile_meta.get(fund_code) or {}).get("fundName") or fund_code,
+                "fundType": (profile_meta.get(fund_code) or {}).get("fundType"),
+                "transparency": transparency_by_fund.get(fund_code) or self._build_empty_transparency(
+                    fund_type=(profile_meta.get(fund_code) or {}).get("fundType"),
+                ),
+            }
+            for fund_code in normalized_fund_codes
+        ]
+
+        if not latest_holding_rows:
+            qdii_fund_count = sum(1 for fund in funds if _is_qdii_fund_type(fund["fundType"]))
+            qdii_fund_ratio = round(qdii_fund_count / active_fund_count, 4) if active_fund_count else 0
+            return {
+                "status": "waiting_for_holdings",
+                "statusMessage": "已激活基金尚未完成披露持仓同步，组合穿透稍后可用。",
+                "assumptions": assumptions,
+                "summary": {
+                    "activeFundCount": active_fund_count,
+                    "participatingFundCount": 0,
+                    "pendingFundCount": active_fund_count,
+                    "fundsWithHoldingsCount": 0,
+                    "stockExposureCount": 0,
+                    "repeatedHoldingCount": 0,
+                    "top1ExposurePercent": None,
+                    "top3ExposurePercent": None,
+                    "qdiiFundCount": qdii_fund_count,
+                    "qdiiFundRatio": qdii_fund_ratio,
+                    "latestReportDate": None,
+                    "oldestReportDate": None,
+                    "staleFundCount": 0,
+                },
+                "funds": funds,
+                "stockExposure": [],
+                "repeatedHoldings": [],
+                "riskSignals": [
+                    _risk_signal(
+                        kind="waiting_for_holdings",
+                        severity="info",
+                        title="披露持仓待同步",
+                        message="当前观察池还没有可用的最新披露重仓，暂时无法给出组合穿透结果。",
+                    )
+                ],
+            }
+
+        participating_fund_count = len(transparency_by_fund)
+        denominator = max(participating_fund_count, 1)
+        stock_snapshots = await self._fetch_stock_snapshots(sorted({str(row["stock_symbol"]) for row in latest_holding_rows}))
+        exposure_map: dict[str, dict[str, object]] = {}
+        for row in latest_holding_rows:
+            stock_symbol = str(row["stock_symbol"])
+            stock_snapshot = stock_snapshots.get(stock_symbol) or {}
+            stock_name = row["stock_name"] or stock_symbol
+            fund_code = str(row["fund_code"])
+            estimated_exposure = (_to_float(row["weight_percent"]) or 0.0) / denominator
+            exposure = exposure_map.setdefault(
+                stock_symbol,
+                {
+                    "stockSymbol": stock_symbol,
+                    "stockName": stock_name,
+                    "stockMarket": row["stock_market"],
+                    "estimatedBasketExposurePercent": 0.0,
+                    "contributingFundCount": 0,
+                    "contributingFunds": [],
+                    "latestReportDate": None,
+                    "lastPrice": _to_float(stock_snapshot.get("lastPrice")),
+                    "changePct": _to_float(stock_snapshot.get("changePct")),
+                    "snapshotUpdatedAt": stock_snapshot.get("updatedAt"),
+                },
+            )
+            exposure["estimatedBasketExposurePercent"] = float(exposure["estimatedBasketExposurePercent"] or 0.0) + estimated_exposure
+            exposure["contributingFunds"].append(
+                {
+                    "fundCode": fund_code,
+                    "fundName": row["fund_name"] or (profile_meta.get(fund_code) or {}).get("fundName") or fund_code,
+                    "fundType": row["fund_type"] or (profile_meta.get(fund_code) or {}).get("fundType"),
+                    "weightPercent": _to_float(row["weight_percent"]),
+                    "holdMarketValue": _to_float(row["hold_market_value"]),
+                    "reportDate": _to_date_string(row["report_date"]),
+                }
+            )
+            latest_report_date = _to_date_string(row["report_date"])
+            current_report_date = exposure.get("latestReportDate")
+            exposure["latestReportDate"] = max(filter(None, [current_report_date, latest_report_date]), default=None)
+
+        stock_exposure: list[dict[str, object]] = []
+        for exposure in exposure_map.values():
+            contributing_funds = sorted(
+                exposure["contributingFunds"],
+                key=lambda item: (
+                    -(_to_float(item.get("weightPercent")) or 0.0),
+                    str(item.get("fundCode") or ""),
+                ),
+            )
+            exposure["contributingFunds"] = contributing_funds
+            exposure["contributingFundCount"] = len(contributing_funds)
+            estimated_basket_exposure = round(float(exposure["estimatedBasketExposurePercent"] or 0.0), 4)
+            change_pct = _to_float(exposure.get("changePct"))
+            exposure["estimatedBasketExposurePercent"] = estimated_basket_exposure
+            exposure["estimatedContribution"] = round(estimated_basket_exposure * ((change_pct or 0.0) / 100), 4)
+            exposure["stressImpactDown1Pct"] = round(-(estimated_basket_exposure / 100), 4)
+            exposure["stressImpactDown5Pct"] = round(-((estimated_basket_exposure / 100) * 5), 4)
+            stock_exposure.append(exposure)
+
+        stock_exposure.sort(
+            key=lambda item: (
+                -(item.get("estimatedBasketExposurePercent") or 0.0),
+                -(item.get("contributingFundCount") or 0),
+                str(item.get("stockSymbol") or ""),
+            )
+        )
+        repeated_holdings = [item for item in stock_exposure if (item.get("contributingFundCount") or 0) >= 2]
+        fund_transparency_rows = [fund["transparency"] for fund in funds if fund.get("transparency", {}).get("status") == "ready"]
+        freshness_values = [item.get("freshnessDays") for item in fund_transparency_rows if isinstance(item.get("freshnessDays"), int)]
+        report_dates = [item.get("latestReportDate") for item in fund_transparency_rows if item.get("latestReportDate")]
+        qdii_fund_count = sum(1 for fund in funds if _is_qdii_fund_type(fund.get("fundType")))
+        qdii_fund_ratio = round(qdii_fund_count / active_fund_count, 4) if active_fund_count else 0
+        top1_exposure = stock_exposure[0]["estimatedBasketExposurePercent"] if stock_exposure else None
+        top3_exposure = round(sum(item.get("estimatedBasketExposurePercent") or 0.0 for item in stock_exposure[:3]), 4) if stock_exposure else None
+        summary = {
+            "activeFundCount": active_fund_count,
+            "participatingFundCount": participating_fund_count,
+            "pendingFundCount": max(active_fund_count - participating_fund_count, 0),
+            "fundsWithHoldingsCount": len(fund_transparency_rows),
+            "stockExposureCount": len(stock_exposure),
+            "repeatedHoldingCount": len(repeated_holdings),
+            "top1ExposurePercent": top1_exposure,
+            "top3ExposurePercent": top3_exposure,
+            "qdiiFundCount": qdii_fund_count,
+            "qdiiFundRatio": qdii_fund_ratio,
+            "latestReportDate": max(report_dates) if report_dates else None,
+            "oldestReportDate": min(report_dates) if report_dates else None,
+            "staleFundCount": sum(1 for value in freshness_values if value >= 45),
+            "maxFreshnessDays": max(freshness_values) if freshness_values else None,
+        }
+        return {
+            "status": "partial_holdings" if summary["pendingFundCount"] > 0 else "ready",
+            "statusMessage": (
+                "部分激活基金尚未完成持仓同步，当前只对已同步基金进行等权估算。"
+                if summary["pendingFundCount"] > 0
+                else None
+            ),
+            "assumptions": assumptions,
+            "summary": summary,
+            "funds": funds,
+            "stockExposure": stock_exposure,
+            "repeatedHoldings": repeated_holdings[:10],
+            "riskSignals": self._build_portfolio_risk_signals(
+                status="partial_holdings" if summary["pendingFundCount"] > 0 else "ready",
+                summary=summary,
+                repeated_holdings=repeated_holdings,
+            ),
         }
 
     async def upsert_fund_profile(self, *, fund_code: str, payload: dict[str, object]) -> None:
@@ -555,32 +839,10 @@ class FundQueryService:
     async def _compute_estimated_returns_for_funds(self, fund_codes: list[str]) -> dict[str, float | None]:
         if not fund_codes:
             return {}
-        rows = await self._fetch(
-            """
-            WITH latest_report AS (
-                SELECT fund_code, MAX(report_date) AS report_date
-                FROM fund_stock_holding
-                WHERE fund_code = ANY($1::text[])
-                GROUP BY fund_code
-            ), ranked AS (
-                SELECT holding.fund_code, holding.stock_symbol, holding.stock_name, holding.report_date, holding.rank,
-                       holding.weight_percent, holding.hold_shares, holding.hold_market_value, holding.change_type,
-                       ROW_NUMBER() OVER (
-                           PARTITION BY holding.fund_code, holding.rank
-                           ORDER BY holding.weight_percent DESC NULLS LAST, holding.hold_market_value DESC NULLS LAST, holding.stock_symbol ASC
-                       ) AS rank_choice
-                FROM fund_stock_holding AS holding
-                INNER JOIN latest_report
-                    ON latest_report.fund_code = holding.fund_code
-                   AND latest_report.report_date = holding.report_date
-            )
-            SELECT fund_code, stock_symbol, stock_name, report_date, rank, weight_percent, hold_shares, hold_market_value, change_type
-            FROM ranked
-            WHERE rank_choice = 1
-            ORDER BY fund_code ASC, rank ASC NULLS LAST, stock_symbol ASC
-            """,
-            fund_codes,
-        )
+        rows = await self._fetch_latest_top_holding_rows_for_funds(fund_codes)
+        return await self._compute_estimated_returns_from_rows(rows)
+
+    async def _compute_estimated_returns_from_rows(self, rows: list[asyncpg.Record]) -> dict[str, float | None]:
         holdings_by_fund: dict[str, list[asyncpg.Record]] = {}
         symbols: list[str] = []
         for row in rows:
@@ -593,6 +855,245 @@ class FundQueryService:
             performance = self._build_holding_performance(holdings, stock_snapshots)
             estimated_returns[fund_code] = self._sum_estimated_contributions(performance)
         return estimated_returns
+
+    async def _fetch_latest_top_holding_rows_for_funds(self, fund_codes: list[str]) -> list[asyncpg.Record]:
+        if not fund_codes:
+            return []
+        return await self._fetch(
+            """
+            WITH latest_report AS (
+                SELECT fund_code, MAX(report_date) AS report_date
+                FROM fund_stock_holding
+                WHERE fund_code = ANY($1::text[])
+                GROUP BY fund_code
+            ), ranked AS (
+                SELECT holding.fund_code, profile.fund_name, profile.fund_type, holding.stock_symbol, holding.stock_market,
+                       holding.stock_name, holding.report_date, holding.rank, holding.weight_percent, holding.hold_shares,
+                       holding.hold_market_value, holding.change_type, holding.raw,
+                       ROW_NUMBER() OVER (
+                            PARTITION BY holding.fund_code, holding.rank
+                            ORDER BY holding.weight_percent DESC NULLS LAST, holding.hold_market_value DESC NULLS LAST, holding.stock_symbol ASC
+                        ) AS rank_choice
+                FROM fund_stock_holding AS holding
+                INNER JOIN latest_report
+                    ON latest_report.fund_code = holding.fund_code
+                   AND latest_report.report_date = holding.report_date
+                LEFT JOIN fund_profile AS profile
+                    ON profile.fund_code = holding.fund_code
+            )
+            SELECT fund_code, fund_name, fund_type, stock_symbol, stock_market, stock_name, report_date, rank,
+                   weight_percent, hold_shares, hold_market_value, change_type, raw
+            FROM ranked
+            WHERE rank_choice = 1
+            ORDER BY fund_code ASC, rank ASC NULLS LAST, stock_symbol ASC
+            """,
+            fund_codes,
+        )
+
+    async def _fetch_fund_profile_meta(self, fund_codes: list[str]) -> dict[str, dict[str, object]]:
+        if not fund_codes:
+            return {}
+        rows = await self._fetch(
+            """
+            SELECT fund_code, fund_name, fund_type
+            FROM fund_profile
+            WHERE fund_code = ANY($1::text[])
+            """,
+            fund_codes,
+        )
+        return {
+            str(row["fund_code"]): {
+                "fundName": row["fund_name"],
+                "fundType": row["fund_type"],
+            }
+            for row in rows
+        }
+
+    def _build_empty_transparency(self, *, fund_type: object = None) -> dict[str, object]:
+        return {
+            "status": "waiting_for_holdings",
+            "latestReportDate": None,
+            "freshnessDays": None,
+            "disclosedWeightPercent": None,
+            "undisclosedWeightPercent": None,
+            "holdingCount": 0,
+            "top1WeightPercent": None,
+            "top3WeightPercent": None,
+            "isQdii": _is_qdii_fund_type(fund_type),
+        }
+
+    def _build_transparency_map_from_rows(self, rows: list[asyncpg.Record]) -> dict[str, dict[str, object]]:
+        holdings_by_fund: dict[str, list[asyncpg.Record]] = {}
+        for row in rows:
+            holdings_by_fund.setdefault(str(row["fund_code"]), []).append(row)
+        transparency_by_fund: dict[str, dict[str, object]] = {}
+        for fund_code, holdings in holdings_by_fund.items():
+            report_date = holdings[0]["report_date"] if holdings else None
+            weights = [_to_float(row["weight_percent"]) for row in holdings]
+            disclosed_weight_percent = _clamp_percent(sum(value for value in weights if value is not None))
+            top1_weight = next((_to_float(row["weight_percent"]) for row in holdings if row["rank"] == 1), None)
+            top3_weight = _clamp_percent(sum((_to_float(row["weight_percent"]) or 0.0) for row in holdings if isinstance(row["rank"], int) and row["rank"] <= 3))
+            fund_type = holdings[0]["fund_type"] if holdings else None
+            transparency_by_fund[fund_code] = {
+                "status": "ready",
+                "latestReportDate": _to_date_string(report_date),
+                "freshnessDays": _days_since(report_date),
+                "disclosedWeightPercent": disclosed_weight_percent,
+                "undisclosedWeightPercent": _clamp_percent(100.0 - disclosed_weight_percent) if disclosed_weight_percent is not None else None,
+                "holdingCount": len(holdings),
+                "top1WeightPercent": _clamp_percent(top1_weight),
+                "top3WeightPercent": top3_weight,
+                "isQdii": _is_qdii_fund_type(fund_type),
+            }
+        return transparency_by_fund
+
+    def _build_fund_risk_signals(self, *, transparency: dict[str, object], fund_type: object = None) -> list[dict[str, str]]:
+        if transparency.get("status") != "ready":
+            return [
+                _risk_signal(
+                    kind="waiting_for_holdings",
+                    severity="info",
+                    title="披露持仓待同步",
+                    message="当前暂无可用的最新披露重仓数据，估算提示暂不完整。",
+                )
+            ]
+        signals: list[dict[str, str]] = []
+        freshness_days = transparency.get("freshnessDays")
+        top1_weight_percent = transparency.get("top1WeightPercent")
+        top3_weight_percent = transparency.get("top3WeightPercent")
+        disclosed_weight_percent = transparency.get("disclosedWeightPercent")
+        latest_report_date = transparency.get("latestReportDate") or "未知报告期"
+        if isinstance(freshness_days, int) and freshness_days >= 45:
+            signals.append(
+                _risk_signal(
+                    kind="stale_disclosure",
+                    severity="warning",
+                    title="披露数据滞后",
+                    message=f"最新披露报告期为 {latest_report_date}，距今约 {freshness_days} 天。",
+                )
+            )
+        if isinstance(top1_weight_percent, (int, float)) and top1_weight_percent >= 5:
+            signals.append(
+                _risk_signal(
+                    kind="high_top1_concentration",
+                    severity="warning",
+                    title="头号重仓集中",
+                    message=f"Top1 重仓约 {top1_weight_percent:.2f}% ，需关注单股波动对基金估算联动的放大效应。",
+                )
+            )
+        if isinstance(top3_weight_percent, (int, float)) and top3_weight_percent >= 15:
+            signals.append(
+                _risk_signal(
+                    kind="high_top3_concentration",
+                    severity="warning",
+                    title="前 3 重仓占比较高",
+                    message=f"前 3 重仓合计约 {top3_weight_percent:.2f}% ，组合波动可能更受少数股票影响。",
+                )
+            )
+        if isinstance(disclosed_weight_percent, (int, float)) and disclosed_weight_percent < 50:
+            signals.append(
+                _risk_signal(
+                    kind="low_disclosure_coverage",
+                    severity="info",
+                    title="未披露部分较多",
+                    message=f"当前已披露重仓约 {disclosed_weight_percent:.2f}% ，剩余部分仍可能影响实际净值变化。",
+                )
+            )
+        if transparency.get("isQdii") or _is_qdii_fund_type(fund_type):
+            signals.append(
+                _risk_signal(
+                    kind="qdii_exposure",
+                    severity="info",
+                    title="QDII / 跨市场基金",
+                    message="跨市场基金需额外关注时差、汇率和海外市场开收盘节奏。",
+                )
+            )
+        return signals
+
+    def _build_portfolio_risk_signals(
+        self,
+        *,
+        status: str,
+        summary: dict[str, object],
+        repeated_holdings: list[dict[str, object]],
+    ) -> list[dict[str, str]]:
+        signals: list[dict[str, str]] = []
+        repeated_holding_count = int(summary.get("repeatedHoldingCount") or 0)
+        pending_fund_count = int(summary.get("pendingFundCount") or 0)
+        top1_exposure_percent = _to_float(summary.get("top1ExposurePercent"))
+        top3_exposure_percent = _to_float(summary.get("top3ExposurePercent"))
+        stale_fund_count = int(summary.get("staleFundCount") or 0)
+        qdii_fund_ratio = _to_float(summary.get("qdiiFundRatio"))
+        if status == "partial_holdings" and pending_fund_count > 0:
+            signals.append(
+                _risk_signal(
+                    kind="pending_holdings_sync",
+                    severity="info",
+                    title="部分基金尚未同步持仓",
+                    message=f"当前仍有 {pending_fund_count} 只激活基金尚未完成持仓同步，本页只按已同步基金等权估算。",
+                )
+            )
+        if repeated_holding_count > 0:
+            top_repeated = repeated_holdings[0] if repeated_holdings else None
+            repeated_name = top_repeated.get("stockName") if isinstance(top_repeated, dict) else None
+            repeated_count = top_repeated.get("contributingFundCount") if isinstance(top_repeated, dict) else None
+            signals.append(
+                _risk_signal(
+                    kind="repeated_holdings",
+                    severity="warning",
+                    title="存在重复持仓",
+                    message=(
+                        f"当前观察池有 {repeated_holding_count} 只股票被多只基金共同持有，"
+                        f"其中 {repeated_name or '头号重复股'} 被约 {repeated_count or '--'} 只基金共同持有。"
+                    ),
+                )
+            )
+        if isinstance(top1_exposure_percent, (int, float)) and top1_exposure_percent >= 5:
+            signals.append(
+                _risk_signal(
+                    kind="top1_exposure_concentration",
+                    severity="warning",
+                    title="头号单股暴露偏高",
+                    message=f"监控组合 top1 单股估算暴露约 {top1_exposure_percent:.2f}% ，需关注单股波动放大。",
+                )
+            )
+        if isinstance(top3_exposure_percent, (int, float)) and top3_exposure_percent >= 15:
+            signals.append(
+                _risk_signal(
+                    kind="top3_exposure_concentration",
+                    severity="warning",
+                    title="前 3 单股暴露偏高",
+                    message=f"监控组合前 3 单股合计暴露约 {top3_exposure_percent:.2f}% ，集中度偏高。",
+                )
+            )
+        if stale_fund_count > 0:
+            signals.append(
+                _risk_signal(
+                    kind="stale_disclosure",
+                    severity="warning",
+                    title="存在较旧披露数据",
+                    message=f"当前有 {stale_fund_count} 只基金的最近披露已明显滞后，组合观察需保留保守口径。",
+                )
+            )
+        if isinstance(qdii_fund_ratio, (int, float)) and qdii_fund_ratio >= 0.4:
+            signals.append(
+                _risk_signal(
+                    kind="qdii_exposure",
+                    severity="info",
+                    title="QDII 暴露较高",
+                    message=f"当前观察池中 QDII 基金占比约 {(qdii_fund_ratio * 100):.0f}% ，需额外关注跨市场时差与汇率影响。",
+                )
+            )
+        if not signals:
+            signals.append(
+                _risk_signal(
+                    kind="baseline_watch",
+                    severity="info",
+                    title="结构风险可持续观察",
+                    message="当前未触发明显结构性阈值，但组合观察仍受披露时滞与未披露持仓影响。",
+                )
+            )
+        return signals
 
     def _serialize_profile(self, row: asyncpg.Record | None) -> dict[str, object] | None:
         if row is None:
