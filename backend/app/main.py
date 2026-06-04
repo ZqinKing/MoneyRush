@@ -11,6 +11,7 @@ from app.api.routes.dragon_tiger import router as dragon_tiger_router
 from app.api.routes.funds import router as funds_router
 from app.api.routes.gold import router as gold_router
 from app.api.routes.health import router as health_router
+from app.api.routes.llm_audit import router as llm_audit_router
 from app.api.routes.macro import router as macro_router
 from app.api.routes.market import router as market_router
 from app.api.routes.symbols import router as symbols_router
@@ -21,6 +22,7 @@ from app.services.content_query_service import ContentQueryService
 from app.services.dragon_tiger_query_service import DragonTigerQueryService
 from app.services.fund_lookup import FundLookupService
 from app.services.fund_query_service import FundQueryService
+from app.services.llm_audit_query_service import LlmAuditQueryService
 from app.services.macro_analysis_service import MacroAnalysisService
 from app.services.macro_query_service import MacroQueryService
 from app.services.market_detail.query_service import MarketDetailQueryService
@@ -84,6 +86,7 @@ async def lifespan(app: FastAPI):
     )
     app.state.dragon_tiger_query_service = DragonTigerQueryService(settings.postgres_dsn)
     app.state.macro_query_service = MacroQueryService(settings.postgres_dsn)
+    app.state.llm_audit_query_service = LlmAuditQueryService(settings.postgres_dsn)
     app.state.macro_analysis_service = MacroAnalysisService(settings)
     app.state.symbol_lookup_service = SymbolLookupService()
     app.state.fund_lookup_service = FundLookupService()
@@ -97,9 +100,11 @@ async def lifespan(app: FastAPI):
     await app.state.content_query_service.connect()
     await app.state.dragon_tiger_query_service.connect()
     await app.state.macro_query_service.connect()
+    await app.state.llm_audit_query_service.connect()
 
     yield
 
+    await app.state.llm_audit_query_service.close()
     await app.state.macro_query_service.close()
     await app.state.dragon_tiger_query_service.close()
     await app.state.content_query_service.close()
@@ -138,6 +143,7 @@ def create_app() -> FastAPI:
     app.include_router(dragon_tiger_router, prefix="/api/v1")
     app.include_router(funds_router, prefix="/api/v1")
     app.include_router(macro_router, prefix="/api/v1")
+    app.include_router(llm_audit_router, prefix="/api/v1")
     app.include_router(market_ws_router)
     return app
 
