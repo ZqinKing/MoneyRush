@@ -754,8 +754,83 @@ textarea {
   margin-bottom: 6px;
 }
 
+
 .fund-grid {
   margin-top: 12px;
+}
+
+.fund-card-signal-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.fund-card-note {
+  margin-top: 10px;
+}
+
+.fund-portfolio-view {
+  display: grid;
+  gap: 18px;
+}
+
+.fund-portfolio-hero,
+.portfolio-overlap-card,
+.fund-risk-card {
+  border-radius: 16px;
+  padding: 16px;
+  background: rgba(4, 8, 16, 0.9);
+  border: 1px solid rgba(157, 180, 255, 0.12);
+}
+
+.fund-portfolio-hero,
+.portfolio-overlap-card {
+  display: grid;
+  gap: 10px;
+}
+
+.fund-portfolio-empty {
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(8, 14, 26, 0.72);
+  border: 1px dashed rgba(157, 180, 255, 0.2);
+}
+
+.portfolio-overlap-grid,
+.fund-analysis-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.fund-risk-list {
+  display: grid;
+  gap: 10px;
+}
+
+.fund-risk-card {
+  display: grid;
+  gap: 10px;
+}
+
+.fund-risk-card p {
+  margin: 0;
+  color: #bbcaea;
+  line-height: 1.5;
+}
+
+.fund-analysis-list {
+  margin: 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+  color: #d9e6ff;
+}
+
+.fund-portfolio-analysis-card {
+  display: grid;
+  gap: 14px;
 }
 
 .gold-panel {

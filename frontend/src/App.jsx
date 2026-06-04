@@ -130,12 +130,14 @@ const dragonTigerDailyTabPriority = {
 const llmAuditModuleLabels = {
   content: '资讯',
   events: '异动日报',
+  funds: '基金',
   macro: '美债宏观',
 };
 
 const llmAuditCategoryLabels = {
   ai_summary: 'AI摘要',
   anomaly_reason: '异动归因',
+  fund_portfolio_risk_analysis: '基金风险解读',
   macro_analysis: '宏观解读',
 };
 
@@ -218,6 +220,14 @@ function buildMacroAnalysisLatestUrl() {
 
 function buildMacroAnalysisGenerateUrl() {
   return `${apiBaseUrl}/api/v1/macro/analysis/generate`;
+}
+
+function buildFundPortfolioUrl() {
+  return `${apiBaseUrl}/api/v1/funds/portfolio`;
+}
+
+function buildFundPortfolioAnalysisUrl() {
+  return `${apiBaseUrl}/api/v1/funds/portfolio/analysis`;
 }
 
 function buildLlmAuditCapabilitiesUrl() {
@@ -499,6 +509,37 @@ function formatDate(value) {
   }
 
   return new Date(value).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
+function formatReportQuarter(value) {
+  if (!value) {
+    return '报告期未知';
+  }
+  const timestamp = new Date(value).getTime();
+  if (Number.isNaN(timestamp)) {
+    return '报告期未知';
+  }
+  const date = new Date(timestamp);
+  const quarter = Math.floor(date.getUTCMonth() / 3) + 1;
+  return `${date.getUTCFullYear()}Q${quarter}`;
+}
+
+function formatFreshnessDays(value) {
+  if (typeof value !== 'number') {
+    return '滞后未知';
+  }
+  return `距今 ${value} 天`;
+}
+
+function getRiskSignalTone(signal) {
+  const severity = signal?.severity;
+  if (severity === 'high') {
+    return 'negative';
+  }
+  if (severity === 'warning') {
+    return 'warning';
+  }
+  return 'muted';
 }
 
 function getDragonTigerComparableValue(item, key) {
@@ -1632,6 +1673,11 @@ function App() {
   const [fundDetailRequestState, setFundDetailRequestState] = useState('idle');
   const [removingFund, setRemovingFund] = useState('');
   const [autoLinkStocks, setAutoLinkStocks] = useState(true);
+  const [fundsSubView, setFundsSubView] = useState('list');
+  const [fundPortfolioView, setFundPortfolioView] = useState(null);
+  const [fundPortfolioRequestState, setFundPortfolioRequestState] = useState('idle');
+  const [fundPortfolioAnalysis, setFundPortfolioAnalysis] = useState(null);
+  const [fundPortfolioAnalysisRequestState, setFundPortfolioAnalysisRequestState] = useState('idle');
   const [macroCapabilities, setMacroCapabilities] = useState({ enabled: false, loading: true });
   const [macroSnapshot, setMacroSnapshot] = useState(null);
   const [macroCollectorStatus, setMacroCollectorStatus] = useState(null);
@@ -1643,6 +1689,7 @@ function App() {
   const [llmAuditRequestState, setLlmAuditRequestState] = useState('idle');
   const [llmAuditReloadNonce, setLlmAuditReloadNonce] = useState(0);
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
+  const activeFundsKey = useMemo(() => [...activeFunds].sort().join(','), [activeFunds]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
   const dailyAnomalyItems = useMemo(() => {
@@ -1786,6 +1833,11 @@ function App() {
       setActiveView('overview');
     }
   }, [activeView, llmAuditCapabilities.enabled, llmAuditCapabilities.loading]);
+
+  useEffect(() => {
+    setFundPortfolioAnalysis(null);
+    setFundPortfolioAnalysisRequestState('idle');
+  }, [activeFundsKey]);
 
   useEffect(() => {
     if (activeView !== 'llmAudit' || !llmAuditCapabilities.enabled) {
@@ -2097,6 +2149,45 @@ function App() {
   }, [activeView]);
 
   useEffect(() => {
+    setFundPortfolioAnalysis(null);
+    setFundPortfolioAnalysisRequestState('idle');
+  }, [activeFundsKey]);
+
+  useEffect(() => {
+    if (activeView !== 'funds' || fundsSubView !== 'portfolio' || selectedFundCode) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadFundPortfolioView({ keepReadyState = false } = {}) {
+      if (!keepReadyState) {
+        setFundPortfolioRequestState('loading');
+      }
+      try {
+        const response = await fetch(buildFundPortfolioUrl());
+        const payload = await parseJsonOrThrow(response, 'fund portfolio fetch failed');
+        if (cancelled) {
+          return;
+        }
+        setFundPortfolioView(payload && typeof payload === 'object' ? payload : null);
+        setFundPortfolioRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setFundPortfolioRequestState('error');
+        }
+      }
+    }
+
+    loadFundPortfolioView();
+    const intervalId = window.setInterval(() => loadFundPortfolioView({ keepReadyState: true }), 60000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeFundsKey, activeView, fundsSubView, selectedFundCode]);
+
+  useEffect(() => {
     if (activeView !== 'macro' || !macroCapabilities.enabled) {
       return undefined;
     }
@@ -2170,7 +2261,6 @@ function App() {
       cancelled = true;
     };
   }, [selectedFundCode]);
-
 
   useEffect(() => {
     if (activeView !== 'content') {
@@ -2686,6 +2776,201 @@ function App() {
     setFundDetailRequestState('idle');
   }
 
+  function renderRiskSignalList(signals, emptyMessage = '当前暂无额外风险提示。') {
+    const items = Array.isArray(signals) ? signals : [];
+    if (!items.length) {
+      return <p className="panel-tip compact">{emptyMessage}</p>;
+    }
+    return (
+      <div className="fund-risk-list">
+        {items.map((signal, index) => (
+          <article className="fund-risk-card" key={`${signal?.kind || 'risk'}-${index}`}>
+            <span className={`market-breadth-chip ${getRiskSignalTone(signal)}`}>{signal?.title || '风险提示'}</span>
+            <p>{signal?.message || '--'}</p>
+          </article>
+        ))}
+      </div>
+    );
+  }
+
+  function renderFundPortfolioView() {
+    const portfolio = fundPortfolioView && typeof fundPortfolioView === 'object' ? fundPortfolioView : {};
+    const summary = portfolio?.summary && typeof portfolio.summary === 'object' ? portfolio.summary : {};
+    const assumptions = portfolio?.assumptions && typeof portfolio.assumptions === 'object' ? portfolio.assumptions : {};
+    const stockExposure = Array.isArray(portfolio?.stockExposure) ? portfolio.stockExposure : [];
+    const repeatedHoldings = Array.isArray(portfolio?.repeatedHoldings) ? portfolio.repeatedHoldings : [];
+    const riskSignals = Array.isArray(portfolio?.riskSignals) ? portfolio.riskSignals : [];
+    const analysisPayload = fundPortfolioAnalysis?.analysis || fundPortfolioAnalysis;
+    const features = llmAuditCapabilities?.features && typeof llmAuditCapabilities.features === 'object'
+      ? llmAuditCapabilities.features
+      : {};
+    const aiEnabled = Boolean(features.fundPortfolioRiskAnalysis);
+
+    return (
+      <div className="fund-portfolio-view">
+        <section className="fund-portfolio-hero">
+          <div>
+            <h3>监控组合视角</h3>
+            <p className="panel-tip compact">{portfolio?.statusMessage || assumptions?.note || '当前按已激活基金观察池估算持仓暴露。'}</p>
+          </div>
+          <div className="fund-card-signal-row">
+            {assumptions?.weightingLabel ? <span className="market-breadth-chip muted">{assumptions.weightingLabel}</span> : null}
+            {assumptions?.disclosureBasis ? <span className="market-breadth-chip muted">{assumptions.disclosureBasis}</span> : null}
+            {portfolio?.status === 'partial_holdings' ? <span className="market-breadth-chip warning">存在待同步基金</span> : null}
+          </div>
+        </section>
+        {fundPortfolioRequestState === 'loading' ? <p className="status-line pending">监控组合视角加载中...</p> : null}
+        {fundPortfolioRequestState === 'error' ? <p className="status-line error">监控组合视角加载失败，请稍后重试。</p> : null}
+        {fundPortfolioRequestState === 'ready' && (portfolio?.status === 'no_active_funds' || portfolio?.status === 'waiting_for_holdings') ? (
+          <p className="panel-tip compact fund-portfolio-empty">{portfolio?.statusMessage || '当前没有可用的监控组合数据。'}</p>
+        ) : null}
+        {fundPortfolioRequestState === 'ready' && portfolio?.status !== 'no_active_funds' && portfolio?.status !== 'waiting_for_holdings' ? (
+          <>
+            <div className="market-summary-grid fund-portfolio-summary-grid">
+              <article className="summary-metric summary-metric-strong">
+                <span>激活基金</span>
+                <strong>{summary?.activeFundCount ?? 0}</strong>
+                <em>纳入估算 {summary?.participatingFundCount ?? 0}</em>
+              </article>
+              <article className="summary-metric">
+                <span>重复持仓</span>
+                <strong>{summary?.repeatedHoldingCount ?? 0}</strong>
+                <em>{typeof summary?.top1ExposurePercent === 'number' ? `Top1 ${formatPercentValue(summary.top1ExposurePercent)}` : 'Top1 --'}</em>
+              </article>
+              <article className="summary-metric">
+                <span>前 3 暴露</span>
+                <strong>{typeof summary?.top3ExposurePercent === 'number' ? formatPercentValue(summary.top3ExposurePercent) : '--'}</strong>
+                <em>{summary?.latestReportDate ? `${formatReportQuarter(summary.latestReportDate)} · ${formatFreshnessDays(summary.maxFreshnessDays)}` : '报告期待同步'}</em>
+              </article>
+              <article className="summary-metric">
+                <span>QDII 占比</span>
+                <strong>{typeof summary?.qdiiFundRatio === 'number' ? `${Math.round(summary.qdiiFundRatio * 100)}%` : '--'}</strong>
+                <em>{summary?.qdiiFundCount ?? 0} 只基金</em>
+              </article>
+            </div>
+            {repeatedHoldings.length ? (
+              <section className="detail-card wide-card">
+                <div className="detail-card-header compact-card-header">
+                  <div>
+                    <h3>重复持仓提示</h3>
+                    <p className="panel-tip compact">优先展示被多只激活基金共同持有的股票，便于快速识别隐性集中暴露。</p>
+                  </div>
+                  <span className="table-meta-badge">重复股 {repeatedHoldings.length}</span>
+                </div>
+                <div className="portfolio-overlap-grid">
+                  {repeatedHoldings.slice(0, 4).map((item) => (
+                    <article className="portfolio-overlap-card" key={`${item.stockSymbol}-${item.latestReportDate || 'latest'}`}>
+                      <strong>{item.stockName || item.stockSymbol}</strong>
+                      <p className="panel-tip compact">{item.stockSymbol} · {item.latestReportDate || '报告期待同步'}</p>
+                      <div className="fund-card-signal-row">
+                        <span className="market-breadth-chip warning">关联 {item.contributingFundCount || 0} 只基金</span>
+                        <span className="market-breadth-chip muted">暴露 {formatPercentValue(item.estimatedBasketExposurePercent)}</span>
+                      </div>
+                    </article>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            <section className="detail-card wide-card">
+              <div className="detail-card-header compact-card-header">
+                <div>
+                  <h3>结构风险提示</h3>
+                  <p className="panel-tip compact">规则层先给出确定性结构信号，再决定是否调用 AI 做补充解释。</p>
+                </div>
+              </div>
+              {renderRiskSignalList(riskSignals, '当前暂无明显结构风险提示。')}
+            </section>
+            <section className="detail-card wide-card">
+              <div className="detail-card-header compact-card-header">
+                <div>
+                  <h3>合并持仓明细</h3>
+                  <p className="panel-tip compact">组合估算权重按已同步基金等权计算，目的是看暴露结构，不是还原真实组合净值。</p>
+                </div>
+                <span className="table-meta-badge">股票 {summary?.stockExposureCount ?? 0}</span>
+              </div>
+              <div className="detail-table-wrap detail-table-wrap-scrollable">
+                <table className="detail-table">
+                  <thead>
+                    <tr>
+                      <th>股票</th>
+                      <th>估算组合权重</th>
+                      <th>关联基金</th>
+                      <th>最近报告期</th>
+                      <th>最新涨跌</th>
+                      <th>单股跌 1% 影响</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stockExposure.length ? stockExposure.map((item) => (
+                      <tr key={`${item.stockSymbol}-${item.latestReportDate || 'latest'}`}>
+                        <td>
+                          {item.stockName || item.stockSymbol}
+                          <span className="table-subtext">{item.stockSymbol}{item.stockMarket ? ` · ${item.stockMarket}` : ''}</span>
+                        </td>
+                        <td>{formatPercentValue(item.estimatedBasketExposurePercent)}</td>
+                        <td>
+                          {Array.isArray(item.contributingFunds) && item.contributingFunds.length
+                            ? item.contributingFunds.map((fund) => fund.fundName || fund.fundCode).join(' / ')
+                            : '--'}
+                        </td>
+                        <td>{item.latestReportDate ? `${formatReportQuarter(item.latestReportDate)} · ${item.latestReportDate}` : '--'}</td>
+                        <td className={item.changePct > 0 ? 'positive' : item.changePct < 0 ? 'negative' : ''}>{formatSignedPercent(item.changePct)}</td>
+                        <td className={item.stressImpactDown1Pct < 0 ? 'negative' : ''}>{formatSignedPercent(item.stressImpactDown1Pct)}</td>
+                      </tr>
+                    )) : <tr><td colSpan="6" className="panel-tip compact">当前暂无合并持仓数据。</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+            <section className="macro-analysis-card fund-portfolio-analysis-card">
+              <div className="panel-heading compact-heading">
+                <div>
+                  <h3>AI 风险解读</h3>
+                  <p className="panel-tip compact">
+                    {aiEnabled
+                      ? '在规则提示基础上，复用共享 LLM 配置生成保守解释；输出只解释观察池结构，不提供交易建议。'
+                      : '当前未启用 AI 风险解读，页面仍完整显示规则型风险提示。'}
+                  </p>
+                </div>
+                {aiEnabled ? (
+                  <button type="button" className="view-tab" onClick={handleGenerateFundPortfolioAnalysis} disabled={fundPortfolioAnalysisRequestState === 'loading' || fundPortfolioRequestState !== 'ready'}>
+                    {fundPortfolioAnalysisRequestState === 'loading' ? '生成中…' : '生成 AI 风险解读'}
+                  </button>
+                ) : <span className="table-meta-badge">规则模式</span>}
+              </div>
+              {analysisPayload ? (
+                <>
+                  <p className="macro-analysis-summary">{analysisPayload.summary || '--'}</p>
+                  <div className="macro-analysis-meta">
+                    <span className="market-breadth-chip">级别 {analysisPayload.riskLevel || '--'}</span>
+                    <span className="market-breadth-chip">引擎 {analysisPayload.engine || 'rules'}</span>
+                    <span className="market-breadth-chip">置信度 {typeof analysisPayload.confidence === 'number' ? `${Math.round(analysisPayload.confidence * 100)}%` : '--'}</span>
+                  </div>
+                  <div className="fund-analysis-grid">
+                    <article className="summary-metric">
+                      <span>主要驱动</span>
+                      <ul className="fund-analysis-list">
+                        {(Array.isArray(analysisPayload.drivers) ? analysisPayload.drivers : []).map((item) => <li key={`driver-${item}`}>{item}</li>)}
+                      </ul>
+                    </article>
+                    <article className="summary-metric">
+                      <span>继续观察</span>
+                      <ul className="fund-analysis-list">
+                        {(Array.isArray(analysisPayload.watchItems) ? analysisPayload.watchItems : []).map((item) => <li key={`watch-${item}`}>{item}</li>)}
+                      </ul>
+                    </article>
+                  </div>
+                  <p className="panel-tip compact">{Array.isArray(analysisPayload.limitations) && analysisPayload.limitations.length ? analysisPayload.limitations.join(' · ') : '仅作结构风险观察，不构成投资建议。'}</p>
+                </>
+              ) : <p className="panel-tip compact">{aiEnabled ? '尚未生成 AI 风险解读。' : '当前仅展示规则型风险提示。'}</p>}
+              {fundPortfolioAnalysisRequestState === 'error' ? <p className="status-line error">AI 风险解读生成失败，请稍后重试。</p> : null}
+            </section>
+          </>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderOverviewCard(item, snapshot) {
     const cardTone = getSnapshotCardTone(snapshot?.changePct);
 
@@ -2797,6 +3082,25 @@ function App() {
       setFundRequestState(error.message);
     } finally {
       setRemovingFund('');
+    }
+  }
+
+  async function handleGenerateFundPortfolioAnalysis() {
+    if (fundPortfolioAnalysisRequestState === 'loading' || !fundPortfolioView || fundPortfolioRequestState !== 'ready') {
+      return;
+    }
+    setFundPortfolioAnalysisRequestState('loading');
+    try {
+      const response = await fetch(buildFundPortfolioAnalysisUrl(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ focus: 'general', depth: 'brief' }),
+      });
+      const payload = await parseJsonOrThrow(response, 'fund portfolio analysis generation failed');
+      setFundPortfolioAnalysis(payload?.analysis && typeof payload.analysis === 'object' ? payload.analysis : null);
+      setFundPortfolioAnalysisRequestState('ready');
+    } catch {
+      setFundPortfolioAnalysisRequestState('error');
     }
   }
 
@@ -3964,6 +4268,7 @@ function App() {
   function renderFundCard(item) {
     const snapshot = fundSnapshots[item] || {};
     const holdings = Array.isArray(snapshot.topHoldingsPreview) ? snapshot.topHoldingsPreview : [];
+    const transparency = snapshot?.transparency && typeof snapshot.transparency === 'object' ? snapshot.transparency : {};
     return (
       <section className="snapshot-card fund-card clickable" key={item} role="button" tabIndex={0} onClick={() => handleOpenFundDetail(item)} onKeyDown={(event) => {
         if (event.key === 'Enter' || event.key === ' ') {
@@ -3992,6 +4297,14 @@ function App() {
             <dd className={snapshot.estimatedIntradayReturn > 0 ? 'positive' : snapshot.estimatedIntradayReturn < 0 ? 'negative' : ''}>{formatSignedPercent(snapshot.estimatedIntradayReturn)}</dd>
           </div>
           <div>
+            <dt>披露覆盖</dt>
+            <dd>{typeof transparency.disclosedWeightPercent === 'number' ? formatPercentValue(transparency.disclosedWeightPercent) : '--'}</dd>
+          </div>
+          <div>
+            <dt>报告期</dt>
+            <dd>{transparency.latestReportDate ? `${formatReportQuarter(transparency.latestReportDate)} · ${formatFreshnessDays(transparency.freshnessDays)}` : '--'}</dd>
+          </div>
+          <div>
             <dt>重仓摘要</dt>
             <dd>{holdings.length ? holdings.slice(0, 3).map((holding) => holding.stockName || holding.stockSymbol).join(' / ') : '--'}</dd>
           </div>
@@ -4000,6 +4313,12 @@ function App() {
             <dd>{formatRelativeDateTime(snapshot.updatedAt)}</dd>
           </div>
         </dl>
+        <div className="fund-card-signal-row">
+          {transparency.latestReportDate ? <span className="market-breadth-chip muted">{formatReportQuarter(transparency.latestReportDate)}</span> : null}
+          {typeof transparency.freshnessDays === 'number' ? <span className={`market-breadth-chip ${transparency.freshnessDays >= 45 ? 'warning' : 'muted'}`}>{formatFreshnessDays(transparency.freshnessDays)}</span> : null}
+          {typeof transparency.disclosedWeightPercent === 'number' ? <span className="market-breadth-chip muted">披露约 {Math.round(transparency.disclosedWeightPercent)}%</span> : null}
+        </div>
+        <p className="panel-tip compact fund-card-note">估算联动仅基于已披露重仓与实时股价。</p>
       </section>
     );
   }
@@ -4008,9 +4327,11 @@ function App() {
     const detail = selectedFundCode ? fundDetails[selectedFundCode] : null;
     const profile = detail?.profile || {};
     const snapshot = detail?.snapshot || fundSnapshots[selectedFundCode] || {};
+    const transparency = detail?.transparency || snapshot?.transparency || {};
     const navHistory = Array.isArray(detail?.navHistory) ? detail.navHistory : [];
     const topHoldings = Array.isArray(detail?.topHoldings) ? detail.topHoldings : [];
     const performance = Array.isArray(detail?.holdingStocksPerformance) ? detail.holdingStocksPerformance : [];
+    const riskSignals = Array.isArray(detail?.riskSignals) ? detail.riskSignals : Array.isArray(snapshot?.riskSignals) ? snapshot.riskSignals : [];
 
     return (
       <div className="detail-view fund-detail-view">
@@ -4054,6 +4375,20 @@ function App() {
               ))}
               {!navHistory.length ? <p className="panel-tip compact">暂无净值历史。</p> : null}
             </div>
+          </section>
+          <section className="detail-card">
+            <h3>披露与估算边界</h3>
+            <dl>
+              <div><dt>最新报告期</dt><dd>{transparency.latestReportDate ? `${formatReportQuarter(transparency.latestReportDate)} · ${transparency.latestReportDate}` : '--'}</dd></div>
+              <div><dt>披露覆盖</dt><dd>{typeof transparency.disclosedWeightPercent === 'number' ? formatPercentValue(transparency.disclosedWeightPercent) : '--'}</dd></div>
+              <div><dt>未披露部分</dt><dd>{typeof transparency.undisclosedWeightPercent === 'number' ? formatPercentValue(transparency.undisclosedWeightPercent) : '--'}</dd></div>
+              <div><dt>距今时效</dt><dd>{typeof transparency.freshnessDays === 'number' ? formatFreshnessDays(transparency.freshnessDays) : '--'}</dd></div>
+            </dl>
+            <p className="panel-tip compact">估算联动 = 已披露重仓权重 x 实时股价变化，不代表官方实时净值。</p>
+          </section>
+          <section className="detail-card">
+            <h3>风险提示</h3>
+            {renderRiskSignalList(riskSignals, '当前暂无足够披露持仓用于生成更多风险提示。')}
           </section>
           <section className="detail-card wide-card">
             <h3>十大重仓与实时联动估算</h3>
@@ -4101,31 +4436,41 @@ function App() {
               </div>
               <div className="management-meta"><span className="symbol-count-badge">监控中 {activeFunds.length}</span></div>
             </div>
-            <form className="symbol-form compact-form fund-form" onSubmit={handleSubmitFund}>
-              <label htmlFor="fund-code">基金代码</label>
-              <div className="inline-form-row">
-                <input id="fund-code" value={fundCode} onChange={(event) => setFundCode(event.target.value)} placeholder="例如 007329" />
-                <button type="submit" disabled={fundRequestState === 'submitting'}>{fundRequestState === 'submitting' ? '提交中…' : '激活基金'}</button>
+            <div className="submenu-row">
+              <div className="submenu-tabs">
+                <button type="button" className={fundsSubView === 'list' ? 'view-tab active' : 'view-tab'} onClick={() => setFundsSubView('list')}>基金列表</button>
+                <button type="button" className={fundsSubView === 'portfolio' ? 'view-tab active' : 'view-tab'} onClick={() => setFundsSubView('portfolio')}>监控组合视角</button>
               </div>
-              <label className="inline-checkbox">
-                <input type="checkbox" checked={autoLinkStocks} onChange={(event) => setAutoLinkStocks(event.target.checked)} />
-                自动关联重仓股到股票监控
-              </label>
-              <p className="panel-tip compact">支持 6 位基金代码；collector 会按基金节奏异步补全净值与持仓。</p>
-            </form>
-            <p className={`status-line ${getRequestStatusTone(fundRequestState)}`}>请求状态：{getRequestStatusLabel(fundRequestState)}</p>
-            {fundRequestState === 'loading' ? <p className="status-line pending">基金列表加载中...</p> : null}
-            {fundRequestState === 'error' ? <p className="status-line error">基金列表加载失败，请稍后重试。</p> : null}
-            <div className="snapshot-grid fund-grid">
-              {activeFunds.length ? activeFunds.map((item) => renderFundCard(item)) : <p className="panel-tip compact">尚无激活基金。</p>}
             </div>
-            <div className="fund-watchlist-row">
-              {activeFunds.map((item) => (
-                <button key={item} type="button" className="remove-symbol-button" onClick={() => handleRemoveFund(item)} disabled={Boolean(removingFund)}>
-                  {removingFund === item ? '移除中…' : `移除 ${item}`}
-                </button>
-              ))}
-            </div>
+            {fundsSubView === 'list' ? (
+              <>
+                <form className="symbol-form compact-form fund-form" onSubmit={handleSubmitFund}>
+                  <label htmlFor="fund-code">基金代码</label>
+                  <div className="inline-form-row">
+                    <input id="fund-code" value={fundCode} onChange={(event) => setFundCode(event.target.value)} placeholder="例如 007329" />
+                    <button type="submit" disabled={fundRequestState === 'submitting'}>{fundRequestState === 'submitting' ? '提交中…' : '激活基金'}</button>
+                  </div>
+                  <label className="inline-checkbox">
+                    <input type="checkbox" checked={autoLinkStocks} onChange={(event) => setAutoLinkStocks(event.target.checked)} />
+                    自动关联重仓股到股票监控
+                  </label>
+                  <p className="panel-tip compact">支持 6 位基金代码；collector 会按基金节奏异步补全净值与持仓。</p>
+                </form>
+                <p className={`status-line ${getRequestStatusTone(fundRequestState)}`}>请求状态：{getRequestStatusLabel(fundRequestState)}</p>
+                {fundRequestState === 'loading' ? <p className="status-line pending">基金列表加载中...</p> : null}
+                {fundRequestState === 'error' ? <p className="status-line error">基金列表加载失败，请稍后重试。</p> : null}
+                <div className="snapshot-grid fund-grid">
+                  {activeFunds.length ? activeFunds.map((item) => renderFundCard(item)) : <p className="panel-tip compact">尚无激活基金。</p>}
+                </div>
+                <div className="fund-watchlist-row">
+                  {activeFunds.map((item) => (
+                    <button key={item} type="button" className="remove-symbol-button" onClick={() => handleRemoveFund(item)} disabled={Boolean(removingFund)}>
+                      {removingFund === item ? '移除中…' : `移除 ${item}`}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : renderFundPortfolioView()}
           </>
         )}
       </article>
