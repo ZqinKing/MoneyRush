@@ -127,6 +127,24 @@ const dragonTigerDailyTabPriority = {
   month: 3,
 };
 
+const llmAuditModuleLabels = {
+  content: '资讯',
+  events: '异动日报',
+  macro: '美债宏观',
+};
+
+const llmAuditCategoryLabels = {
+  ai_summary: 'AI摘要',
+  anomaly_reason: '异动归因',
+  macro_analysis: '宏观解读',
+};
+
+const llmAuditStatusLabels = {
+  completed: '完成',
+  failed: '失败',
+  skipped: '跳过',
+};
+
 const dragonTigerSortOptions = {
   daily: [
     { value: 'netBuyAmount', label: '按净买额' },
@@ -200,6 +218,14 @@ function buildMacroAnalysisLatestUrl() {
 
 function buildMacroAnalysisGenerateUrl() {
   return `${apiBaseUrl}/api/v1/macro/analysis/generate`;
+}
+
+function buildLlmAuditCapabilitiesUrl() {
+  return `${apiBaseUrl}/api/v1/llm-audit/capabilities`;
+}
+
+function buildLlmAuditDailyUrl() {
+  return `${apiBaseUrl}/api/v1/llm-audit/daily`;
 }
 
 function buildDragonTigerDailyUrl(tradeDate = '') {
@@ -1612,6 +1638,10 @@ function App() {
   const [macroAnalysis, setMacroAnalysis] = useState(null);
   const [macroRequestState, setMacroRequestState] = useState('idle');
   const [macroAnalysisRequestState, setMacroAnalysisRequestState] = useState('idle');
+  const [llmAuditCapabilities, setLlmAuditCapabilities] = useState({ enabled: false, loading: true, features: {} });
+  const [llmAuditSummary, setLlmAuditSummary] = useState(null);
+  const [llmAuditRequestState, setLlmAuditRequestState] = useState('idle');
+  const [llmAuditReloadNonce, setLlmAuditReloadNonce] = useState(0);
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
@@ -1709,10 +1739,84 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    let timeoutId = null;
+
+    async function loadLlmAuditCapabilities() {
+      try {
+        const response = await fetch(buildLlmAuditCapabilitiesUrl());
+        const payload = await parseJsonOrThrow(response, 'llm audit capabilities fetch failed');
+        if (cancelled) {
+          return;
+        }
+        setLlmAuditCapabilities({
+          enabled: Boolean(payload?.enabled),
+          loading: false,
+          reason: payload?.reason || null,
+          features: payload?.features && typeof payload.features === 'object' ? payload.features : {},
+        });
+      } catch {
+        if (!cancelled) {
+          setLlmAuditCapabilities({ enabled: false, loading: false, reason: 'capability_unavailable', features: {} });
+        }
+      } finally {
+        if (!cancelled) {
+          timeoutId = window.setTimeout(loadLlmAuditCapabilities, 30000);
+        }
+      }
+    }
+
+    loadLlmAuditCapabilities();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (activeView === 'macro' && !macroCapabilities.loading && !macroCapabilities.enabled) {
       setActiveView('overview');
     }
   }, [activeView, macroCapabilities.enabled, macroCapabilities.loading]);
+
+  useEffect(() => {
+    if (activeView === 'llmAudit' && !llmAuditCapabilities.loading && !llmAuditCapabilities.enabled) {
+      setActiveView('overview');
+    }
+  }, [activeView, llmAuditCapabilities.enabled, llmAuditCapabilities.loading]);
+
+  useEffect(() => {
+    if (activeView !== 'llmAudit' || !llmAuditCapabilities.enabled) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadLlmAuditSummary() {
+      setLlmAuditRequestState('loading');
+      try {
+        const response = await fetch(buildLlmAuditDailyUrl());
+        const payload = await parseJsonOrThrow(response, 'llm audit daily fetch failed');
+        if (cancelled) {
+          return;
+        }
+        setLlmAuditSummary(payload || null);
+        setLlmAuditRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setLlmAuditSummary(null);
+          setLlmAuditRequestState('error');
+        }
+      }
+    }
+
+    loadLlmAuditSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, llmAuditCapabilities.enabled, llmAuditReloadNonce]);
 
   const dragonTigerDailyAggregated = useMemo(() => aggregateDragonTigerDailyItems(dragonTigerDaily), [dragonTigerDaily]);
 
@@ -2807,6 +2911,129 @@ function App() {
             </>
           ) : <p className="panel-tip compact">尚未生成解读。</p>}
           {macroAnalysisRequestState === 'error' ? <p className="status-line error">解读生成失败，请稍后重试。</p> : null}
+        </section>
+      </article>
+    );
+  }
+
+  function renderLlmAuditBarList(items, labelKey, valueKey) {
+    const maxCount = items.reduce((currentMax, item) => Math.max(currentMax, Number(item?.count) || 0), 0);
+    if (!items.length) {
+      return <p className="panel-tip compact">当日暂无审计记录。</p>;
+    }
+    return (
+      <div className="llm-audit-bar-list">
+        {items.map((item) => {
+          const count = Number(item?.count) || 0;
+          const width = maxCount > 0 ? `${Math.max((count / maxCount) * 100, 6)}%` : '0%';
+          return (
+            <div className="llm-audit-bar-row" key={`${item?.[valueKey] || item?.[labelKey] || 'unknown'}-${count}`}>
+              <div className="llm-audit-bar-header">
+                <span className="llm-audit-bar-label">{item?.[labelKey] || '--'}</span>
+                <span className="llm-audit-bar-value">{count}</span>
+              </div>
+              <div className="llm-audit-bar-track" aria-hidden="true">
+                <div className="llm-audit-bar-fill" style={{ width }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderLlmAuditView() {
+    const summary = llmAuditSummary && typeof llmAuditSummary === 'object' ? llmAuditSummary : {};
+    const features = llmAuditCapabilities?.features && typeof llmAuditCapabilities.features === 'object'
+      ? llmAuditCapabilities.features
+      : {};
+    const availableFeatureCount = Object.values(features).filter(Boolean).length;
+    const byModule = Array.isArray(summary.byModule)
+      ? summary.byModule.map((item) => ({
+          ...item,
+          label: llmAuditModuleLabels[item?.menuModule] || item?.menuModule || '--',
+        }))
+      : [];
+    const byCategory = Array.isArray(summary.byCategory)
+      ? summary.byCategory.map((item) => ({
+          ...item,
+          label: llmAuditCategoryLabels[item?.callCategory] || item?.callCategory || '--',
+        }))
+      : [];
+    const byStatus = Array.isArray(summary.byStatus)
+      ? summary.byStatus.map((item) => ({
+          ...item,
+          label: llmAuditStatusLabels[item?.status] || item?.status || '--',
+        }))
+      : [];
+
+    return (
+      <article className="panel wide llm-audit-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>LLM审计</h2>
+            <p className="panel-tip compact">当前只审计当日调用量，按菜单模块和调用类别聚合展示。</p>
+          </div>
+          <div className="management-meta">
+            <span className="symbol-count-badge">日期 {summary?.date || '--'}</span>
+            <button type="button" className="view-tab" onClick={() => setLlmAuditReloadNonce((current) => current + 1)}>
+              刷新
+            </button>
+          </div>
+        </div>
+        {llmAuditRequestState === 'loading' ? <p className="status-line pending">审计数据加载中...</p> : null}
+        {llmAuditRequestState === 'error' ? <p className="status-line error">审计数据加载失败，请稍后重试。</p> : null}
+        <div className="llm-audit-summary-grid">
+          <article className="llm-audit-summary-card">
+            <strong>当日总量</strong>
+            <div className="market-index-metric">{Number(summary?.totalCount) || 0}</div>
+            <p className="panel-tip compact">当前返回的是当日审计记录总数。</p>
+          </article>
+          <article className="llm-audit-summary-card">
+            <strong>可用能力</strong>
+            <div className="market-index-metric">{availableFeatureCount}</div>
+            <p className="panel-tip compact">已启用 {Object.keys(features).length} 个 LLM 相关能力中的 {availableFeatureCount} 个。</p>
+          </article>
+          <article className="llm-audit-summary-card">
+            <strong>最新调用</strong>
+            <div className="market-index-metric small">{formatRelativeDateTime(summary?.latestInvokedAt)}</div>
+            <p className="panel-tip compact">{formatDateTime(summary?.latestInvokedAt)}</p>
+          </article>
+        </div>
+        <div className="llm-audit-chart-grid">
+          <section className="llm-audit-chart-card">
+            <div className="section-heading compact-heading">
+              <div>
+                <h3>按菜单模块</h3>
+                <p className="panel-tip compact">归属到用户可见的一级菜单模块。</p>
+              </div>
+            </div>
+            {renderLlmAuditBarList(byModule, 'label', 'menuModule')}
+          </section>
+          <section className="llm-audit-chart-card">
+            <div className="section-heading compact-heading">
+              <div>
+                <h3>按调用类别</h3>
+                <p className="panel-tip compact">区分 AI摘要、异动归因和宏观解读。</p>
+              </div>
+            </div>
+            {renderLlmAuditBarList(byCategory, 'label', 'callCategory')}
+          </section>
+        </div>
+        <section className="llm-audit-chart-card">
+          <div className="section-heading compact-heading">
+            <div>
+              <h3>状态分布</h3>
+              <p className="panel-tip compact">`completed` 表示产出可用结果，`failed` 表示尝试调用但没有可用输出，`skipped` 表示进入了保护或跳过逻辑。</p>
+            </div>
+          </div>
+          <div className="llm-audit-status-row">
+            {byStatus.length ? byStatus.map((item) => (
+              <span className="market-breadth-chip" key={`${item.status}-${item.count}`}>
+                {item.label} {item.count}
+              </span>
+            )) : <span className="market-breadth-chip muted">当日暂无状态分布数据</span>}
+          </div>
         </section>
       </article>
     );
@@ -4889,6 +5116,15 @@ function App() {
               美债宏观
             </button>
           ) : null}
+          {llmAuditCapabilities.enabled ? (
+            <button
+              className={activeView === 'llmAudit' ? 'view-tab active' : 'view-tab'}
+              type="button"
+              onClick={() => setActiveView('llmAudit')}
+            >
+              LLM审计
+            </button>
+          ) : null}
           <button
             className={activeView === 'management' ? 'view-tab active' : 'view-tab'}
             type="button"
@@ -4986,6 +5222,8 @@ function App() {
           renderDragonTigerView()
         ) : activeView === 'macro' && macroCapabilities.enabled ? (
           renderMacroView()
+        ) : activeView === 'llmAudit' && llmAuditCapabilities.enabled ? (
+          renderLlmAuditView()
         ) : activeView === 'management' ? (
           <article className="panel wide management-panel">
             <div className="panel-heading">

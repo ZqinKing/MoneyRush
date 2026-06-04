@@ -522,6 +522,75 @@ textarea {
   line-height: 1.7;
 }
 
+.llm-audit-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.llm-audit-summary-grid,
+.llm-audit-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 14px;
+}
+
+.llm-audit-summary-card,
+.llm-audit-chart-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(4, 8, 16, 0.9);
+  border: 1px solid rgba(157, 180, 255, 0.12);
+}
+
+.llm-audit-bar-list {
+  display: grid;
+  gap: 12px;
+}
+
+.llm-audit-bar-row {
+  display: grid;
+  gap: 8px;
+}
+
+.llm-audit-bar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.llm-audit-bar-label,
+.llm-audit-bar-value {
+  font-size: 0.92rem;
+}
+
+.llm-audit-bar-value {
+  color: #dbe6ff;
+  font-weight: 700;
+}
+
+.llm-audit-bar-track {
+  display: flex;
+  min-height: 12px;
+  overflow: hidden;
+  border-radius: 999px;
+  border: 1px solid rgba(129, 164, 255, 0.18);
+  background: rgba(8, 14, 26, 0.88);
+}
+
+.llm-audit-bar-fill {
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(92, 208, 155, 0.74), rgba(43, 96, 255, 0.92));
+}
+
+.llm-audit-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .compact-heading {
   margin-bottom: 0;
 }
