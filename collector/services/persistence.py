@@ -284,6 +284,38 @@ class PostgresStore:
             )
             await connection.execute(
                 """
+                CREATE TABLE IF NOT EXISTS stock_capital_flow_daily (
+                    trade_date DATE NOT NULL,
+                    symbol TEXT NOT NULL,
+                    company_name TEXT,
+                    main_net_inflow NUMERIC(20, 2),
+                    main_net_ratio NUMERIC(18, 4),
+                    super_large_net_inflow NUMERIC(20, 2),
+                    super_large_net_ratio NUMERIC(18, 4),
+                    large_net_inflow NUMERIC(20, 2),
+                    large_net_ratio NUMERIC(18, 4),
+                    medium_net_inflow NUMERIC(20, 2),
+                    medium_net_ratio NUMERIC(18, 4),
+                    small_net_inflow NUMERIC(20, 2),
+                    small_net_ratio NUMERIC(18, 4),
+                    close_price NUMERIC(18, 4),
+                    change_pct NUMERIC(10, 4),
+                    source TEXT NOT NULL,
+                    source_status TEXT NOT NULL DEFAULT 'fresh',
+                    generated_at TIMESTAMPTZ,
+                    collected_at TIMESTAMPTZ NOT NULL,
+                    last_attempt_at TIMESTAMPTZ,
+                    stale_reason TEXT,
+                    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    PRIMARY KEY (trade_date, symbol)
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS stock_capital_flow_daily_symbol_trade_idx ON stock_capital_flow_daily (symbol, trade_date DESC)"
+            )
+            await connection.execute(
+                """
                 CREATE TABLE IF NOT EXISTS dragon_tiger_daily_item (
                     trade_date DATE NOT NULL,
                     symbol TEXT NOT NULL,
@@ -2063,6 +2095,162 @@ class PostgresStore:
                     raw_payload = EXCLUDED.raw_payload
                 """,
                 rows,
+            )
+
+    async def upsert_stock_capital_flow_daily_items(self, items: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return
+
+        rows = [
+            (
+                item["trade_date"],
+                item["symbol"],
+                item.get("company_name"),
+                item.get("main_net_inflow"),
+                item.get("main_net_ratio"),
+                item.get("super_large_net_inflow"),
+                item.get("super_large_net_ratio"),
+                item.get("large_net_inflow"),
+                item.get("large_net_ratio"),
+                item.get("medium_net_inflow"),
+                item.get("medium_net_ratio"),
+                item.get("small_net_inflow"),
+                item.get("small_net_ratio"),
+                item.get("close_price"),
+                item.get("change_pct"),
+                item["source"],
+                item.get("source_status", "fresh"),
+                _coerce_optional_utc_datetime(item.get("generated_at"), field_name="capital_flow.generated_at"),
+                _coerce_utc_datetime(item["collected_at"], field_name="capital_flow.collected_at"),
+                _coerce_optional_utc_datetime(item.get("last_attempt_at"), field_name="capital_flow.last_attempt_at"),
+                item.get("stale_reason"),
+                _json_dumps(item.get("raw_payload", {})),
+            )
+            for item in items
+        ]
+
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                INSERT INTO stock_capital_flow_daily (
+                    trade_date,
+                    symbol,
+                    company_name,
+                    main_net_inflow,
+                    main_net_ratio,
+                    super_large_net_inflow,
+                    super_large_net_ratio,
+                    large_net_inflow,
+                    large_net_ratio,
+                    medium_net_inflow,
+                    medium_net_ratio,
+                    small_net_inflow,
+                    small_net_ratio,
+                    close_price,
+                    change_pct,
+                    source,
+                    source_status,
+                    generated_at,
+                    collected_at,
+                    last_attempt_at,
+                    stale_reason,
+                    raw_payload
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                    $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb
+                )
+                ON CONFLICT (trade_date, symbol) DO UPDATE SET
+                    company_name = COALESCE(EXCLUDED.company_name, stock_capital_flow_daily.company_name),
+                    main_net_inflow = EXCLUDED.main_net_inflow,
+                    main_net_ratio = EXCLUDED.main_net_ratio,
+                    super_large_net_inflow = EXCLUDED.super_large_net_inflow,
+                    super_large_net_ratio = EXCLUDED.super_large_net_ratio,
+                    large_net_inflow = EXCLUDED.large_net_inflow,
+                    large_net_ratio = EXCLUDED.large_net_ratio,
+                    medium_net_inflow = EXCLUDED.medium_net_inflow,
+                    medium_net_ratio = EXCLUDED.medium_net_ratio,
+                    small_net_inflow = EXCLUDED.small_net_inflow,
+                    small_net_ratio = EXCLUDED.small_net_ratio,
+                    close_price = EXCLUDED.close_price,
+                    change_pct = EXCLUDED.change_pct,
+                    source = EXCLUDED.source,
+                    source_status = EXCLUDED.source_status,
+                    generated_at = EXCLUDED.generated_at,
+                    collected_at = EXCLUDED.collected_at,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    stale_reason = EXCLUDED.stale_reason,
+                    raw_payload = EXCLUDED.raw_payload
+                """,
+                rows,
+            )
+
+    async def mark_latest_stock_capital_flow_stale(
+        self,
+        *,
+        symbol: str,
+        trade_date,
+        attempted_at: datetime,
+        reason_message: str,
+    ) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            latest_row = await connection.fetchrow(
+                """
+                SELECT trade_date
+                FROM stock_capital_flow_daily
+                WHERE symbol = $1
+                ORDER BY trade_date DESC
+                LIMIT 1
+                """,
+                symbol,
+            )
+            normalized_attempted_at = _coerce_utc_datetime(attempted_at, field_name="capital_flow.last_attempt_at")
+
+            if latest_row is not None:
+                await connection.execute(
+                    """
+                    UPDATE stock_capital_flow_daily
+                    SET source_status = 'stale',
+                        last_attempt_at = $3,
+                        stale_reason = $4
+                    WHERE symbol = $1
+                      AND trade_date = $2
+                    """,
+                    symbol,
+                    latest_row["trade_date"],
+                    normalized_attempted_at,
+                    reason_message,
+                )
+                return
+
+            await connection.execute(
+                """
+                INSERT INTO stock_capital_flow_daily (
+                    trade_date,
+                    symbol,
+                    source,
+                    source_status,
+                    collected_at,
+                    last_attempt_at,
+                    stale_reason,
+                    raw_payload
+                ) VALUES ($1, $2, $3, 'stale', $4, $4, $5, '{}'::jsonb)
+                ON CONFLICT (trade_date, symbol) DO UPDATE SET
+                    source = EXCLUDED.source,
+                    source_status = EXCLUDED.source_status,
+                    collected_at = EXCLUDED.collected_at,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    stale_reason = EXCLUDED.stale_reason
+                """,
+                trade_date,
+                symbol,
+                "capital-flow-unavailable",
+                normalized_attempted_at,
+                reason_message,
             )
 
     async def upsert_dragon_tiger_institution_items(self, items: list[dict[str, object]]) -> None:

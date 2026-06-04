@@ -187,6 +187,35 @@ CREATE TABLE IF NOT EXISTS content_fetch_log (
 CREATE INDEX IF NOT EXISTS content_fetch_log_lane_started_idx
     ON content_fetch_log (lane, started_at DESC);
 
+CREATE TABLE IF NOT EXISTS stock_capital_flow_daily (
+    trade_date DATE NOT NULL,
+    symbol TEXT NOT NULL,
+    company_name TEXT,
+    main_net_inflow NUMERIC(20, 2),
+    main_net_ratio NUMERIC(18, 4),
+    super_large_net_inflow NUMERIC(20, 2),
+    super_large_net_ratio NUMERIC(18, 4),
+    large_net_inflow NUMERIC(20, 2),
+    large_net_ratio NUMERIC(18, 4),
+    medium_net_inflow NUMERIC(20, 2),
+    medium_net_ratio NUMERIC(18, 4),
+    small_net_inflow NUMERIC(20, 2),
+    small_net_ratio NUMERIC(18, 4),
+    close_price NUMERIC(18, 4),
+    change_pct NUMERIC(10, 4),
+    source TEXT NOT NULL,
+    source_status TEXT NOT NULL DEFAULT 'fresh',
+    generated_at TIMESTAMPTZ,
+    collected_at TIMESTAMPTZ NOT NULL,
+    last_attempt_at TIMESTAMPTZ,
+    stale_reason TEXT,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (trade_date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS stock_capital_flow_daily_symbol_trade_idx
+    ON stock_capital_flow_daily (symbol, trade_date DESC);
+
 CREATE TABLE IF NOT EXISTS dragon_tiger_daily_item (
     trade_date DATE NOT NULL,
     symbol TEXT NOT NULL,
