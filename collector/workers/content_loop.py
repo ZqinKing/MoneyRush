@@ -4,7 +4,7 @@ import asyncio
 import logging
 import re
 from html import unescape
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 
 from redis.asyncio import Redis
 
@@ -15,6 +15,7 @@ from collector.services.persistence import PostgresStore
 
 logger = logging.getLogger(__name__)
 _TAG_RE = re.compile(r"<[^>]+>")
+CHINA_TZ = timezone(timedelta(hours=8))
 
 
 def _sanitize_news_text(value: object) -> str | None:
@@ -30,6 +31,12 @@ def _coerce_utc_datetime(value: object) -> datetime | None:
     if value.tzinfo is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def _derive_llm_audit_status(*, attempted: bool, has_output: bool) -> str:
+    if not attempted:
+        return "skipped"
+    return "completed" if has_output else "failed"
 
 
 class ContentCollectorWorker:
@@ -311,19 +318,43 @@ class ContentCollectorWorker:
 
     async def _run_ai_summary_backfill(self, items: list[dict[str, object]]) -> None:
         async with self._ai_summary_backfill_semaphore:
-            generated = await asyncio.to_thread(self._generate_ai_summaries, items)
+            generated, audit_rows = await asyncio.to_thread(self._generate_ai_summaries, items)
+            summaries_changed = False
             if generated:
-                await self._postgres.update_news_ai_summaries(generated)
+                summaries_changed = await self._postgres.update_news_ai_summaries(generated)
+            if audit_rows:
+                await self._postgres.insert_llm_audit_rows(audit_rows)
+            if summaries_changed:
                 await self._clear_content_caches()
 
-    def _generate_ai_summaries(self, items: list[dict[str, object]]) -> list[dict[str, str]]:
+    def _generate_ai_summaries(self, items: list[dict[str, object]]) -> tuple[list[dict[str, str]], list[dict[str, object]]]:
         summaries: list[dict[str, str]] = []
+        audit_rows: list[dict[str, object]] = []
         for item in items:
+            invoked_at = datetime.now(UTC)
             result = self._ai_summary_client.summarize(
                 title=str(item.get("title") or "").strip(),
                 article_source=str(item.get("article_source") or "").strip() or None,
                 raw_summary=str(item.get("summary") or "").strip() or None,
                 content=str(item.get("content") or "").strip(),
+            )
+            audit_rows.append(
+                {
+                    "invoked_at": invoked_at,
+                    "audit_date": invoked_at.astimezone(CHINA_TZ).date(),
+                    "menu_module": "content",
+                    "call_category": "ai_summary",
+                    "status": _derive_llm_audit_status(attempted=result.attempted, has_output=bool(result.summary)),
+                    "model_used": result.model_used,
+                    "prompt_version": result.prompt_version,
+                    "latency_ms": result.latency_ms,
+                    "meta": {
+                        "dedupeKey": str(item.get("dedupe_key") or ""),
+                        "symbol": str(item.get("symbol") or "") or None,
+                        "skipReason": result.skip_reason,
+                        "scope": str(item.get("scope") or "") or None,
+                    },
+                }
             )
             if result.summary:
                 summaries.append(
@@ -342,7 +373,7 @@ class ContentCollectorWorker:
                         "skipReason": result.skip_reason,
                     },
                 )
-        return summaries
+        return summaries, audit_rows
 
     def _on_ai_summary_backfill_done(self, task: asyncio.Task[None]) -> None:
         self._ai_summary_backfill_tasks.discard(task)

@@ -176,6 +176,9 @@ class AiSummaryResult:
     summary: str | None
     attempted: bool = False
     skip_reason: str | None = None
+    model_used: str | None = None
+    prompt_version: str = "v1"
+    latency_ms: int | None = None
 
 
 def _normalize_for_overlap(value: str | None) -> str:
@@ -235,14 +238,15 @@ class AiSummaryClient:
         self._settings = settings
 
     def summarize(self, *, title: str, article_source: str | None, raw_summary: str | None, content: str) -> AiSummaryResult:
+        prompt_version = str(self._settings.content_ai_summary_prompt_version or "v1")
         if not self._settings.content_ai_summary_enabled:
-            return AiSummaryResult(summary=None, skip_reason="config_disabled")
+            return AiSummaryResult(summary=None, skip_reason="config_disabled", prompt_version=prompt_version)
         if not self._settings.content_ai_summary_base_url or not self._settings.content_ai_summary_api_key or not self._settings.content_ai_summary_model:
             logger.warning("content ai summary config incomplete")
-            return AiSummaryResult(summary=None, skip_reason="missing_model_config")
+            return AiSummaryResult(summary=None, skip_reason="missing_model_config", prompt_version=prompt_version)
         if not _is_safe_ai_base_url(self._settings.content_ai_summary_base_url):
             logger.warning("content ai summary base url must be https with host")
-            return AiSummaryResult(summary=None, skip_reason="invalid_base_url")
+            return AiSummaryResult(summary=None, skip_reason="invalid_base_url", prompt_version=prompt_version)
         normalized_content = content.strip()
         skip_reason = _get_skip_reason(
             min_content_length=self._settings.content_ai_summary_min_content_length,
@@ -251,7 +255,7 @@ class AiSummaryClient:
             content=normalized_content,
         )
         if skip_reason is not None:
-            return AiSummaryResult(summary=None, skip_reason=skip_reason)
+            return AiSummaryResult(summary=None, skip_reason=skip_reason, prompt_version=prompt_version)
 
         prompt_content = _truncate_content_for_budget(
             max_input_chars=max(self._settings.content_ai_summary_max_input_chars, 0),
@@ -261,7 +265,7 @@ class AiSummaryClient:
             content=normalized_content,
         )
         if len(prompt_content) < max(self._settings.content_ai_summary_min_content_length, 0):
-            return AiSummaryResult(summary=None, skip_reason="content_too_short")
+            return AiSummaryResult(summary=None, skip_reason="content_too_short", prompt_version=prompt_version)
 
         system_prompt, user_prompt = _build_prompts(
             prompt_version=self._settings.content_ai_summary_prompt_version,
@@ -288,6 +292,7 @@ class AiSummaryClient:
         retries = max(self._settings.content_ai_summary_max_retries, 0)
         for attempt in range(retries + 1):
             try:
+                started_at = time.monotonic()
                 response = requests.post(
                     url,
                     headers={
@@ -304,17 +309,41 @@ class AiSummaryClient:
                 data = response.json()
                 choices = data.get("choices") if isinstance(data, dict) else None
                 if not isinstance(choices, list) or not choices:
-                    return AiSummaryResult(summary=None, attempted=True)
+                    return AiSummaryResult(
+                        summary=None,
+                        attempted=True,
+                        model_used=str(self._settings.content_ai_summary_model),
+                        prompt_version=prompt_version,
+                        latency_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+                    )
                 message = choices[0].get("message") if isinstance(choices[0], dict) else None
                 summary = message.get("content") if isinstance(message, dict) else None
                 summary_text = _normalize_summary_content(summary)
                 if summary_text is None and isinstance(data, dict):
                     logger.warning("ai summary response missing usable final content", extra={"finishReason": choices[0].get("finish_reason") if isinstance(choices[0], dict) else None})
-                return AiSummaryResult(summary=summary_text, attempted=True)
+                return AiSummaryResult(
+                    summary=summary_text,
+                    attempted=True,
+                    model_used=str(self._settings.content_ai_summary_model),
+                    prompt_version=prompt_version,
+                    latency_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+                )
             except Exception as exc:
                 if attempt >= retries:
                     logger.warning("ai summary request failed", exc_info=exc)
-                    return AiSummaryResult(summary=None, attempted=True)
+                    return AiSummaryResult(
+                        summary=None,
+                        attempted=True,
+                        model_used=str(self._settings.content_ai_summary_model),
+                        prompt_version=prompt_version,
+                        latency_ms=max(int((time.monotonic() - started_at) * 1000), 0),
+                    )
                 time.sleep(min(2 ** attempt, 8))
 
-        return AiSummaryResult(summary=None, attempted=True)
+        return AiSummaryResult(
+            summary=None,
+            attempted=True,
+            model_used=str(self._settings.content_ai_summary_model),
+            prompt_version=prompt_version,
+            latency_ms=None,
+        )
