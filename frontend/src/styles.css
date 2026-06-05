@@ -224,6 +224,18 @@ textarea {
   opacity: 0.72;
 }
 
+.inline-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #dbe6ff;
+}
+
+.inline-checkbox input {
+  width: auto;
+  accent-color: #5a87ff;
+}
+
 .status-line {
   margin-bottom: 0;
   color: #bbcaea;
@@ -665,6 +677,12 @@ textarea {
   gap: 14px;
 }
 
+.management-tab-stack,
+.management-panel-section {
+  display: grid;
+  gap: 14px;
+}
+
 .management-status-row {
   display: flex;
   flex-wrap: wrap;
@@ -710,6 +728,12 @@ textarea {
 .remove-symbol-button:hover {
   background: rgba(105, 17, 30, 0.92);
   transform: translateY(-1px);
+}
+
+.remove-symbol-button:disabled {
+  cursor: progress;
+  opacity: 0.72;
+  transform: none;
 }
 
 .wide {
@@ -873,6 +897,18 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
+}
+
+.management-card-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.compact-action {
+  min-height: 36px;
+  padding: 7px 12px;
 }
 
 .detail-header {

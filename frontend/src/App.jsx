@@ -1695,7 +1695,8 @@ function App() {
   const [goldDashboard, setGoldDashboard] = useState({ generatedAt: null, isTradingSession: false, quotes: [], sources: {}, degraded: false, funds: [], news: [] });
   const [goldRequestState, setGoldRequestState] = useState('idle');
   const [activeView, setActiveView] = useState('overview');
-  const [controlView, setControlView] = useState('activate');
+  const [managementAssetView, setManagementAssetView] = useState('stock');
+  const [managementActionView, setManagementActionView] = useState('activate');
   const [selectedSnapshotSymbol, setSelectedSnapshotSymbol] = useState(null);
   const [snapshotDetails, setSnapshotDetails] = useState({});
   const [detailRequestState, setDetailRequestState] = useState('idle');
@@ -2188,7 +2189,7 @@ function App() {
   }, [activeView]);
 
   useEffect(() => {
-    if (activeView !== 'funds') {
+    if (activeView !== 'funds' && activeView !== 'management') {
       return undefined;
     }
 
@@ -4402,6 +4403,58 @@ function App() {
     );
   }
 
+  function renderFundManagementCard(item) {
+    const snapshot = fundSnapshots[item] || {};
+    const lastUpdate = snapshot?.updatedAt || null;
+    return (
+      <article className="watchlist-card fund-card" key={item}>
+        <div className="watchlist-card-header">
+          <div>
+            <strong>{snapshot.fundName || '待识别基金'}</strong>
+            <p className="snapshot-subtitle">
+              {item} · {snapshot.fundType || '基金'}
+            </p>
+          </div>
+          <span className="watchlist-source-chip">{snapshot.source || '等待采集'}</span>
+        </div>
+        <div className="watchlist-price-row">
+          <div className="snapshot-metric small">{formatNav(snapshot.nav)}</div>
+          <span className={snapshot.dailyReturn > 0 ? 'positive' : snapshot.dailyReturn < 0 ? 'negative' : ''}>
+            {formatSignedPercent(snapshot.dailyReturn)}
+          </span>
+        </div>
+        <dl className="watchlist-meta-grid">
+          <div>
+            <dt>净值日</dt>
+            <dd>{snapshot.navDate || '--'}</dd>
+          </div>
+          <div>
+            <dt>估算联动</dt>
+            <dd className={snapshot.estimatedIntradayReturn > 0 ? 'positive' : snapshot.estimatedIntradayReturn < 0 ? 'negative' : ''}>
+              {formatSignedPercent(snapshot.estimatedIntradayReturn)}
+            </dd>
+          </div>
+        </dl>
+        <div className="watchlist-card-footer">
+          <span className="panel-tip compact">{lastUpdate ? formatDateTime(lastUpdate) : '等待首个快照'}</span>
+          <div className="management-card-actions">
+            <button type="button" className="view-tab compact-action" onClick={() => handleOpenFundDetail(item)}>
+              查看详情
+            </button>
+            <button
+              type="button"
+              className="remove-symbol-button"
+              onClick={() => handleRemoveFund(item)}
+              disabled={Boolean(removingFund)}
+            >
+              {removingFund === item ? '移除中…' : '移除'}
+            </button>
+          </div>
+        </div>
+      </article>
+    );
+  }
+
   function renderFundDetailView() {
     const detail = selectedFundCode ? fundDetails[selectedFundCode] : null;
     const profile = detail?.profile || {};
@@ -4523,10 +4576,131 @@ function App() {
             </div>
             {fundsSubView === 'list' ? (
               <>
+                {fundRequestState === 'loading' ? <p className="status-line pending">基金列表加载中...</p> : null}
+                {fundRequestState === 'error' ? <p className="status-line error">基金列表加载失败，请稍后重试。</p> : null}
+                <p className="panel-tip compact">添加或移除基金请进入「监控管理」页面；这里专注查看净值、重仓和估算联动。</p>
+                <div className="snapshot-grid fund-grid">
+                  {activeFunds.length ? activeFunds.map((item) => renderFundCard(item)) : <p className="panel-tip compact">尚无激活基金。</p>}
+                </div>
+              </>
+            ) : renderFundPortfolioView()}
+          </>
+        )}
+      </article>
+    );
+  }
+
+  function renderManagementView() {
+    const showingStockView = managementAssetView === 'stock';
+    const requestStateValue = showingStockView ? requestState : fundRequestState;
+    const assetPanelId = showingStockView ? 'management-panel-stock' : 'management-panel-fund';
+    const actionPanelId = showingStockView
+      ? `management-stock-${managementActionView}`
+      : `management-fund-${managementActionView}`;
+
+    return (
+      <article className="panel wide management-panel">
+        <div className="panel-heading">
+          <div>
+            <h2>监控管理</h2>
+            <p className="panel-tip compact">股票和基金的新增、查看、移除都统一收敛在这里维护。</p>
+          </div>
+          <div className="management-meta">
+            <span className="symbol-count-badge">股票 {activeSymbols.length}</span>
+            <span className="symbol-count-badge">基金 {activeFunds.length}</span>
+          </div>
+        </div>
+
+        <div className="management-tab-stack">
+          <div className="submenu-row">
+            <div className="submenu-tabs" role="tablist" aria-label="监控资产类型">
+              <button
+                id="management-tab-stock"
+                className={showingStockView ? 'view-tab active' : 'view-tab'}
+                type="button"
+                role="tab"
+                aria-selected={showingStockView}
+                aria-controls="management-panel-stock"
+                onClick={() => setManagementAssetView('stock')}
+              >
+                股票监控
+              </button>
+              <button
+                id="management-tab-fund"
+                className={!showingStockView ? 'view-tab active' : 'view-tab'}
+                type="button"
+                role="tab"
+                aria-selected={!showingStockView}
+                aria-controls="management-panel-fund"
+                onClick={() => setManagementAssetView('fund')}
+              >
+                基金监控
+              </button>
+            </div>
+          </div>
+
+          <section id={assetPanelId} role="tabpanel" aria-labelledby={showingStockView ? 'management-tab-stock' : 'management-tab-fund'} className="management-panel-section">
+            <div className="submenu-row">
+              <div className="submenu-tabs" role="tablist" aria-label={showingStockView ? '股票管理视图' : '基金管理视图'}>
+                <button
+                  id={showingStockView ? 'management-stock-activate-tab' : 'management-fund-activate-tab'}
+                  className={managementActionView === 'activate' ? 'view-tab active' : 'view-tab'}
+                  type="button"
+                  role="tab"
+                  aria-selected={managementActionView === 'activate'}
+                  aria-controls={showingStockView ? 'management-stock-activate' : 'management-fund-activate'}
+                  onClick={() => setManagementActionView('activate')}
+                >
+                  {showingStockView ? '添加标的' : '添加基金'}
+                </button>
+                <button
+                  id={showingStockView ? 'management-stock-watchlist-tab' : 'management-fund-watchlist-tab'}
+                  className={managementActionView === 'watchlist' ? 'view-tab active' : 'view-tab'}
+                  type="button"
+                  role="tab"
+                  aria-selected={managementActionView === 'watchlist'}
+                  aria-controls={showingStockView ? 'management-stock-watchlist' : 'management-fund-watchlist'}
+                  onClick={() => setManagementActionView('watchlist')}
+                >
+                  {showingStockView ? '监控列表' : '基金列表'}
+                </button>
+              </div>
+            </div>
+
+            <section
+              id={actionPanelId}
+              role="tabpanel"
+              aria-labelledby={showingStockView
+                ? (managementActionView === 'activate' ? 'management-stock-activate-tab' : 'management-stock-watchlist-tab')
+                : (managementActionView === 'activate' ? 'management-fund-activate-tab' : 'management-fund-watchlist-tab')}
+              className="management-panel-section"
+            >
+              {showingStockView ? (
+                managementActionView === 'activate' ? (
+                  <form className="symbol-form compact-form" onSubmit={handleSubmit}>
+                    <label htmlFor="symbol">股票代码</label>
+                    <div className="inline-form-row">
+                      <input id="symbol" value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder="例如 000001" />
+                      <button type="submit" disabled={requestState === 'submitting'}>{requestState === 'submitting' ? '提交中…' : '激活监控'}</button>
+                    </div>
+                    <p className="panel-tip compact">请输入 6 位股票代码，如 000001。</p>
+                  </form>
+                ) : (
+                  <div className="watchlist-panel">
+                    <div className="watchlist-grid">
+                      {activeSymbols.length ? (
+                        activeSymbols.map((item) => renderWatchlistCard(item))
+                      ) : (
+                        <p className="panel-tip compact">尚无激活标的。</p>
+                      )}
+                    </div>
+                  </div>
+                )
+              ) : managementActionView === 'activate' ? (
                 <form className="symbol-form compact-form fund-form" onSubmit={handleSubmitFund}>
-                  <label htmlFor="fund-code">基金代码</label>
+                  <label htmlFor="management-fund-code">基金代码</label>
                   <div className="inline-form-row">
-                    <input id="fund-code" value={fundCode} onChange={(event) => setFundCode(event.target.value)} placeholder="例如 007329" />
+                    <input id="management-fund-code" value={fundCode} onChange={(event) => setFundCode(event.target.value)} placeholder="例如 007329" />
                     <button type="submit" disabled={fundRequestState === 'submitting'}>{fundRequestState === 'submitting' ? '提交中…' : '激活基金'}</button>
                   </div>
                   <label className="inline-checkbox">
@@ -4535,23 +4709,25 @@ function App() {
                   </label>
                   <p className="panel-tip compact">支持 6 位基金代码；collector 会按基金节奏异步补全净值与持仓。</p>
                 </form>
-                <p className={`status-line ${getRequestStatusTone(fundRequestState)}`}>请求状态：{getRequestStatusLabel(fundRequestState)}</p>
-                {fundRequestState === 'loading' ? <p className="status-line pending">基金列表加载中...</p> : null}
-                {fundRequestState === 'error' ? <p className="status-line error">基金列表加载失败，请稍后重试。</p> : null}
-                <div className="snapshot-grid fund-grid">
-                  {activeFunds.length ? activeFunds.map((item) => renderFundCard(item)) : <p className="panel-tip compact">尚无激活基金。</p>}
+              ) : (
+                <div className="watchlist-panel">
+                  <div className="watchlist-grid">
+                    {activeFunds.length ? (
+                      activeFunds.map((item) => renderFundManagementCard(item))
+                    ) : (
+                      <p className="panel-tip compact">尚无激活基金。</p>
+                    )}
+                  </div>
                 </div>
-                <div className="fund-watchlist-row">
-                  {activeFunds.map((item) => (
-                    <button key={item} type="button" className="remove-symbol-button" onClick={() => handleRemoveFund(item)} disabled={Boolean(removingFund)}>
-                      {removingFund === item ? '移除中…' : `移除 ${item}`}
-                    </button>
-                  ))}
-                </div>
-              </>
-            ) : renderFundPortfolioView()}
-          </>
-        )}
+              )}
+            </section>
+          </section>
+        </div>
+
+        <div className="management-status-row">
+          <p className={`status-line ${getRequestStatusTone(requestStateValue)}`}>请求状态：{getRequestStatusLabel(requestStateValue)}</p>
+          <p className="status-line">实时连接：{getConnectionStatusLabel(connectionState)}</p>
+        </div>
       </article>
     );
   }
@@ -5649,61 +5825,7 @@ function App() {
         ) : activeView === 'llmAudit' && llmAuditCapabilities.enabled ? (
           renderLlmAuditView()
         ) : activeView === 'management' ? (
-          <article className="panel wide management-panel">
-            <div className="panel-heading">
-              <div>
-                <h2>监控管理</h2>
-                <p className="panel-tip compact">新增、查看和移除监控标的都集中在这里。</p>
-              </div>
-              <div className="management-meta">
-                <span className="symbol-count-badge">监控中 {activeSymbols.length}</span>
-              </div>
-            </div>
-            <div className="submenu-row">
-              <div className="submenu-tabs">
-                <button
-                  className={controlView === 'activate' ? 'view-tab active' : 'view-tab'}
-                  type="button"
-                  onClick={() => setControlView('activate')}
-                >
-                  添加标的
-                </button>
-                <button
-                  className={controlView === 'watchlist' ? 'view-tab active' : 'view-tab'}
-                  type="button"
-                  onClick={() => setControlView('watchlist')}
-                >
-                  监控列表
-                </button>
-              </div>
-            </div>
-
-            {controlView === 'activate' ? (
-              <form className="symbol-form compact-form" onSubmit={handleSubmit}>
-                <label htmlFor="symbol">股票代码</label>
-                <div className="inline-form-row">
-                  <input id="symbol" value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder="例如 000001" />
-                  <button type="submit" disabled={requestState === 'submitting'}>{requestState === 'submitting' ? '提交中…' : '激活监控'}</button>
-                </div>
-                <p className="panel-tip compact">请输入 6 位股票代码，如 000001。</p>
-              </form>
-            ) : (
-              <div className="watchlist-panel">
-                <div className="watchlist-grid">
-                  {activeSymbols.length ? (
-                    activeSymbols.map((item) => renderWatchlistCard(item))
-                  ) : (
-                    <p className="panel-tip compact">尚无激活标的。</p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            <div className="management-status-row">
-               <p className={`status-line ${getRequestStatusTone(requestState)}`}>请求状态：{getRequestStatusLabel(requestState)}</p>
-                <p className="status-line">实时连接：{getConnectionStatusLabel(connectionState)}</p>
-              </div>
-          </article>
+          renderManagementView()
         ) : (
           renderDailyAnomalyView()
         )}
