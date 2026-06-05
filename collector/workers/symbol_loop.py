@@ -12,6 +12,7 @@ from redis.asyncio import Redis
 from collector.services.anomaly_aggregator import AnomalyAggregator
 from collector.services.ai_summary_client import is_ai_configured
 from collector.services.anomaly_reason_analyzer import AnomalyReasonAnalyzer
+from collector.services.market_overview_client import build_market_status
 from collector.services.persistence import PostgresStore
 from collector.services.tencent_quote_client import MarketQuoteClient
 
@@ -108,6 +109,13 @@ class CollectorWorker:
 
     async def _analyze_pending_anomaly_reasons(self, *, force: bool = False) -> None:
         if not is_ai_configured(self._settings):
+            return
+        market_status, is_trading_session = build_market_status()
+        if not is_trading_session:
+            logger.info(
+                "collector skipped anomaly reason analysis outside trading session",
+                extra={"market_status": market_status, "force": force},
+            )
             return
         now = monotonic()
         interval_seconds = ANOMALY_REASON_INTERVAL_SECONDS
