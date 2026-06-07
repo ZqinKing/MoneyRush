@@ -352,6 +352,7 @@ class ContentCollectorWorker:
                         "symbol": str(item.get("symbol") or "") or None,
                         "skipReason": result.skip_reason,
                         "scope": str(item.get("scope") or "") or None,
+                        "attempts": result.attempts or [],
                     },
                 }
             )

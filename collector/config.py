@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     ai_model: str | None = None
     ai_fallback_model: str | None = None
     ai_thinking_enabled: bool = False
+    ai_request_timeout_seconds: int = 90
     ai_context_length: int = 131072
     ai_max_tokens: int = 8192
     dragon_tiger_collector_enabled: bool = True

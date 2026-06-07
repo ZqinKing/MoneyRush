@@ -116,6 +116,79 @@ def normalize_ai_text(value: object) -> str | None:
     return _normalize_summary_content(value)
 
 
+def get_ai_request_timeout_seconds(settings) -> int:
+    return _bounded_positive_int(getattr(settings, "ai_request_timeout_seconds", LLM_REQUEST_TIMEOUT_SECONDS), default=LLM_REQUEST_TIMEOUT_SECONDS)
+
+
+def get_ai_reasoning_budget_tokens(settings) -> int:
+    return LLM_REASONING_BUDGET_TOKENS
+
+
+def _coerce_message_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, dict):
+        text = str(value.get("text") or value.get("content") or value.get("value") or "")
+    elif isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                part = item.get("text") or item.get("content") or item.get("value")
+                if isinstance(part, str) and part.strip():
+                    parts.append(part)
+        text = "\n".join(parts)
+    else:
+        text = str(value)
+    normalized = text.strip()
+    return normalized or None
+
+
+def extract_chat_message_text(message: object) -> str | None:
+    if not isinstance(message, dict):
+        return None
+    for key in ("content", "output_text", "final", "answer", "text"):
+        text = _coerce_message_text(message.get(key))
+        if text:
+            return text
+    return None
+
+
+def build_llm_attempt_meta(
+    *,
+    model: str,
+    attempt: int,
+    latency_ms: int,
+    status: str,
+    status_code: int | None = None,
+    finish_reason: object = None,
+    message: object = None,
+    error: object = None,
+) -> dict[str, object]:
+    meta: dict[str, object] = {
+        "model": model,
+        "attempt": attempt,
+        "latencyMs": latency_ms,
+        "status": status,
+    }
+    if status_code is not None:
+        meta["statusCode"] = status_code
+    if finish_reason is not None:
+        meta["finishReason"] = str(finish_reason)
+    if isinstance(message, dict):
+        content = _coerce_message_text(message.get("content"))
+        reasoning = _coerce_message_text(message.get("reasoning_content"))
+        meta["contentLength"] = len(content or "")
+        meta["reasoningContentLength"] = len(reasoning or "")
+    if error is not None:
+        meta["errorType"] = type(error).__name__
+    return meta
+
+
 def is_safe_ai_base_url(value: str | None) -> bool:
     return _is_safe_ai_base_url(value)
 
@@ -163,7 +236,7 @@ def build_openai_chat_payload(settings, *, model: str, system_prompt: str, user_
     if getattr(settings, "ai_thinking_enabled", False):
         payload["thinking"] = {
             "type": "enabled",
-            "budget_tokens": LLM_REASONING_BUDGET_TOKENS,
+            "budget_tokens": get_ai_reasoning_budget_tokens(settings),
         }
     return payload
 
@@ -236,6 +309,7 @@ class AiSummaryResult:
     model_used: str | None = None
     prompt_version: str = "v1"
     latency_ms: int | None = None
+    attempts: list[dict[str, object]] | None = None
 
 
 def _normalize_for_overlap(value: str | None) -> str:
@@ -364,10 +438,11 @@ class AiSummaryClient:
         if base_url is None:
             return AiSummaryResult(summary=None, skip_reason="missing_model_config", prompt_version=prompt_version)
         url = f"{base_url.rstrip('/')}/chat/completions"
-        timeout = LLM_REQUEST_TIMEOUT_SECONDS
+        timeout = get_ai_request_timeout_seconds(self._settings)
         retries = LLM_REQUEST_MAX_RETRIES
         last_latency_ms: int | None = None
         last_model: str | None = None
+        attempts: list[dict[str, object]] = []
         for model in get_ai_model_candidates(self._settings):
             payload = build_openai_chat_payload(
                 self._settings,
@@ -393,23 +468,30 @@ class AiSummaryClient:
                     choices = data.get("choices") if isinstance(data, dict) else None
                     last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
                     if not isinstance(choices, list) or not choices:
+                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="missing_choices", status_code=response.status_code))
                         logger.warning("ai summary response missing choices", extra={"model": model})
                         break
                     message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                    summary = message.get("content") if isinstance(message, dict) else None
+                    summary = extract_chat_message_text(message)
                     summary_text = _normalize_summary_content(summary)
                     if summary_text is None and isinstance(data, dict):
+                        finish_reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
+                        status = "truncated_before_final_content" if finish_reason == "length" else "missing_final_content"
+                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message))
                         logger.warning("ai summary response missing usable final content", extra={"model": model, "finishReason": choices[0].get("finish_reason") if isinstance(choices[0], dict) else None})
                         break
+                    attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message))
                     return AiSummaryResult(
                         summary=summary_text,
                         attempted=True,
                         model_used=model,
                         prompt_version=prompt_version,
                         latency_ms=last_latency_ms,
+                        attempts=attempts,
                     )
                 except Exception as exc:
                     last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+                    attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="request_failed", error=exc))
                     if attempt >= retries:
                         logger.warning("ai summary request failed; trying fallback model if configured", extra={"model": model}, exc_info=exc)
                         break
@@ -420,4 +502,5 @@ class AiSummaryClient:
             model_used=last_model,
             prompt_version=prompt_version,
             latency_ms=last_latency_ms,
+            attempts=attempts,
         )
