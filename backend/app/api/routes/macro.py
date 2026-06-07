@@ -198,6 +198,7 @@ async def generate_macro_analysis(payload: GenerateMacroAnalysisRequest, request
                     "depth": depth,
                     "skipReason": analysis_result.skip_reason,
                     "snapshotDate": str(snapshot.get("date")) if snapshot.get("date") else None,
+                    "attempts": analysis_result.attempts or [],
                 },
             }
         ]
