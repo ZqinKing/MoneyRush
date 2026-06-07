@@ -55,6 +55,14 @@ def get_ai_model_candidates(settings) -> list[str]:
     return models
 
 
+def get_ai_request_timeout_seconds(settings) -> int:
+    return _bounded_positive_int(getattr(settings, "ai_request_timeout_seconds", LLM_REQUEST_TIMEOUT_SECONDS), default=LLM_REQUEST_TIMEOUT_SECONDS)
+
+
+def get_ai_reasoning_budget_tokens(settings) -> int:
+    return LLM_REASONING_BUDGET_TOKENS
+
+
 def is_shared_llm_configured(settings) -> bool:
     base_url = get_ai_base_url(settings)
     return bool(base_url and get_ai_model(settings) and is_safe_ai_base_url(base_url))
@@ -93,9 +101,74 @@ def build_openai_chat_payload(settings, *, model: str, system_prompt: str, user_
     if getattr(settings, "ai_thinking_enabled", False):
         payload["thinking"] = {
             "type": "enabled",
-            "budget_tokens": LLM_REASONING_BUDGET_TOKENS,
+            "budget_tokens": get_ai_reasoning_budget_tokens(settings),
         }
     return payload
+
+
+def coerce_chat_message_text(value: object) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, dict):
+        text = str(value.get("text") or value.get("content") or value.get("value") or "")
+    elif isinstance(value, list):
+        parts: list[str] = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if isinstance(item, dict):
+                part = item.get("text") or item.get("content") or item.get("value")
+                if isinstance(part, str) and part.strip():
+                    parts.append(part)
+        text = "\n".join(parts)
+    else:
+        text = str(value)
+    normalized = text.strip()
+    return normalized or None
+
+
+def extract_chat_message_text(message: object) -> str | None:
+    if not isinstance(message, dict):
+        return None
+    for key in ("content", "output_text", "final", "answer", "text"):
+        text = coerce_chat_message_text(message.get(key))
+        if text:
+            return text
+    return None
+
+
+def build_llm_attempt_meta(
+    *,
+    model: str,
+    attempt: int,
+    latency_ms: int,
+    status: str,
+    status_code: int | None = None,
+    finish_reason: object = None,
+    message: object = None,
+    error: object = None,
+) -> dict[str, object]:
+    meta: dict[str, object] = {
+        "model": model,
+        "attempt": attempt,
+        "latencyMs": latency_ms,
+        "status": status,
+    }
+    if status_code is not None:
+        meta["statusCode"] = status_code
+    if finish_reason is not None:
+        meta["finishReason"] = str(finish_reason)
+    if isinstance(message, dict):
+        content = coerce_chat_message_text(message.get("content"))
+        reasoning = coerce_chat_message_text(message.get("reasoning_content"))
+        meta["contentLength"] = len(content or "")
+        meta["reasoningContentLength"] = len(reasoning or "")
+    if error is not None:
+        meta["errorType"] = type(error).__name__
+    return meta
 
 
 def get_llm_feature_capabilities(settings) -> dict[str, object]:
