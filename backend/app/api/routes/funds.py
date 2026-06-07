@@ -120,6 +120,7 @@ async def generate_fund_portfolio_analysis(
                     "portfolioStatus": portfolio_view.get("status"),
                     "activeFundCount": ((portfolio_view.get("summary") or {}).get("activeFundCount") if isinstance(portfolio_view.get("summary"), dict) else None),
                     "fallbackReason": analysis_result.skip_reason,
+                    "attempts": analysis_result.attempts or [],
                 },
             }
         ]
