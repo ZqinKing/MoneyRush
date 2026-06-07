@@ -172,6 +172,7 @@ class CollectorWorker:
                             "skipReason": result.skip_reason,
                             "relatedNewsCount": len(result.related_news_ids),
                             "relatedAnnouncementCount": len(result.related_announcement_ids),
+                            "attempts": result.attempts or [],
                         },
                     }
                 )

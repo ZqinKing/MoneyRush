@@ -8,7 +8,7 @@ from decimal import Decimal
 
 import requests
 
-from collector.services.ai_summary_client import CONTENT_SUMMARY_PROMPT_VERSION, LLM_REQUEST_MAX_RETRIES, LLM_REQUEST_TIMEOUT_SECONDS, build_openai_chat_payload, get_ai_base_url, get_ai_model, get_ai_model_candidates, is_ai_configured, normalize_ai_text
+from collector.services.ai_summary_client import CONTENT_SUMMARY_PROMPT_VERSION, LLM_REQUEST_MAX_RETRIES, build_llm_attempt_meta, build_openai_chat_payload, extract_chat_message_text, get_ai_base_url, get_ai_model, get_ai_model_candidates, get_ai_request_timeout_seconds, is_ai_configured, normalize_ai_text
 
 
 logger = logging.getLogger(__name__)
@@ -82,6 +82,7 @@ class AnomalyReasonResult:
     model_used: str | None = None
     prompt_version: str = "v1"
     latency_ms: int | None = None
+    attempts: list[dict[str, object]] | None = None
 
 
 def _to_float(value: object) -> float | None:
@@ -185,6 +186,7 @@ class AnomalyReasonAnalyzer:
         self._settings = settings
         self._last_latency_ms: int | None = None
         self._last_model_used: str | None = None
+        self._last_attempts: list[dict[str, object]] = []
 
     def is_configured(self) -> bool:
         return is_ai_configured(self._settings)
@@ -236,6 +238,7 @@ class AnomalyReasonAnalyzer:
                     model_used=self._last_model_used or get_ai_model(self._settings),
                     prompt_version=prompt_version,
                     latency_ms=self._last_latency_ms,
+                    attempts=self._last_attempts,
                 )
             return AnomalyReasonResult(
                 reason=None,
@@ -247,6 +250,7 @@ class AnomalyReasonAnalyzer:
                 model_used=self._last_model_used or get_ai_model(self._settings),
                 prompt_version=prompt_version,
                 latency_ms=self._last_latency_ms,
+                attempts=self._last_attempts,
             )
         if _contains_advice(result) or _looks_like_prompt_echo(result) or _looks_low_information_result(result):
             logger.warning("anomaly ai reason failed safety/quality checks; using safe fallback", extra={"symbol": anomaly["symbol"]})
@@ -263,16 +267,18 @@ class AnomalyReasonAnalyzer:
             model_used=self._last_model_used or get_ai_model(self._settings),
             prompt_version=prompt_version,
             latency_ms=self._last_latency_ms,
+            attempts=self._last_attempts,
         )
 
     def _call_model(self, user_prompt: str) -> str | None:
         self._last_latency_ms = None
         self._last_model_used = None
+        self._last_attempts = []
         base_url = get_ai_base_url(self._settings)
         if base_url is None:
             return None
         url = f"{base_url.rstrip('/')}/chat/completions"
-        timeout = LLM_REQUEST_TIMEOUT_SECONDS
+        timeout = get_ai_request_timeout_seconds(self._settings)
         retries = LLM_REQUEST_MAX_RETRIES
         for model in get_ai_model_candidates(self._settings):
             payload = build_openai_chat_payload(
@@ -280,7 +286,7 @@ class AnomalyReasonAnalyzer:
                 model=model,
                 system_prompt=SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                max_tokens=min(max(self._settings.ai_max_tokens, 256), 1024),
+                max_tokens=max(int(self._settings.ai_max_tokens), 256),
             )
             for attempt in range(retries + 1):
                 started_at = time.monotonic()
@@ -304,17 +310,23 @@ class AnomalyReasonAnalyzer:
                     self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
                     choices = data.get("choices") if isinstance(data, dict) else None
                     if not isinstance(choices, list) or not choices:
+                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="missing_choices", status_code=response.status_code))
                         logger.warning("anomaly ai reason response missing choices", extra={"model": model})
                         break
                     message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                    content = message.get("content") if isinstance(message, dict) else None
+                    content = extract_chat_message_text(message)
                     result = normalize_ai_text(content)
                     if result is None:
+                        finish_reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
+                        status = "truncated_before_final_content" if finish_reason == "length" else "missing_final_content"
+                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message))
                         logger.warning("anomaly ai reason response missing usable final content", extra={"model": model})
                         break
+                    self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message))
                     return result
                 except Exception as exc:
                     self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
+                    self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="request_failed", error=exc))
                     if attempt >= retries:
                         logger.warning("anomaly ai reason request failed; trying fallback model if configured", extra={"model": model}, exc_info=exc)
                         break
