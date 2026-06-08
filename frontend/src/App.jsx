@@ -363,17 +363,18 @@ function getSnapshotCardTone(changePct) {
   return 'neutral';
 }
 
-function getContentItemMeta(item) {
+function getContentItemMeta(item, snapshotMap = {}) {
   if (!item || typeof item !== 'object') {
     return [];
   }
+  const sectorIndustry = normalizeSectorInfo(snapshotMap[item.symbol])?.industry;
   if (item.type === 'report') {
-    return [item.details?.rating, item.details?.institution, item.details?.analyst].filter(Boolean);
+    return [item.details?.rating, item.details?.institution, item.details?.analyst, sectorIndustry].filter(Boolean);
   }
   if (item.type === 'announcement') {
-    return [item.details?.announcementType, item.symbol].filter(Boolean);
+    return [item.details?.announcementType, item.symbol, sectorIndustry].filter(Boolean);
   }
-  return [item.details?.articleSource, item.symbol || (item.scope === 'market' ? '市场快讯' : null)].filter(Boolean);
+  return [item.details?.articleSource, item.symbol || (item.scope === 'market' ? '市场快讯' : null), sectorIndustry].filter(Boolean);
 }
 
 function getLaneStatusTone(job) {
@@ -386,13 +387,88 @@ function getLaneStatusTone(job) {
   return 'healthy';
 }
 
+function cleanSectorText(value) {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const trimmed = value.trim();
+  return trimmed && trimmed !== '-' && trimmed !== '--' ? trimmed : '';
+}
+
+function normalizeSectorInfo(source) {
+  const rawSector = source?.sector || source?.sectorInfo;
+  if (!rawSector || typeof rawSector !== 'object') {
+    return null;
+  }
+
+  const industry = cleanSectorText(rawSector.industry);
+  const region = cleanSectorText(rawSector.region || rawSector.sector);
+  const concepts = Array.isArray(rawSector.concepts)
+    ? rawSector.concepts.map(cleanSectorText).filter(Boolean)
+    : [];
+  const sectorCode = cleanSectorText(rawSector.sectorCode);
+
+  if (!industry && !region && !concepts.length && !sectorCode) {
+    return null;
+  }
+
+  return {
+    industry,
+    region,
+    concepts,
+    sectorCode,
+    sourceStatus: cleanSectorText(rawSector.sourceStatus),
+  };
+}
+
+function getSectorChipItems(sectorInfo, { includeRegion = false, maxConcepts = 1 } = {}) {
+  const sector = normalizeSectorInfo({ sector: sectorInfo });
+  if (!sector) {
+    return [];
+  }
+
+  const items = [];
+  if (sector.industry) {
+    items.push({ key: `industry-${sector.industry}`, label: sector.industry, tone: 'industry' });
+  }
+  if (includeRegion && sector.region) {
+    items.push({ key: `region-${sector.region}`, label: sector.region, tone: 'region' });
+  }
+  sector.concepts.slice(0, maxConcepts).forEach((concept) => {
+    items.push({ key: `concept-${concept}`, label: concept, tone: 'concept' });
+  });
+  if (sector.concepts.length > maxConcepts) {
+    items.push({ key: 'concept-more', label: `+${sector.concepts.length - maxConcepts}`, tone: 'more' });
+  }
+  return items;
+}
+
+function SectorTagRow({ sector, includeRegion = false, maxConcepts = 1, className = '' }) {
+  const items = getSectorChipItems(sector, { includeRegion, maxConcepts });
+  if (!items.length) {
+    return null;
+  }
+
+  const classNames = ['sector-tag-row', className].filter(Boolean).join(' ');
+  return (
+    <div className={classNames} aria-label="板块赛道">
+      {items.map((item) => (
+        <span className={`sector-chip ${item.tone}`} key={item.key}>{item.label}</span>
+      ))}
+    </div>
+  );
+}
+
 function buildContentSymbolLabel(symbol, snapshot) {
   if (!symbol) {
     return '全市场';
   }
 
   const companyName = typeof snapshot?.companyName === 'string' ? snapshot.companyName.trim() : '';
-  return companyName ? `${companyName} (${symbol})` : symbol;
+  const industry = normalizeSectorInfo(snapshot)?.industry;
+  const baseLabel = companyName ? `${companyName} (${symbol})` : symbol;
+  return industry ? `${baseLabel} · ${industry}` : baseLabel;
 }
 
 function serializeIdentityValue(value) {
@@ -3162,6 +3238,7 @@ function App() {
             <p className="snapshot-subtitle">
               {item} · {snapshot?.exchange || '--'}
             </p>
+            <SectorTagRow sector={snapshot?.sector || snapshot?.sectorInfo} maxConcepts={1} />
           </div>
           <div className="snapshot-header-side">
             <span>{snapshot?.source || '等待采集'}</span>
@@ -3892,7 +3969,7 @@ function App() {
   }
 
   function renderContentCard(item) {
-    const meta = getContentItemMeta(item);
+    const meta = getContentItemMeta(item, snapshots);
     const isClickable = Boolean(item.url);
     const openContent = () => {
       if (!item.url) {
@@ -3945,6 +4022,8 @@ function App() {
   }
 
   function renderDragonTigerCard(item, index) {
+    const dragonTigerSymbol = item.code || item.symbol;
+    const sectorSource = item.sector || item.sectorInfo || snapshots[dragonTigerSymbol]?.sector || snapshots[dragonTigerSymbol]?.sectorInfo;
     const dealAmountLabel = typeof item.dealAmountRatio === 'number' ? `龙虎榜成交额 · ${formatPercentValue(item.dealAmountRatio)}` : '龙虎榜成交额';
     const details = Array.isArray(item.dailyDetails) && item.dailyDetails.length
       ? item.dailyDetails
@@ -3962,6 +4041,7 @@ function App() {
             <p className="snapshot-subtitle">
               {item.code || item.symbol || '--'} · {item.tradeDate || item.latestDate || '--'}
             </p>
+            <SectorTagRow sector={sectorSource} maxConcepts={1} className="dragon-tiger-sector-row" />
           </div>
           <div className="dragon-tiger-card-right">
             <span className="dragon-tiger-metric">{formatPrice(item.closePrice)}</span>
@@ -4948,6 +5028,7 @@ function App() {
     const events = dedupeEvents(selectedDetail?.events || []);
     const readableEvents = buildReadableEventItems(events);
     const snapshot = selectedSnapshot || detailPayload?.snapshot || null;
+    const detailSector = snapshot?.sector || snapshot?.sectorInfo;
     const previousClose = estimatePreviousClose(snapshot, latestKline, intradayChartPoints);
     const candleChart = dailyBars.length ? buildCandlestickChartGeometry(dailyBars, 860, 248) : null;
     const movingAverageOverlays = candleChart ? buildMovingAverageOverlays(dailyBars, candleChart.candles, candleChart.scaleY) : [];
@@ -5036,6 +5117,7 @@ function App() {
             <p className="snapshot-subtitle">
               {selectedSnapshotSymbol} · {snapshot?.exchange || '--'}
             </p>
+            <SectorTagRow sector={detailSector} includeRegion maxConcepts={4} className="detail-sector-row" />
           </div>
           <div className="detail-meta">
             <span className="detail-price">{formatPrice(snapshot?.lastPrice)}</span>

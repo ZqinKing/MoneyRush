@@ -1878,6 +1878,68 @@ textarea {
   color: #dbe6ff;
 }
 
+.sector-tag-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 44px;
+  margin-top: 5px;
+  overflow: hidden;
+}
+
+.sector-tag-row.dragon-tiger-sector-row {
+  max-height: 22px;
+  margin-top: 4px;
+}
+
+.sector-tag-row.detail-sector-row {
+  max-height: none;
+  margin-top: 8px;
+}
+
+.sector-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 132px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(129, 164, 255, 0.16);
+  background: rgba(129, 164, 255, 0.1);
+  color: #cfe0ff;
+  font-size: 0.7rem;
+  line-height: 1.15;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sector-chip.industry {
+  border-color: rgba(111, 229, 179, 0.2);
+  background: rgba(111, 229, 179, 0.1);
+  color: #a9f3d0;
+}
+
+.sector-chip.region {
+  border-color: rgba(255, 197, 66, 0.2);
+  background: rgba(255, 197, 66, 0.1);
+  color: #ffe0a0;
+}
+
+.sector-chip.concept {
+  border-color: rgba(129, 164, 255, 0.2);
+  background: rgba(43, 96, 255, 0.12);
+  color: #dbe6ff;
+}
+
+.sector-chip.more {
+  max-width: none;
+  border-color: rgba(187, 202, 234, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #bbcaea;
+}
+
 .snapshot-card.trend-positive {
   --snapshot-card-border-color: rgba(255, 120, 120, 0.34);
   border-color: var(--snapshot-card-border-color);
