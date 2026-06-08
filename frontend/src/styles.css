@@ -983,12 +983,81 @@ textarea {
   gap: 16px;
 }
 
-.anomaly-report-summary,
-.anomaly-filter-row {
+.anomaly-report-summary {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.anomaly-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(129, 164, 255, 0.16);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(43, 96, 255, 0.1), rgba(6, 11, 22, 0.2)),
+    rgba(6, 11, 22, 0.4);
+}
+
+.anomaly-filter-card {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid rgba(129, 164, 255, 0.14);
+  border-radius: 14px;
+  padding: 8px;
+  background: rgba(8, 16, 31, 0.72);
+}
+
+.anomaly-filter-card legend {
+  padding: 0 4px;
+  color: #8fa6d8;
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.anomaly-filter-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.anomaly-filter-options.three-options {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.anomaly-filter-options.four-options {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.anomaly-filter-option {
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid rgba(129, 164, 255, 0.18);
+  border-radius: 999px;
+  padding: 6px 8px;
+  background: rgba(6, 11, 22, 0.62);
+  color: #cfe0ff;
+  cursor: pointer;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.anomaly-filter-option:hover,
+.anomaly-filter-option:focus-visible {
+  border-color: rgba(129, 164, 255, 0.42);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.anomaly-filter-option.active {
+  border-color: transparent;
+  background: linear-gradient(135deg, #2c6bff, #5a87ff);
+  color: #f7fbff;
+  box-shadow: 0 8px 18px rgba(35, 81, 201, 0.24);
 }
 
 .anomaly-report-body {
@@ -2742,6 +2811,10 @@ textarea {
     flex: 1 1 260px;
   }
 
+  .anomaly-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .dragon-tiger-toolbar-row,
   .dragon-tiger-pagination-row {
     flex-wrap: wrap;
@@ -2879,6 +2952,34 @@ textarea {
 
   .content-filter-row {
     flex: 1 1 100%;
+  }
+
+  .anomaly-filter-grid {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 8px 8px 10px;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .anomaly-filter-card {
+    flex: 0 0 auto;
+    padding: 7px;
+  }
+
+  .anomaly-filter-options,
+  .anomaly-filter-options.three-options,
+  .anomaly-filter-options.four-options {
+    display: flex;
+    flex-wrap: nowrap;
+  }
+
+  .anomaly-filter-option {
+    flex: 0 0 auto;
+    min-height: 32px;
+    padding: 5px 6px;
+    font-size: 0.76rem;
   }
 
   .overview-sort-controls,

@@ -5640,19 +5640,13 @@ function App() {
             <h2>持仓异动日报</h2>
             <p className="panel-tip compact">从“盯最新一步”改为复盘今日显著变化；量能为相对 20 日日均量的粗略参考。</p>
           </div>
-          <div className="event-status-slot" aria-live="polite">
-            <span
-              className={[
-                'symbol-count-badge',
-                'event-status-badge',
-                'warning',
-                dailyAnomalyRequestState === 'error' ? 'visible' : 'hidden',
-              ].filter(Boolean).join(' ')}
-              aria-hidden={dailyAnomalyRequestState !== 'error'}
-            >
-              日报加载失败
-            </span>
-          </div>
+          {dailyAnomalyRequestState === 'error' ? (
+            <div className="event-status-slot" aria-live="polite">
+              <span className="symbol-count-badge event-status-badge warning visible">
+                日报加载失败
+              </span>
+            </div>
+          ) : null}
         </div>
         <div className="anomaly-report-summary">
           <span className="symbol-count-badge">日期 {dailyAnomalyReport?.date || '--'}</span>
@@ -5662,52 +5656,42 @@ function App() {
           <span className="symbol-count-badge">持仓相关 {portfolioItems.length}</span>
           <span className="symbol-count-badge">监控标的 {summary.activeSymbolCount ?? activeSymbols.length}</span>
         </div>
-        <div className="content-filter-row anomaly-filter-row">
-          <label className="content-symbol-select-label" htmlFor="anomaly-scope-select">筛选</label>
-          <select
-            id="anomaly-scope-select"
-            className="content-symbol-select"
-            value={dailyAnomalyPortfolioOnly ? 'portfolio' : 'all'}
-            onChange={(event) => setDailyAnomalyPortfolioOnly(event.target.value === 'portfolio')}
-          >
-            <option value="all">全部异动</option>
-            <option value="portfolio">仅持仓相关</option>
-          </select>
-          <label className="content-symbol-select-label" htmlFor="anomaly-sort-select">排序</label>
-          <select
-            id="anomaly-sort-select"
-            className="content-symbol-select"
-            value={dailyAnomalySortBy}
-            onChange={(event) => setDailyAnomalySortBy(event.target.value)}
-          >
-            <option value="relevance">按关联度</option>
-            <option value="magnitude">按幅度</option>
-            <option value="time">按时间</option>
-          </select>
-          <label className="content-symbol-select-label" htmlFor="anomaly-change-threshold-select">涨跌阈值</label>
-          <select
-            id="anomaly-change-threshold-select"
-            className="content-symbol-select"
-            value={dailyAnomalyChangeThreshold}
-            onChange={(event) => setDailyAnomalyChangeThreshold(event.target.value)}
-          >
-            <option value="0">不限</option>
-            <option value="2">≥ 2%</option>
-            <option value="3">≥ 3%</option>
-            <option value="5">≥ 5%</option>
-          </select>
-          <label className="content-symbol-select-label" htmlFor="anomaly-volume-threshold-select">量比阈值</label>
-          <select
-            id="anomaly-volume-threshold-select"
-            className="content-symbol-select"
-            value={dailyAnomalyVolumeThreshold}
-            onChange={(event) => setDailyAnomalyVolumeThreshold(event.target.value)}
-          >
-            <option value="0">不限</option>
-            <option value="1.5">≥ 1.5×</option>
-            <option value="3">≥ 3×</option>
-            <option value="5">≥ 5×</option>
-          </select>
+        <div className="anomaly-filter-grid" aria-label="异动日报筛选条件">
+          <fieldset className="anomaly-filter-card">
+            <legend>筛选</legend>
+            <div className="anomaly-filter-options">
+              <button className={!dailyAnomalyPortfolioOnly ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalyPortfolioOnly(false)}>全部</button>
+              <button className={dailyAnomalyPortfolioOnly ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalyPortfolioOnly(true)}>持仓</button>
+            </div>
+          </fieldset>
+          <fieldset className="anomaly-filter-card">
+            <legend>排序</legend>
+            <div className="anomaly-filter-options three-options">
+              <button className={dailyAnomalySortBy === 'relevance' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalySortBy('relevance')}>关联</button>
+              <button className={dailyAnomalySortBy === 'magnitude' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalySortBy('magnitude')}>幅度</button>
+              <button className={dailyAnomalySortBy === 'time' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalySortBy('time')}>时间</button>
+            </div>
+          </fieldset>
+          <fieldset className="anomaly-filter-card">
+            <legend>涨跌阈值</legend>
+            <div className="anomaly-filter-options four-options">
+              {['0', '2', '3', '5'].map((value) => (
+                <button key={value} className={dailyAnomalyChangeThreshold === value ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalyChangeThreshold(value)}>
+                  {value === '0' ? '不限' : `≥${value}%`}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="anomaly-filter-card">
+            <legend>量比阈值</legend>
+            <div className="anomaly-filter-options four-options">
+              {['0', '1.5', '3', '5'].map((value) => (
+                <button key={value} className={dailyAnomalyVolumeThreshold === value ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalyVolumeThreshold(value)}>
+                  {value === '0' ? '不限' : `≥${value}×`}
+                </button>
+              ))}
+            </div>
+          </fieldset>
         </div>
         <div className="panel-scroll-area anomaly-report-body">
           {dailyAnomalyRequestState === 'loading' && !dailyAnomalyReport ? (
