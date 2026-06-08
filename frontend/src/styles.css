@@ -603,6 +603,49 @@ textarea {
   gap: 10px;
 }
 
+.llm-audit-log-card {
+  gap: 14px;
+}
+
+.llm-audit-table-wrap {
+  max-height: 420px;
+}
+
+.llm-audit-table {
+  min-width: 980px;
+}
+
+.llm-audit-table th,
+.llm-audit-table td {
+  padding: 8px 10px;
+  vertical-align: middle;
+}
+
+.llm-audit-token-cell {
+  white-space: nowrap;
+  color: #c0cbe0;
+  font-size: 0.84rem;
+}
+
+.llm-audit-detail-cell {
+  max-width: 280px;
+  color: #8fa6d8;
+  font-size: 0.82rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.llm-audit-pagination-row {
+  align-items: center;
+}
+
+.llm-audit-pagination-row .content-switch-option:disabled {
+  cursor: not-allowed;
+  color: #60708d;
+  opacity: 0.55;
+}
+
 .compact-heading {
   margin-bottom: 0;
 }

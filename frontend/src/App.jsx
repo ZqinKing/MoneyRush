@@ -105,6 +105,7 @@ const contentLaneLabels = {
 
 const dragonTigerDefaultStockDisplayLimit = 100;
 const dragonTigerDefaultPageSize = 20;
+const llmAuditDefaultPageSize = 50;
 
 const dragonTigerDailyTabs = [
   { value: 'single', label: '单日榜' },
@@ -137,6 +138,9 @@ const llmAuditModuleLabels = {
 const llmAuditCategoryLabels = {
   ai_summary: 'AI摘要',
   anomaly_reason: '异动归因',
+  anomaly_reason_intraday: '盘中异动归因',
+  anomaly_reason_post_close: '盘后异动归因',
+  anomaly_reason_smoke: '异动归因冒烟',
   fund_portfolio_risk_analysis: '基金风险解读',
   macro_analysis: '宏观解读',
 };
@@ -234,8 +238,11 @@ function buildLlmAuditCapabilitiesUrl() {
   return `${apiBaseUrl}/api/v1/llm-audit/capabilities`;
 }
 
-function buildLlmAuditDailyUrl() {
-  return `${apiBaseUrl}/api/v1/llm-audit/daily`;
+function buildLlmAuditDailyUrl({ limit = llmAuditDefaultPageSize, offset = 0 } = {}) {
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  params.set('offset', String(offset));
+  return `${apiBaseUrl}/api/v1/llm-audit/daily?${params.toString()}`;
 }
 
 function buildDragonTigerDailyUrl(tradeDate = '') {
@@ -460,6 +467,37 @@ function formatCompactNumber(value) {
     notation: 'compact',
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatAuditTokenCount(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '--';
+  }
+
+  return new Intl.NumberFormat('zh-CN').format(value);
+}
+
+function formatAuditLatency(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '--';
+  }
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(1)}s`;
+  }
+  return `${value}ms`;
+}
+
+function getLlmAuditStatusTone(status) {
+  if (status === 'completed') {
+    return 'positive';
+  }
+  if (status === 'failed') {
+    return 'negative';
+  }
+  if (status === 'skipped') {
+    return 'muted';
+  }
+  return 'warning';
 }
 
 function formatSignedPercent(value) {
@@ -1817,6 +1855,7 @@ function App() {
   const [llmAuditSummary, setLlmAuditSummary] = useState(null);
   const [llmAuditRequestState, setLlmAuditRequestState] = useState('idle');
   const [llmAuditReloadNonce, setLlmAuditReloadNonce] = useState(0);
+  const [llmAuditPageOffset, setLlmAuditPageOffset] = useState(0);
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
   const activeFundsKey = useMemo(() => [...activeFunds].sort().join(','), [activeFunds]);
 
@@ -1978,7 +2017,7 @@ function App() {
     async function loadLlmAuditSummary() {
       setLlmAuditRequestState('loading');
       try {
-        const response = await fetch(buildLlmAuditDailyUrl());
+        const response = await fetch(buildLlmAuditDailyUrl({ limit: llmAuditDefaultPageSize, offset: llmAuditPageOffset }));
         const payload = await parseJsonOrThrow(response, 'llm audit daily fetch failed');
         if (cancelled) {
           return;
@@ -1997,7 +2036,7 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [activeView, llmAuditCapabilities.enabled, llmAuditReloadNonce]);
+  }, [activeView, llmAuditCapabilities.enabled, llmAuditPageOffset, llmAuditReloadNonce]);
 
   const dragonTigerDailyAggregated = useMemo(() => aggregateDragonTigerDailyItems(dragonTigerDaily), [dragonTigerDaily]);
 
@@ -3399,13 +3438,25 @@ function App() {
           label: llmAuditStatusLabels[item?.status] || item?.status || '--',
         }))
       : [];
+    const auditItems = Array.isArray(summary.items) ? summary.items : [];
+    const totalCount = Number(summary?.totalCount) || 0;
+    const pageOffset = Number(summary?.offset) || 0;
+    const pageSize = Number(summary?.limit) || llmAuditDefaultPageSize;
+    const pageStart = auditItems.length ? pageOffset + 1 : 0;
+    const pageEnd = pageOffset + auditItems.length;
+    const hasPreviousPage = pageOffset > 0;
+    const hasNextPage = Boolean(summary?.hasMore);
+    const nextPageOffset = Number.isFinite(Number(summary?.nextOffset)) ? Number(summary.nextOffset) : pageOffset + pageSize;
+    const completedCount = byStatus.find((item) => item.status === 'completed')?.count || 0;
+    const failedCount = byStatus.find((item) => item.status === 'failed')?.count || 0;
+    const skippedCount = byStatus.find((item) => item.status === 'skipped')?.count || 0;
 
     return (
       <article className="panel wide llm-audit-panel">
         <div className="panel-heading">
           <div>
             <h2>LLM审计</h2>
-            <p className="panel-tip compact">当前只审计当日调用量，按菜单模块和调用类别聚合展示。</p>
+            <p className="panel-tip compact">按时间倒序展示当日 LLM 调用日志；历史记录缺少 token 元数据时显示为未记录。</p>
           </div>
           <div className="management-meta">
             <span className="symbol-count-badge">日期 {summary?.date || '--'}</span>
@@ -3419,8 +3470,8 @@ function App() {
         <div className="llm-audit-summary-grid">
           <article className="llm-audit-summary-card">
             <strong>当日总量</strong>
-            <div className="market-index-metric">{Number(summary?.totalCount) || 0}</div>
-            <p className="panel-tip compact">当前返回的是当日审计记录总数。</p>
+            <div className="market-index-metric">{totalCount}</div>
+            <p className="panel-tip compact">完成 {completedCount} · 失败 {failedCount} · 跳过 {skippedCount}</p>
           </article>
           <article className="llm-audit-summary-card">
             <strong>可用能力</strong>
@@ -3453,19 +3504,83 @@ function App() {
             {renderLlmAuditBarList(byCategory, 'label', 'callCategory')}
           </section>
         </div>
-        <section className="llm-audit-chart-card">
+        <section className="llm-audit-chart-card llm-audit-log-card">
           <div className="section-heading compact-heading">
             <div>
-              <h3>状态分布</h3>
-              <p className="panel-tip compact">`completed` 表示产出可用结果，`failed` 表示尝试调用但没有可用输出，`skipped` 表示进入了保护或跳过逻辑。</p>
+              <h3>调用日志</h3>
+              <p className="panel-tip compact">最新记录在前；默认每页 {llmAuditDefaultPageSize} 条，输入/输出 token 来自供应商 usage，历史缺字段显示为 --。</p>
             </div>
           </div>
-          <div className="llm-audit-status-row">
-            {byStatus.length ? byStatus.map((item) => (
-              <span className="market-breadth-chip" key={`${item.status}-${item.count}`}>
-                {item.label} {item.count}
-              </span>
-            )) : <span className="market-breadth-chip muted">当日暂无状态分布数据</span>}
+          {auditItems.length ? (
+            <div className="detail-table-wrap detail-table-wrap-scrollable llm-audit-table-wrap">
+              <table className="detail-table llm-audit-table">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>模块 / 类别</th>
+                    <th>状态</th>
+                    <th>模型</th>
+                    <th>Token</th>
+                    <th>耗时</th>
+                    <th>细节</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auditItems.map((item) => {
+                    const moduleLabel = llmAuditModuleLabels[item?.menuModule] || item?.menuModule || '--';
+                    const categoryLabel = llmAuditCategoryLabels[item?.callCategory] || item?.callCategory || '--';
+                    const statusLabel = llmAuditStatusLabels[item?.status] || item?.status || '--';
+                    const detailText = item?.skipReason || item?.finishReason || item?.attemptStatus || item?.symbol || item?.scope || '';
+                    return (
+                      <tr key={item?.id || `${item?.invokedAt}-${item?.callCategory}`}>
+                        <td>
+                          <span className="table-subtext">{formatDateTime(item?.invokedAt)}</span>
+                        </td>
+                        <td>
+                          <strong>{moduleLabel}</strong>
+                          <span className="table-subtext">{categoryLabel}</span>
+                        </td>
+                        <td>
+                          <span className={`market-breadth-chip ${getLlmAuditStatusTone(item?.status)}`}>{statusLabel}</span>
+                        </td>
+                        <td>{item?.modelUsed || '--'}</td>
+                        <td className="llm-audit-token-cell">
+                          入 {formatAuditTokenCount(item?.inputTokens)} / 出 {formatAuditTokenCount(item?.outputTokens)} / 总 {formatAuditTokenCount(item?.totalTokens)}
+                        </td>
+                        <td>{formatAuditLatency(item?.latencyMs)}</td>
+                        <td className="llm-audit-detail-cell">
+                          <span className="table-subtext">{item?.promptVersion || 'prompt 未记录'}</span>
+                          <span className="table-subtext">{detailText || '细节未记录'}{item?.statusCode ? ` · HTTP ${item.statusCode}` : ''}</span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : <p className="panel-tip compact">当日暂无 LLM 调用日志。</p>}
+          <div className="dragon-tiger-pagination-row llm-audit-pagination-row">
+            <span className="table-meta-badge">
+              第 {pageStart || 0}-{pageEnd || 0} 条 / 共 {totalCount} 条 · 每页 {pageSize} 条
+            </span>
+            <div className="dragon-tiger-pagination-actions">
+              <button
+                type="button"
+                className="content-switch-option"
+                disabled={!hasPreviousPage || llmAuditRequestState === 'loading'}
+                onClick={() => setLlmAuditPageOffset(Math.max(pageOffset - pageSize, 0))}
+              >
+                上一页
+              </button>
+              <button
+                type="button"
+                className="content-switch-option"
+                disabled={!hasNextPage || llmAuditRequestState === 'loading'}
+                onClick={() => setLlmAuditPageOffset(nextPageOffset)}
+              >
+                下一页
+              </button>
+            </div>
           </div>
         </section>
       </article>
