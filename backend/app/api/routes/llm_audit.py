@@ -27,13 +27,18 @@ async def llm_audit_capabilities(request: Request) -> dict[str, object]:
 
 
 @router.get("/daily")
-async def llm_audit_daily(request: Request, date: str | None = Query(default=None)) -> dict[str, object]:
+async def llm_audit_daily(
+    request: Request,
+    date: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, object]:
     settings = request.app.state.settings
     capabilities = get_llm_feature_capabilities(settings)
     if not capabilities["enabled"]:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="llm_audit_unavailable")
 
     target_date = _resolve_target_date(date)
-    payload = await request.app.state.llm_audit_query_service.fetch_daily_summary(target_date)
+    payload = await request.app.state.llm_audit_query_service.fetch_daily_summary(target_date, limit=limit, offset=offset)
     payload["capabilities"] = capabilities["features"]
     return payload
