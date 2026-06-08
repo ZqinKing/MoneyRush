@@ -167,6 +167,7 @@ def build_llm_attempt_meta(
     status_code: int | None = None,
     finish_reason: object = None,
     message: object = None,
+    usage: object = None,
     error: object = None,
 ) -> dict[str, object]:
     meta: dict[str, object] = {
@@ -184,6 +185,8 @@ def build_llm_attempt_meta(
         reasoning = _coerce_message_text(message.get("reasoning_content"))
         meta["contentLength"] = len(content or "")
         meta["reasoningContentLength"] = len(reasoning or "")
+    if isinstance(usage, dict):
+        meta["usage"] = usage
     if error is not None:
         meta["errorType"] = type(error).__name__
     return meta
@@ -466,9 +469,10 @@ class AiSummaryClient:
                         response.raise_for_status()
                     data = response.json()
                     choices = data.get("choices") if isinstance(data, dict) else None
+                    usage = data.get("usage") if isinstance(data, dict) else None
                     last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
                     if not isinstance(choices, list) or not choices:
-                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="missing_choices", status_code=response.status_code))
+                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="missing_choices", status_code=response.status_code, usage=usage))
                         logger.warning("ai summary response missing choices", extra={"model": model})
                         break
                     message = choices[0].get("message") if isinstance(choices[0], dict) else None
@@ -477,10 +481,10 @@ class AiSummaryClient:
                     if summary_text is None and isinstance(data, dict):
                         finish_reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
                         status = "truncated_before_final_content" if finish_reason == "length" else "missing_final_content"
-                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message))
+                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message, usage=usage))
                         logger.warning("ai summary response missing usable final content", extra={"model": model, "finishReason": choices[0].get("finish_reason") if isinstance(choices[0], dict) else None})
                         break
-                    attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message))
+                    attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message, usage=usage))
                     return AiSummaryResult(
                         summary=summary_text,
                         attempted=True,

@@ -80,6 +80,7 @@ class AnomalyReasonResult:
     related_announcement_ids: list[int]
     llm_succeeded: bool = False
     attempted: bool = False
+    audit_status: str | None = None
     skip_reason: str | None = None
     model_used: str | None = None
     prompt_version: str = "v1"
@@ -312,7 +313,24 @@ class AnomalyReasonAnalyzer:
             )
         if _contains_advice(result) or _looks_like_prompt_echo(result) or _looks_low_information_result(result):
             logger.warning("anomaly ai reason failed safety/quality checks; using safe fallback", extra={"symbol": anomaly["symbol"]})
-            result = fallback_reason
+            return AnomalyReasonResult(
+                reason=fallback_reason,
+                status="completed",
+                related_news_ids=[item for item in (_row_id(row) for row in news_rows) if item is not None],
+                related_announcement_ids=[item for item in (_row_id(row) for row in announcement_rows) if item is not None],
+                attempted=True,
+                llm_succeeded=False,
+                audit_status="failed",
+                skip_reason="safety_quality_fallback",
+                model_used=self._last_model_used or get_ai_model(self._settings),
+                prompt_version=prompt_version,
+                latency_ms=self._last_latency_ms,
+                attempts=self._last_attempts,
+                phase=phase,
+                evidence_cutoff_at=cutoff_at,
+                includes_dragon_tiger=includes_dragon_tiger,
+                evidence_fingerprint=fingerprint,
+            )
         if result.strip() == "原因待确认" and fallback_reason != "原因待确认":
             result = fallback_reason
         return AnomalyReasonResult(
@@ -371,8 +389,9 @@ class AnomalyReasonAnalyzer:
                     data = response.json()
                     self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
                     choices = data.get("choices") if isinstance(data, dict) else None
+                    usage = data.get("usage") if isinstance(data, dict) else None
                     if not isinstance(choices, list) or not choices:
-                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="missing_choices", status_code=response.status_code))
+                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="missing_choices", status_code=response.status_code, usage=usage))
                         logger.warning("anomaly ai reason response missing choices", extra={"model": model})
                         break
                     message = choices[0].get("message") if isinstance(choices[0], dict) else None
@@ -381,10 +400,10 @@ class AnomalyReasonAnalyzer:
                     if result is None:
                         finish_reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
                         status = "truncated_before_final_content" if finish_reason == "length" else "missing_final_content"
-                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message))
+                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message, usage=usage))
                         logger.warning("anomaly ai reason response missing usable final content", extra={"model": model})
                         break
-                    self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message))
+                    self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message, usage=usage))
                     return result
                 except Exception as exc:
                     self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)

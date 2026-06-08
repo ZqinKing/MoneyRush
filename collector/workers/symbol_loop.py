@@ -31,6 +31,10 @@ def _derive_llm_audit_status(*, attempted: bool, llm_succeeded: bool) -> str:
     return "completed" if llm_succeeded else "failed"
 
 
+def _resolve_llm_audit_status(result, explicit_status: str | None = None) -> str:
+    return explicit_status or result.audit_status or _derive_llm_audit_status(attempted=result.attempted, llm_succeeded=result.llm_succeeded)
+
+
 def _next_retry_at(*, attempt_count: int, settings) -> datetime | None:
     max_attempts = max(int(getattr(settings, "anomaly_reason_max_attempts", 3)), 1)
     if attempt_count >= max_attempts:
@@ -121,8 +125,6 @@ class CollectorWorker:
                 await self._analyze_post_close_anomaly_reasons()
                 await self._collect_active_symbols()
                 await self._aggregate_active_symbol_anomalies(force=True)
-                await self._analyze_pending_anomaly_reasons(force=True)
-                await self._analyze_post_close_anomaly_reasons(force=True)
             except Exception:
                 self._postgres_ready = False
                 logger.exception("collector loop failed; retrying")
@@ -374,7 +376,7 @@ class CollectorWorker:
             "audit_date": audit_at.astimezone(CHINA_MARKET_TZ).date(),
             "menu_module": "events",
             "call_category": f"anomaly_reason_{phase}",
-            "status": status or _derive_llm_audit_status(attempted=result.attempted, llm_succeeded=result.llm_succeeded),
+            "status": _resolve_llm_audit_status(result, status),
             "model_used": result.model_used,
             "prompt_version": result.prompt_version,
             "latency_ms": result.latency_ms,
