@@ -149,6 +149,7 @@ def build_llm_attempt_meta(
     status_code: int | None = None,
     finish_reason: object = None,
     message: object = None,
+    usage: object = None,
     error: object = None,
 ) -> dict[str, object]:
     meta: dict[str, object] = {
@@ -166,6 +167,8 @@ def build_llm_attempt_meta(
         reasoning = coerce_chat_message_text(message.get("reasoning_content"))
         meta["contentLength"] = len(content or "")
         meta["reasoningContentLength"] = len(reasoning or "")
+    if isinstance(usage, dict):
+        meta["usage"] = usage
     if error is not None:
         meta["errorType"] = type(error).__name__
     return meta

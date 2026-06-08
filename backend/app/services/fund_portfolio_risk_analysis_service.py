@@ -399,9 +399,10 @@ class FundPortfolioRiskAnalysisService:
                     data = response.json()
                     last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
                     choices = data.get("choices") if isinstance(data, dict) else None
+                    usage = data.get("usage") if isinstance(data, dict) else None
                     if not isinstance(choices, list) or not choices:
                         last_skip_reason = "empty_choices"
-                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="missing_choices", status_code=response.status_code))
+                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="missing_choices", status_code=response.status_code, usage=usage))
                         logger.warning("fund portfolio LLM response missing choices", extra={"model": model})
                         break
                     message = choices[0].get("message") if isinstance(choices[0], dict) else None
@@ -412,13 +413,13 @@ class FundPortfolioRiskAnalysisService:
                         reason = "json_parse_failed" if parsed is None else "forbidden_advice_detected"
                         finish_reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
                         status = "truncated_before_final_content" if parsed is None and finish_reason == "length" else "invalid_output"
-                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message))
+                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message, usage=usage))
                         logger.warning("fund portfolio LLM response failed safety or JSON checks", extra={"attempt": attempt + 1, "reason": reason, "model": model})
                         if attempt < retries:
                             time.sleep(min(2 ** attempt, 8))
                             continue
                         break
-                    attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message))
+                    attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message, usage=usage))
                     return FundPortfolioRiskAnalysisResult(
                         analysis=_normalize_analysis(parsed, focus=focus, depth=depth),
                         model_used=model,
