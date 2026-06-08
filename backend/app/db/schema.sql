@@ -455,6 +455,31 @@ CREATE INDEX IF NOT EXISTS significant_anomaly_ai_phase_idx
 CREATE INDEX IF NOT EXISTS significant_anomaly_post_close_status_idx
     ON significant_anomaly (ai_reason_post_close_status, anomaly_date DESC);
 
+CREATE TABLE IF NOT EXISTS anomaly_post_close_review_checkpoint (
+    trade_date DATE NOT NULL,
+    symbol TEXT NOT NULL,
+    representative_anomaly_id BIGINT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    reason TEXT,
+    generated_at TIMESTAMPTZ,
+    evidence_fingerprint TEXT,
+    evidence_cutoff_at TIMESTAMPTZ,
+    includes_dragon_tiger BOOLEAN NOT NULL DEFAULT FALSE,
+    related_news_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    related_announcement_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_at TIMESTAMPTZ,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (trade_date, symbol)
+);
+
+CREATE INDEX IF NOT EXISTS anomaly_post_close_review_checkpoint_status_date_idx
+    ON anomaly_post_close_review_checkpoint (status, trade_date DESC);
+CREATE INDEX IF NOT EXISTS anomaly_post_close_review_checkpoint_representative_idx
+    ON anomaly_post_close_review_checkpoint (representative_anomaly_id);
+
 CREATE TABLE IF NOT EXISTS macro_observation (
     series_id TEXT NOT NULL,
     observation_date DATE NOT NULL,

@@ -679,6 +679,31 @@ class PostgresStore:
         await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_ai_status_idx ON significant_anomaly (ai_reason_status, anomaly_date DESC)")
         await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_ai_phase_idx ON significant_anomaly (ai_reason_phase, anomaly_date DESC)")
         await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_post_close_status_idx ON significant_anomaly (ai_reason_post_close_status, anomaly_date DESC)")
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS anomaly_post_close_review_checkpoint (
+                trade_date DATE NOT NULL,
+                symbol TEXT NOT NULL,
+                representative_anomaly_id BIGINT,
+                status TEXT NOT NULL DEFAULT 'pending',
+                reason TEXT,
+                generated_at TIMESTAMPTZ,
+                evidence_fingerprint TEXT,
+                evidence_cutoff_at TIMESTAMPTZ,
+                includes_dragon_tiger BOOLEAN NOT NULL DEFAULT FALSE,
+                related_news_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                related_announcement_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TIMESTAMPTZ,
+                last_error TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (trade_date, symbol)
+            )
+            """
+        )
+        await connection.execute("CREATE INDEX IF NOT EXISTS anomaly_post_close_review_checkpoint_status_date_idx ON anomaly_post_close_review_checkpoint (status, trade_date DESC)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS anomaly_post_close_review_checkpoint_representative_idx ON anomaly_post_close_review_checkpoint (representative_anomaly_id)")
 
     async def _dedupe_exact_market_rows(self, connection: asyncpg.Connection) -> dict[str, int]:
         removed_tick_duplicates = await connection.fetchval(
@@ -1371,6 +1396,152 @@ class PostgresStore:
                 ["not_due", "pending", "failed"],
                 max(int(max_attempts), 1),
                 max(int(limit), 1),
+            )
+
+    async def fetch_post_close_review_candidates(self, *, trade_date: date, limit: int = 20, max_attempts: int = 3) -> list[asyncpg.Record]:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            return await connection.fetch(
+                """
+                WITH anomaly_candidates AS (
+                    SELECT id, anomaly_date, symbol, anomaly_type, severity, trigger_price, reference_price,
+                           change_pct, trigger_volume, volume_ratio, first_trigger_ts, last_trigger_ts,
+                           duration_minutes, event_count, payload, first_trigger_bucket,
+                           ai_reason_status, ai_reason_phase, ai_reason_post_close_required,
+                           ai_reason_post_close_status, ai_reason_post_close_evidence_fingerprint,
+                           ai_reason_post_close_attempt_count, ai_reason_post_close_next_retry_at,
+                           updated_at,
+                           CASE severity
+                               WHEN 'critical' THEN 3
+                               WHEN 'high' THEN 2
+                               WHEN 'medium' THEN 1
+                               ELSE 0
+                           END AS severity_rank,
+                           GREATEST(
+                               COALESCE(ABS(change_pct), 0),
+                               COALESCE(ABS(volume_ratio), 0)
+                           ) AS magnitude_rank
+                    FROM significant_anomaly
+                    WHERE anomaly_date = $1::date
+                      AND severity = ANY($2::text[])
+                      AND (
+                          ai_reason_post_close_required = TRUE
+                          OR ai_reason_status IS NULL
+                          OR ai_reason_status = 'pending'
+                      )
+                ), ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY symbol
+                               ORDER BY severity_rank DESC,
+                                        magnitude_rank DESC,
+                                        COALESCE(last_trigger_ts, first_trigger_ts) DESC,
+                                        updated_at DESC,
+                                        id DESC
+                           ) AS row_rank
+                    FROM anomaly_candidates
+                )
+                SELECT ranked.id, ranked.anomaly_date, ranked.symbol, ranked.anomaly_type, ranked.severity,
+                       ranked.trigger_price, ranked.reference_price, ranked.change_pct, ranked.trigger_volume,
+                       ranked.volume_ratio, ranked.first_trigger_ts, ranked.last_trigger_ts, ranked.duration_minutes,
+                       ranked.event_count, ranked.payload, ranked.first_trigger_bucket, ranked.ai_reason_status,
+                       ranked.ai_reason_phase, ranked.ai_reason_post_close_required,
+                       ranked.ai_reason_post_close_status, ranked.ai_reason_post_close_evidence_fingerprint,
+                       ranked.ai_reason_post_close_attempt_count, ranked.ai_reason_post_close_next_retry_at,
+                       checkpoint.status AS post_close_checkpoint_status,
+                       checkpoint.reason AS post_close_checkpoint_reason,
+                       checkpoint.generated_at AS post_close_checkpoint_generated_at,
+                       checkpoint.evidence_fingerprint AS post_close_checkpoint_evidence_fingerprint,
+                       checkpoint.evidence_cutoff_at AS post_close_checkpoint_evidence_cutoff_at,
+                       checkpoint.includes_dragon_tiger AS post_close_checkpoint_includes_dragon_tiger,
+                       checkpoint.related_news_ids AS post_close_checkpoint_related_news_ids,
+                       checkpoint.related_announcement_ids AS post_close_checkpoint_related_announcement_ids,
+                       checkpoint.attempt_count AS post_close_checkpoint_attempt_count,
+                       checkpoint.next_retry_at AS post_close_checkpoint_next_retry_at,
+                       checkpoint.last_error AS post_close_checkpoint_last_error
+                FROM ranked
+                LEFT JOIN anomaly_post_close_review_checkpoint AS checkpoint
+                  ON checkpoint.trade_date = ranked.anomaly_date
+                 AND checkpoint.symbol = ranked.symbol
+                WHERE ranked.row_rank = 1
+                  AND (
+                      checkpoint.trade_date IS NULL
+                      OR (checkpoint.status = 'pending' AND (checkpoint.next_retry_at IS NULL OR checkpoint.next_retry_at <= NOW()))
+                      OR (
+                          checkpoint.status = 'failed'
+                          AND checkpoint.attempt_count < $3
+                          AND (checkpoint.next_retry_at IS NULL OR checkpoint.next_retry_at <= NOW())
+                      )
+                  )
+                ORDER BY ranked.severity_rank DESC,
+                         ranked.magnitude_rank DESC,
+                         COALESCE(ranked.last_trigger_ts, ranked.first_trigger_ts) DESC,
+                         ranked.id DESC
+                LIMIT $4
+                """,
+                trade_date,
+                ["critical", "high"],
+                max(int(max_attempts), 1),
+                max(int(limit), 1),
+            )
+
+    async def upsert_post_close_review_checkpoint(self, item: dict[str, object]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO anomaly_post_close_review_checkpoint (
+                    trade_date,
+                    symbol,
+                    representative_anomaly_id,
+                    status,
+                    reason,
+                    generated_at,
+                    evidence_fingerprint,
+                    evidence_cutoff_at,
+                    includes_dragon_tiger,
+                    related_news_ids,
+                    related_announcement_ids,
+                    attempt_count,
+                    next_retry_at,
+                    last_error,
+                    updated_at
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13, $14, NOW()
+                )
+                ON CONFLICT (trade_date, symbol) DO UPDATE SET
+                    representative_anomaly_id = EXCLUDED.representative_anomaly_id,
+                    status = EXCLUDED.status,
+                    reason = EXCLUDED.reason,
+                    generated_at = EXCLUDED.generated_at,
+                    evidence_fingerprint = EXCLUDED.evidence_fingerprint,
+                    evidence_cutoff_at = EXCLUDED.evidence_cutoff_at,
+                    includes_dragon_tiger = EXCLUDED.includes_dragon_tiger,
+                    related_news_ids = EXCLUDED.related_news_ids,
+                    related_announcement_ids = EXCLUDED.related_announcement_ids,
+                    attempt_count = EXCLUDED.attempt_count,
+                    next_retry_at = EXCLUDED.next_retry_at,
+                    last_error = EXCLUDED.last_error,
+                    updated_at = NOW()
+                """,
+                item["trade_date"],
+                item["symbol"],
+                _to_int(item.get("representative_anomaly_id")),
+                item.get("status", "pending"),
+                item.get("reason"),
+                _coerce_optional_utc_datetime(item.get("generated_at"), field_name="post_close_checkpoint.generated_at"),
+                item.get("evidence_fingerprint"),
+                _coerce_optional_utc_datetime(item.get("evidence_cutoff_at"), field_name="post_close_checkpoint.evidence_cutoff_at"),
+                bool(item.get("includes_dragon_tiger", False)),
+                _json_dumps(item.get("related_news_ids", [])),
+                _json_dumps(item.get("related_announcement_ids", [])),
+                _to_int(item.get("attempt_count")) or 0,
+                _coerce_optional_utc_datetime(item.get("next_retry_at"), field_name="post_close_checkpoint.next_retry_at"),
+                item.get("last_error"),
             )
 
     async def has_dragon_tiger_data_for_date(self, *, trade_date: date) -> bool:
