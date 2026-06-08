@@ -735,6 +735,10 @@ class MarketDetailQueryService:
         if not anomaly_rows:
             return None
 
+        post_close_reviews = await self._fetch_post_close_review_map(
+            trade_date=anomaly_date,
+            symbols=sorted({str(row["symbol"]) for row in anomaly_rows if row["symbol"]}),
+        )
         fund_rows = []
         if active_funds:
             fund_rows = await self._fetch(
@@ -776,6 +780,29 @@ class MarketDetailQueryService:
             symbol_funds = self._funds_with_estimated_impact(related_funds.get(symbol, []), change_pct)
             if portfolio_only and not symbol_funds:
                 continue
+            post_close_review = post_close_reviews.get(symbol)
+            post_close_status = row["ai_reason_post_close_status"]
+            post_close_generated_at = row["ai_reason_post_close_generated_at"]
+            post_close_reason = row["ai_reason_post_close"]
+            ai_reason = row["ai_reason"]
+            ai_reason_status = row["ai_reason_status"]
+            ai_reason_generated_at = row["ai_reason_generated_at"]
+            ai_reason_phase = row["ai_reason_phase"]
+            ai_reason_includes_dragon_tiger = bool(row["ai_reason_includes_dragon_tiger"])
+            related_news_ids = _decode_jsonish_list(row["related_news_ids"])
+            related_announcement_ids = _decode_jsonish_list(row["related_announcement_ids"])
+            if post_close_review is not None:
+                post_close_status = post_close_review["status"]
+                post_close_generated_at = post_close_review["generated_at"]
+                post_close_reason = post_close_review["reason"]
+                ai_reason_includes_dragon_tiger = bool(post_close_review["includes_dragon_tiger"])
+                if post_close_review["status"] == "completed":
+                    ai_reason = post_close_review["reason"]
+                    ai_reason_status = "completed"
+                    ai_reason_generated_at = post_close_review["generated_at"]
+                    ai_reason_phase = "post_close"
+                    related_news_ids = _decode_jsonish_list(post_close_review["related_news_ids"])
+                    related_announcement_ids = _decode_jsonish_list(post_close_review["related_announcement_ids"])
             items.append(
                 {
                     "symbol": symbol,
@@ -796,18 +823,18 @@ class MarketDetailQueryService:
                         else "监控标的出现显著变化，未匹配到最近披露基金持仓"
                     ),
                     **self._daily_anomaly_ai_fields(
-                        reason=row["ai_reason"],
-                        status=row["ai_reason_status"],
-                        generated_at=row["ai_reason_generated_at"],
-                        related_news_ids=_decode_jsonish_list(row["related_news_ids"]),
-                        related_announcement_ids=_decode_jsonish_list(row["related_announcement_ids"]),
-                        phase=row["ai_reason_phase"],
+                        reason=ai_reason,
+                        status=ai_reason_status,
+                        generated_at=ai_reason_generated_at,
+                        related_news_ids=related_news_ids,
+                        related_announcement_ids=related_announcement_ids,
+                        phase=ai_reason_phase,
                         evidence_cutoff_at=row["ai_reason_evidence_cutoff_at"],
-                        includes_dragon_tiger=bool(row["ai_reason_includes_dragon_tiger"]),
+                        includes_dragon_tiger=ai_reason_includes_dragon_tiger,
                         post_close_required=bool(row["ai_reason_post_close_required"]),
-                        post_close_status=row["ai_reason_post_close_status"],
-                        post_close_generated_at=row["ai_reason_post_close_generated_at"],
-                        post_close_reason=row["ai_reason_post_close"],
+                        post_close_status=post_close_status,
+                        post_close_generated_at=post_close_generated_at,
+                        post_close_reason=post_close_reason,
                     ),
                 }
             )
@@ -839,6 +866,26 @@ class MarketDetailQueryService:
             "otherAnomalies": other_anomalies,
             "stableHoldings": [],
         }
+
+    async def _fetch_post_close_review_map(self, *, trade_date, symbols: list[str]) -> dict[str, asyncpg.Record]:
+        if not symbols:
+            return {}
+        try:
+            rows = await self._fetch(
+                """
+                SELECT trade_date, symbol, representative_anomaly_id, status, reason, generated_at,
+                       evidence_fingerprint, evidence_cutoff_at, includes_dragon_tiger,
+                       related_news_ids, related_announcement_ids, attempt_count, next_retry_at, last_error
+                FROM anomaly_post_close_review_checkpoint
+                WHERE trade_date = $1::date
+                  AND symbol = ANY($2::text[])
+                """,
+                trade_date,
+                symbols,
+            )
+        except asyncpg.UndefinedTableError:
+            return {}
+        return {str(row["symbol"]): row for row in rows}
 
     async def fetch_best_bid_ask(self, symbol: str) -> dict[str, object]:
         row = await self._fetchrow(
