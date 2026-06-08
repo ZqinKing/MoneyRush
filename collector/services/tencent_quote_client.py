@@ -9,6 +9,8 @@ from urllib.request import urlopen
 
 from mootdx.quotes import Quotes
 
+from collector.services.eastmoney_sector_client import EastmoneySectorClient
+
 
 QUOTE_URL = "https://qt.gtimg.cn/q="
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
@@ -18,6 +20,8 @@ QUOTE_SYMBOL_FAILURE_BACKOFF_SECONDS = 30.0
 QUOTE_SERVER_FAILURE_BACKOFF_SECONDS = 10.0
 HISTORY_FAILURE_BACKOFF_INITIAL_SECONDS = 60.0
 HISTORY_FAILURE_BACKOFF_MAX_SECONDS = 300.0
+SECTOR_CACHE_TTL_SECONDS = 6 * 60 * 60
+SECTOR_FAILURE_CACHE_TTL_SECONDS = 30 * 60
 logger = logging.getLogger(__name__)
 
 
@@ -692,10 +696,13 @@ class MarketQuoteClient:
         self._mootdx_quote_client = MootdxQuoteClient()
         self._mootdx_history_client = MootdxQuoteClient()
         self._tencent_client = TencentQuoteClient()
+        self._sector_client = EastmoneySectorClient()
         self._tencent_cache: dict[str, tuple[TencentQuote, float]] = {}
+        self._sector_cache: dict[str, tuple[dict[str, object] | None, float]] = {}
         self._quote_symbol_failure_until: dict[str, float] = {}
         self._quote_server_failure_until = 0.0
         self._tencent_failure_until = 0.0
+        self._sector_failure_until = 0.0
         self._history_failure_until_by_key: dict[tuple[str, str, str], float] = {}
         self._history_failure_count_by_key: dict[tuple[str, str, str], int] = {}
         self._last_history_request_at = 0.0
@@ -706,7 +713,9 @@ class MarketQuoteClient:
         except Exception:
             tencent_quote = self._get_tencent_quote(symbol)
             logger.exception("mootdx primary quote fetch failed; falling back to tencent", extra={"symbol": symbol})
-            return tencent_quote.to_market_state()
+            market_state = tencent_quote.to_market_state()
+            self._attach_sector_info(market_state, symbol)
+            return market_state
 
         tencent_quote = self._get_tencent_quote_or_none(symbol)
         if tencent_quote is not None:
@@ -722,10 +731,14 @@ class MarketQuoteClient:
                         "tencent_last_price": tencent_quote.last_price,
                     },
                 )
-                return tencent_quote.to_market_state()
+                market_state = tencent_quote.to_market_state()
+                self._attach_sector_info(market_state, symbol)
+                return market_state
             raise RuntimeError(f"mootdx quote failed validation for {symbol}")
 
-        return self._build_market_state(mootdx_quote, tencent_quote)
+        market_state = self._build_market_state(mootdx_quote, tencent_quote)
+        self._attach_sector_info(market_state, symbol)
+        return market_state
 
     def fetch_daily_history(self, symbol: str, limit: int = 60) -> list[dict[str, object]]:
         trade_day = datetime.now(CHINA_MARKET_TZ).date()
@@ -974,6 +987,45 @@ class MarketQuoteClient:
         except Exception:
             logger.exception("tencent enrichment fetch failed; continuing with mootdx core quote", extra={"symbol": symbol})
             return None
+
+    def _attach_sector_info(self, market_state: dict[str, dict[str, object]], symbol: str) -> None:
+        sector_info = self._get_sector_info_or_none(symbol)
+        if sector_info is None:
+            return
+
+        snapshot = market_state.get("snapshot")
+        if isinstance(snapshot, dict):
+            snapshot["sector"] = sector_info
+
+        event = market_state.get("event")
+        event_snapshot = event.get("snapshot") if isinstance(event, dict) else None
+        if isinstance(event_snapshot, dict):
+            event_snapshot["sector"] = sector_info
+
+    def _get_sector_info_or_none(self, symbol: str) -> dict[str, object] | None:
+        now = monotonic()
+        cached_entry = self._sector_cache.get(symbol)
+        if cached_entry is not None and now - cached_entry[1] < SECTOR_CACHE_TTL_SECONDS:
+            return cached_entry[0]
+
+        if now < self._sector_failure_until:
+            return cached_entry[0] if cached_entry is not None else None
+
+        try:
+            sector_info = self._sector_client.fetch_sector_info(symbol)
+        except Exception:
+            self._sector_failure_until = now + SECTOR_FAILURE_CACHE_TTL_SECONDS
+            if cached_entry is not None:
+                logger.exception("eastmoney sector fetch failed; reusing cached sector info", extra={"symbol": symbol})
+                return cached_entry[0]
+            logger.exception("eastmoney sector fetch failed; continuing without sector info", extra={"symbol": symbol})
+            self._sector_cache[symbol] = (None, now - SECTOR_CACHE_TTL_SECONDS + SECTOR_FAILURE_CACHE_TTL_SECONDS)
+            return None
+
+        self._sector_failure_until = 0.0
+        payload = sector_info.to_payload() if sector_info is not None else None
+        self._sector_cache[symbol] = (payload, now)
+        return payload
 
     @staticmethod
     def _align_trade_day(mootdx_quote: MootdxQuote, tencent_quote: TencentQuote) -> MootdxQuote:
