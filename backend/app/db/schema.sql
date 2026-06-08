@@ -420,6 +420,20 @@ CREATE TABLE IF NOT EXISTS significant_anomaly (
     ai_reason TEXT,
     ai_reason_status TEXT NOT NULL DEFAULT 'pending',
     ai_reason_generated_at TIMESTAMPTZ,
+    ai_reason_phase TEXT NOT NULL DEFAULT 'intraday',
+    ai_reason_evidence_cutoff_at TIMESTAMPTZ,
+    ai_reason_includes_dragon_tiger BOOLEAN NOT NULL DEFAULT FALSE,
+    ai_reason_post_close_required BOOLEAN NOT NULL DEFAULT FALSE,
+    ai_reason_post_close_status TEXT NOT NULL DEFAULT 'not_due',
+    ai_reason_post_close_generated_at TIMESTAMPTZ,
+    ai_reason_post_close TEXT,
+    ai_reason_evidence_fingerprint TEXT,
+    ai_reason_attempt_count INTEGER NOT NULL DEFAULT 0,
+    ai_reason_next_retry_at TIMESTAMPTZ,
+    ai_reason_last_error TEXT,
+    ai_reason_post_close_evidence_fingerprint TEXT,
+    ai_reason_post_close_attempt_count INTEGER NOT NULL DEFAULT 0,
+    ai_reason_post_close_next_retry_at TIMESTAMPTZ,
     related_news_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     related_announcement_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -436,6 +450,10 @@ CREATE INDEX IF NOT EXISTS significant_anomaly_first_trigger_idx
     ON significant_anomaly (first_trigger_ts DESC);
 CREATE INDEX IF NOT EXISTS significant_anomaly_ai_status_idx
     ON significant_anomaly (ai_reason_status, anomaly_date DESC);
+CREATE INDEX IF NOT EXISTS significant_anomaly_ai_phase_idx
+    ON significant_anomaly (ai_reason_phase, anomaly_date DESC);
+CREATE INDEX IF NOT EXISTS significant_anomaly_post_close_status_idx
+    ON significant_anomaly (ai_reason_post_close_status, anomaly_date DESC);
 
 CREATE TABLE IF NOT EXISTS macro_observation (
     series_id TEXT NOT NULL,

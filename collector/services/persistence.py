@@ -36,6 +36,11 @@ def _coerce_optional_utc_datetime(value: object, *, field_name: str) -> datetime
 
 
 def _coerce_utc_datetime(value: object, *, field_name: str) -> datetime:
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise TypeError(f"{field_name} must be an ISO datetime") from exc
     if not isinstance(value, datetime):
         raise TypeError(f"{field_name} must be a datetime")
 
@@ -620,6 +625,20 @@ class PostgresStore:
                 ai_reason TEXT,
                 ai_reason_status TEXT NOT NULL DEFAULT 'pending',
                 ai_reason_generated_at TIMESTAMPTZ,
+                ai_reason_phase TEXT NOT NULL DEFAULT 'intraday',
+                ai_reason_evidence_cutoff_at TIMESTAMPTZ,
+                ai_reason_includes_dragon_tiger BOOLEAN NOT NULL DEFAULT FALSE,
+                ai_reason_post_close_required BOOLEAN NOT NULL DEFAULT FALSE,
+                ai_reason_post_close_status TEXT NOT NULL DEFAULT 'not_due',
+                ai_reason_post_close_generated_at TIMESTAMPTZ,
+                ai_reason_post_close TEXT,
+                ai_reason_evidence_fingerprint TEXT,
+                ai_reason_attempt_count INTEGER NOT NULL DEFAULT 0,
+                ai_reason_next_retry_at TIMESTAMPTZ,
+                ai_reason_last_error TEXT,
+                ai_reason_post_close_evidence_fingerprint TEXT,
+                ai_reason_post_close_attempt_count INTEGER NOT NULL DEFAULT 0,
+                ai_reason_post_close_next_retry_at TIMESTAMPTZ,
                 related_news_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
                 related_announcement_ids JSONB NOT NULL DEFAULT '[]'::jsonb,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -632,6 +651,20 @@ class PostgresStore:
         await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason TEXT")
         await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_status TEXT NOT NULL DEFAULT 'pending'")
         await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_generated_at TIMESTAMPTZ")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_phase TEXT NOT NULL DEFAULT 'intraday'")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_evidence_cutoff_at TIMESTAMPTZ")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_includes_dragon_tiger BOOLEAN NOT NULL DEFAULT FALSE")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_post_close_required BOOLEAN NOT NULL DEFAULT FALSE")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_post_close_status TEXT NOT NULL DEFAULT 'not_due'")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_post_close_generated_at TIMESTAMPTZ")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_post_close TEXT")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_evidence_fingerprint TEXT")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_attempt_count INTEGER NOT NULL DEFAULT 0")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_next_retry_at TIMESTAMPTZ")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_last_error TEXT")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_post_close_evidence_fingerprint TEXT")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_post_close_attempt_count INTEGER NOT NULL DEFAULT 0")
+        await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS ai_reason_post_close_next_retry_at TIMESTAMPTZ")
         await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS related_news_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
         await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS related_announcement_ids JSONB NOT NULL DEFAULT '[]'::jsonb")
         await connection.execute("ALTER TABLE significant_anomaly ADD COLUMN IF NOT EXISTS first_trigger_bucket TIMESTAMPTZ")
@@ -644,6 +677,8 @@ class PostgresStore:
         await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_symbol_date_idx ON significant_anomaly (symbol, anomaly_date DESC)")
         await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_first_trigger_idx ON significant_anomaly (first_trigger_ts DESC)")
         await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_ai_status_idx ON significant_anomaly (ai_reason_status, anomaly_date DESC)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_ai_phase_idx ON significant_anomaly (ai_reason_phase, anomaly_date DESC)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS significant_anomaly_post_close_status_idx ON significant_anomaly (ai_reason_post_close_status, anomaly_date DESC)")
 
     async def _dedupe_exact_market_rows(self, connection: asyncpg.Connection) -> dict[str, int]:
         removed_tick_duplicates = await connection.fetchval(
@@ -1254,7 +1289,8 @@ class PostgresStore:
                     source = EXCLUDED.source,
                     payload = EXCLUDED.payload,
                     ai_reason_status = CASE
-                        WHEN significant_anomaly.ai_reason IS NULL
+                        WHEN significant_anomaly.ai_reason_status IS NULL
+                          OR significant_anomaly.ai_reason_status = 'pending'
                         THEN EXCLUDED.ai_reason_status
                         ELSE significant_anomaly.ai_reason_status
                     END,
@@ -1263,7 +1299,7 @@ class PostgresStore:
                 rows,
             )
 
-    async def fetch_pending_anomaly_reasons(self, *, limit: int = 10) -> list[asyncpg.Record]:
+    async def fetch_pending_anomaly_reasons(self, *, limit: int = 10, max_attempts: int = 3) -> list[asyncpg.Record]:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")
 
@@ -1272,17 +1308,88 @@ class PostgresStore:
                 """
                 SELECT id, anomaly_date, symbol, anomaly_type, severity, trigger_price, reference_price,
                        change_pct, trigger_volume, volume_ratio, first_trigger_ts, last_trigger_ts,
-                       duration_minutes, event_count, payload
+                       duration_minutes, event_count, payload, first_trigger_bucket,
+                       ai_reason_status, ai_reason_phase, ai_reason_evidence_fingerprint,
+                       ai_reason_attempt_count, ai_reason_next_retry_at, ai_reason_post_close_required
                 FROM significant_anomaly
                 WHERE severity = ANY($1::text[])
-                  AND (ai_reason_status IS NULL OR ai_reason_status = 'pending')
-                  AND ai_reason IS NULL
+                  AND (ai_reason_status IS NULL OR ai_reason_status IN ('pending', 'failed'))
+                  AND ai_reason_attempt_count < $2
+                  AND (ai_reason_next_retry_at IS NULL OR ai_reason_next_retry_at <= NOW())
                 ORDER BY anomaly_date ASC, first_trigger_ts ASC
-                LIMIT $2
+                LIMIT $3
                 """,
                 ["critical", "high"],
+                max(int(max_attempts), 1),
                 max(int(limit), 1),
             )
+
+    async def fetch_post_close_anomaly_reasons(self, *, trade_date: date, limit: int = 20, max_attempts: int = 3) -> list[asyncpg.Record]:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            return await connection.fetch(
+                """
+                WITH ranked AS (
+                    SELECT id, anomaly_date, symbol, anomaly_type, severity, trigger_price, reference_price,
+                           change_pct, trigger_volume, volume_ratio, first_trigger_ts, last_trigger_ts,
+                           duration_minutes, event_count, payload, first_trigger_bucket,
+                           ai_reason_status, ai_reason_phase, ai_reason_post_close_required,
+                           ai_reason_post_close_status, ai_reason_post_close_evidence_fingerprint,
+                           ai_reason_post_close_attempt_count, ai_reason_post_close_next_retry_at,
+                           updated_at,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY symbol, anomaly_type
+                               ORDER BY updated_at DESC, last_trigger_ts DESC, id DESC
+                           ) AS row_rank
+                    FROM significant_anomaly
+                    WHERE anomaly_date = $1::date
+                      AND severity = ANY($2::text[])
+                      AND (
+                          ai_reason_post_close_required = TRUE
+                          OR ai_reason_status IS NULL
+                          OR ai_reason_status = 'pending'
+                      )
+                      AND ai_reason_post_close_status = ANY($3::text[])
+                      AND ai_reason_post_close_attempt_count < $4
+                      AND (ai_reason_post_close_next_retry_at IS NULL OR ai_reason_post_close_next_retry_at <= NOW())
+                )
+                SELECT id, anomaly_date, symbol, anomaly_type, severity, trigger_price, reference_price,
+                       change_pct, trigger_volume, volume_ratio, first_trigger_ts, last_trigger_ts,
+                       duration_minutes, event_count, payload, first_trigger_bucket,
+                       ai_reason_status, ai_reason_phase, ai_reason_post_close_required,
+                       ai_reason_post_close_status, ai_reason_post_close_evidence_fingerprint,
+                       ai_reason_post_close_attempt_count, ai_reason_post_close_next_retry_at
+                FROM ranked
+                WHERE row_rank = 1
+                ORDER BY updated_at DESC, last_trigger_ts DESC, id DESC
+                LIMIT $5
+                """,
+                trade_date,
+                ["critical", "high"],
+                ["not_due", "pending", "failed"],
+                max(int(max_attempts), 1),
+                max(int(limit), 1),
+            )
+
+    async def has_dragon_tiger_data_for_date(self, *, trade_date: date) -> bool:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM dragon_tiger_daily_item WHERE trade_date = $1::date
+                    UNION ALL
+                    SELECT 1 FROM dragon_tiger_institution_item WHERE trade_date = $1::date
+                    LIMIT 1
+                ) AS has_data
+                """,
+                trade_date,
+            )
+            return bool(row and row["has_data"])
 
     async def fetch_anomaly_reason_context(
         self,
@@ -1445,6 +1552,16 @@ class PostgresStore:
                 analysis_date,
                 1,
             )
+            dragon_tiger_published_row = await connection.fetchrow(
+                """
+                SELECT EXISTS (
+                    SELECT 1 FROM dragon_tiger_daily_item WHERE trade_date = $1::date
+                    UNION ALL
+                    SELECT 1 FROM dragon_tiger_institution_item WHERE trade_date = $1::date
+                ) AS published
+                """,
+                analysis_date,
+            )
 
         return {
             "news": news_rows,
@@ -1457,6 +1574,7 @@ class PostgresStore:
             ),
             "dragon_tiger_daily": dict(dragon_tiger_daily_row) if dragon_tiger_daily_row is not None else None,
             "dragon_tiger_institution": dict(dragon_tiger_institution_row) if dragon_tiger_institution_row is not None else None,
+            "dragon_tiger_published_for_date": bool(dragon_tiger_published_row["published"]) if dragon_tiger_published_row is not None else False,
         }
 
     @staticmethod
@@ -1536,6 +1654,15 @@ class PostgresStore:
                 _coerce_optional_utc_datetime(item.get("ai_reason_generated_at"), field_name="significant_anomaly.ai_reason_generated_at"),
                 _json_dumps(item.get("related_news_ids", [])),
                 _json_dumps(item.get("related_announcement_ids", [])),
+                item.get("ai_reason_phase", "intraday"),
+                _coerce_optional_utc_datetime(item.get("ai_reason_evidence_cutoff_at"), field_name="significant_anomaly.ai_reason_evidence_cutoff_at"),
+                bool(item.get("ai_reason_includes_dragon_tiger", False)),
+                bool(item.get("ai_reason_post_close_required", False)),
+                item.get("ai_reason_post_close_status", "not_due"),
+                item.get("ai_reason_evidence_fingerprint"),
+                _to_int(item.get("ai_reason_attempt_count")) or 0,
+                _coerce_optional_utc_datetime(item.get("ai_reason_next_retry_at"), field_name="significant_anomaly.ai_reason_next_retry_at"),
+                item.get("ai_reason_last_error"),
             )
             for item in items
         ]
@@ -1549,10 +1676,87 @@ class PostgresStore:
                     ai_reason_generated_at = $4,
                     related_news_ids = $5::jsonb,
                     related_announcement_ids = $6::jsonb,
+                    ai_reason_phase = $7,
+                    ai_reason_evidence_cutoff_at = $8,
+                    ai_reason_includes_dragon_tiger = $9,
+                    ai_reason_post_close_required = $10,
+                    ai_reason_post_close_status = $11,
+                    ai_reason_evidence_fingerprint = $12,
+                    ai_reason_attempt_count = $13,
+                    ai_reason_next_retry_at = $14,
+                    ai_reason_last_error = $15,
                     updated_at = NOW()
                 WHERE id = $1
                 """,
                 rows,
+            )
+
+    async def update_anomaly_post_close_ai_reasons(self, items: list[dict[str, object]]) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return
+
+        rows = [
+            (
+                item["id"],
+                item.get("ai_reason_post_close"),
+                item.get("ai_reason_post_close_status", "failed"),
+                _coerce_optional_utc_datetime(item.get("ai_reason_post_close_generated_at"), field_name="significant_anomaly.ai_reason_post_close_generated_at"),
+                item.get("ai_reason_post_close_evidence_fingerprint"),
+                _to_int(item.get("ai_reason_post_close_attempt_count")) or 0,
+                _coerce_optional_utc_datetime(item.get("ai_reason_post_close_next_retry_at"), field_name="significant_anomaly.ai_reason_post_close_next_retry_at"),
+                item.get("ai_reason_phase", "post_close"),
+                bool(item.get("ai_reason_includes_dragon_tiger", False)),
+                item.get("ai_reason"),
+                item.get("ai_reason_status"),
+                _coerce_optional_utc_datetime(item.get("ai_reason_generated_at"), field_name="significant_anomaly.ai_reason_generated_at"),
+                _json_dumps(item.get("related_news_ids", [])),
+                _json_dumps(item.get("related_announcement_ids", [])),
+            )
+            for item in items
+        ]
+
+        async with self._pool.acquire() as connection:
+            await connection.executemany(
+                """
+                UPDATE significant_anomaly
+                SET ai_reason_post_close = $2,
+                    ai_reason_post_close_status = $3,
+                    ai_reason_post_close_generated_at = $4,
+                    ai_reason_post_close_evidence_fingerprint = $5,
+                    ai_reason_post_close_attempt_count = $6,
+                    ai_reason_post_close_next_retry_at = $7,
+                    ai_reason_phase = $8,
+                    ai_reason_includes_dragon_tiger = $9,
+                    ai_reason = COALESCE($10, ai_reason),
+                    ai_reason_status = COALESCE($11, ai_reason_status),
+                    ai_reason_generated_at = COALESCE($12, ai_reason_generated_at),
+                    related_news_ids = $13::jsonb,
+                    related_announcement_ids = $14::jsonb,
+                    updated_at = NOW()
+                WHERE id = $1
+                """,
+                rows,
+            )
+
+    async def mark_anomaly_post_close_unavailable(self, *, trade_date: date, reason: str) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                UPDATE significant_anomaly
+                SET ai_reason_post_close_status = 'unavailable',
+                    ai_reason_last_error = $2,
+                    updated_at = NOW()
+                WHERE anomaly_date = $1::date
+                  AND ai_reason_post_close_required = TRUE
+                  AND ai_reason_post_close_status IN ('not_due', 'pending', 'failed')
+                """,
+                trade_date,
+                reason,
             )
 
     async def upsert_fund_profile(self, payload: dict[str, object]) -> None:
