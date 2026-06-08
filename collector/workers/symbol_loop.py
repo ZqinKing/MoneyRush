@@ -189,8 +189,6 @@ class CollectorWorker:
                 logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": 0})
                 return
 
-            updates = []
-            audit_rows = []
             for row in rows:
                 since_ts, until_ts, cutoff_at = self._anomaly_reason_analyzer.reason_window(row["first_trigger_ts"], phase="intraday")
                 context = await self._postgres.fetch_anomaly_reason_context(
@@ -204,8 +202,11 @@ class CollectorWorker:
                 fingerprint = compute_evidence_fingerprint(row, context, phase="intraday", cutoff_at=cutoff_at)
                 previous_fingerprint = _record_get(row, "ai_reason_evidence_fingerprint")
                 if previous_fingerprint and previous_fingerprint == fingerprint:
-                    audit_rows.append(self._build_skipped_anomaly_audit_row(row, phase="intraday", fingerprint=fingerprint, cutoff_at=cutoff_at, skip_reason="fingerprint_unchanged"))
+                    await self._postgres.insert_llm_audit_rows([
+                        self._build_skipped_anomaly_audit_row(row, phase="intraday", fingerprint=fingerprint, cutoff_at=cutoff_at, skip_reason="fingerprint_unchanged")
+                    ])
                     continue
+                invoked_at = datetime.now(UTC)
                 result = await asyncio.to_thread(
                     self._anomaly_reason_analyzer.analyze,
                     row,
@@ -215,32 +216,27 @@ class CollectorWorker:
                 )
                 attempt_count = int(_record_get(row, "ai_reason_attempt_count") or 0) + 1
                 next_retry_at = _next_retry_at(attempt_count=attempt_count, settings=self._settings) if result.status == "failed" else None
-                invoked_at = datetime.now(UTC)
-                updates.append(
-                    {
-                        "id": row["id"],
-                        "ai_reason": result.reason,
-                        "ai_reason_status": result.status,
-                        "ai_reason_generated_at": datetime.now(UTC) if result.status == "completed" else None,
-                        "related_news_ids": result.related_news_ids,
-                        "related_announcement_ids": result.related_announcement_ids,
-                        "ai_reason_phase": "intraday",
-                        "ai_reason_evidence_cutoff_at": result.evidence_cutoff_at,
-                        "ai_reason_includes_dragon_tiger": result.includes_dragon_tiger,
-                        "ai_reason_post_close_required": result.status == "completed",
-                        "ai_reason_post_close_status": "not_due",
-                        "ai_reason_evidence_fingerprint": result.evidence_fingerprint,
-                        "ai_reason_attempt_count": attempt_count,
-                        "ai_reason_next_retry_at": next_retry_at,
-                        "ai_reason_last_error": result.skip_reason if result.status == "failed" else None,
-                    }
-                )
-                audit_rows.append(self._build_anomaly_audit_row(row, result, phase="intraday", invoked_at=invoked_at, attempt_count=attempt_count))
-
-            if updates:
-                await self._postgres.update_anomaly_ai_reasons(updates)
-            if audit_rows:
-                await self._postgres.insert_llm_audit_rows(audit_rows)
+                update = {
+                    "id": row["id"],
+                    "ai_reason": result.reason,
+                    "ai_reason_status": result.status,
+                    "ai_reason_generated_at": datetime.now(UTC) if result.status == "completed" else None,
+                    "related_news_ids": result.related_news_ids,
+                    "related_announcement_ids": result.related_announcement_ids,
+                    "ai_reason_phase": "intraday",
+                    "ai_reason_evidence_cutoff_at": result.evidence_cutoff_at,
+                    "ai_reason_includes_dragon_tiger": result.includes_dragon_tiger,
+                    "ai_reason_post_close_required": result.status == "completed",
+                    "ai_reason_post_close_status": "not_due",
+                    "ai_reason_evidence_fingerprint": result.evidence_fingerprint,
+                    "ai_reason_attempt_count": attempt_count,
+                    "ai_reason_next_retry_at": next_retry_at,
+                    "ai_reason_last_error": result.skip_reason if result.status == "failed" else None,
+                }
+                await self._postgres.insert_llm_audit_rows([
+                    self._build_anomaly_audit_row(row, result, phase="intraday", invoked_at=invoked_at, attempt_count=attempt_count)
+                ])
+                await self._postgres.update_anomaly_ai_reasons([update])
             analyzed_count = len(rows)
         except Exception:
             logger.exception("collector anomaly reason analysis failed")
@@ -273,8 +269,6 @@ class CollectorWorker:
                 logger.info("collector analyzed post-close anomaly reasons", extra={"anomaly_count": 0})
                 return
 
-            updates = []
-            audit_rows = []
             for row in rows:
                 since_ts, until_ts, cutoff_at = self._anomaly_reason_analyzer.reason_window(row["first_trigger_ts"], phase="post_close")
                 context = await self._postgres.fetch_anomaly_reason_context(
@@ -290,7 +284,7 @@ class CollectorWorker:
                 if not has_dragon_tiger and not dragon_tiger_published_for_date:
                     unavailable_after = _dragon_tiger_evidence_deadline(self._settings, row["anomaly_date"])
                     if datetime.now(UTC) < unavailable_after:
-                        audit_rows.append(
+                        await self._postgres.insert_llm_audit_rows([
                             self._build_skipped_anomaly_audit_row(
                                 row,
                                 phase="post_close",
@@ -298,13 +292,13 @@ class CollectorWorker:
                                 cutoff_at=cutoff_at,
                                 skip_reason="dragon_tiger_not_published_yet",
                             )
-                        )
+                        ])
                         continue
                     await self._postgres.mark_anomaly_post_close_unavailable(
                         trade_date=row["anomaly_date"],
                         reason="dragon_tiger_unavailable_after_grace_window",
                     )
-                    audit_rows.append(
+                    await self._postgres.insert_llm_audit_rows([
                         self._build_skipped_anomaly_audit_row(
                             row,
                             phase="post_close",
@@ -312,14 +306,17 @@ class CollectorWorker:
                             cutoff_at=cutoff_at,
                             skip_reason="dragon_tiger_unavailable_after_grace_window",
                         )
-                    )
+                    ])
                     continue
 
                 fingerprint = compute_evidence_fingerprint(row, context, phase="post_close", cutoff_at=cutoff_at)
                 previous_fingerprint = _record_get(row, "ai_reason_post_close_evidence_fingerprint")
                 if previous_fingerprint and previous_fingerprint == fingerprint:
-                    audit_rows.append(self._build_skipped_anomaly_audit_row(row, phase="post_close", fingerprint=fingerprint, cutoff_at=cutoff_at, skip_reason="fingerprint_unchanged"))
+                    await self._postgres.insert_llm_audit_rows([
+                        self._build_skipped_anomaly_audit_row(row, phase="post_close", fingerprint=fingerprint, cutoff_at=cutoff_at, skip_reason="fingerprint_unchanged")
+                    ])
                     continue
+                invoked_at = datetime.now(UTC)
                 result = await asyncio.to_thread(
                     self._anomaly_reason_analyzer.analyze,
                     row,
@@ -330,30 +327,26 @@ class CollectorWorker:
                 attempt_count = int(_record_get(row, "ai_reason_post_close_attempt_count") or 0) + 1
                 next_retry_at = _next_retry_at(attempt_count=attempt_count, settings=self._settings) if result.status == "failed" else None
                 generated_at = datetime.now(UTC) if result.status == "completed" else None
-                updates.append(
-                    {
-                        "id": row["id"],
-                        "ai_reason_post_close": result.reason,
-                        "ai_reason_post_close_status": result.status,
-                        "ai_reason_post_close_generated_at": generated_at,
-                        "ai_reason_post_close_evidence_fingerprint": result.evidence_fingerprint,
-                        "ai_reason_post_close_attempt_count": attempt_count,
-                        "ai_reason_post_close_next_retry_at": next_retry_at,
-                        "ai_reason_phase": "post_close" if result.status == "completed" else _record_get(row, "ai_reason_phase", "intraday") or "intraday",
-                        "ai_reason_includes_dragon_tiger": result.includes_dragon_tiger,
-                        "ai_reason": result.reason if result.status == "completed" else None,
-                        "ai_reason_status": "completed" if result.status == "completed" else None,
-                        "ai_reason_generated_at": generated_at,
-                        "related_news_ids": result.related_news_ids,
-                        "related_announcement_ids": result.related_announcement_ids,
-                    }
-                )
-                audit_rows.append(self._build_anomaly_audit_row(row, result, phase="post_close", attempt_count=attempt_count))
-
-            if updates:
-                await self._postgres.update_anomaly_post_close_ai_reasons(updates)
-            if audit_rows:
-                await self._postgres.insert_llm_audit_rows(audit_rows)
+                update = {
+                    "id": row["id"],
+                    "ai_reason_post_close": result.reason,
+                    "ai_reason_post_close_status": result.status,
+                    "ai_reason_post_close_generated_at": generated_at,
+                    "ai_reason_post_close_evidence_fingerprint": result.evidence_fingerprint,
+                    "ai_reason_post_close_attempt_count": attempt_count,
+                    "ai_reason_post_close_next_retry_at": next_retry_at,
+                    "ai_reason_phase": "post_close" if result.status == "completed" else _record_get(row, "ai_reason_phase", "intraday") or "intraday",
+                    "ai_reason_includes_dragon_tiger": result.includes_dragon_tiger,
+                    "ai_reason": result.reason if result.status == "completed" else None,
+                    "ai_reason_status": "completed" if result.status == "completed" else None,
+                    "ai_reason_generated_at": generated_at,
+                    "related_news_ids": result.related_news_ids,
+                    "related_announcement_ids": result.related_announcement_ids,
+                }
+                await self._postgres.insert_llm_audit_rows([
+                    self._build_anomaly_audit_row(row, result, phase="post_close", invoked_at=invoked_at, attempt_count=attempt_count)
+                ])
+                await self._postgres.update_anomaly_post_close_ai_reasons([update])
         except Exception:
             logger.exception("collector post-close anomaly reason analysis failed")
             return
