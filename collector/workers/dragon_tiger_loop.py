@@ -28,6 +28,10 @@ def _coerce_trade_date(value: object) -> date | None:
     return None
 
 
+def _is_weekend(value: date) -> bool:
+    return value.weekday() >= 5
+
+
 class DragonTigerCollectorWorker:
     def __init__(self, settings) -> None:
         self._settings = settings
@@ -94,6 +98,34 @@ class DragonTigerCollectorWorker:
     async def _execute_job(self, checkpoint: dict[str, object]) -> None:
         started_at = datetime.now(UTC)
         target_trade_date = self._resolve_target_trade_date(checkpoint)
+        due_state = self._classify_target_trade_date_state(target_trade_date)
+        if due_state in {"not_due", "no_trade_day"}:
+            finished_at = datetime.now(UTC)
+            next_due_at = self._next_due_at() if due_state == "not_due" else self._next_due_at(reference=finished_at)
+            last_collected_trade_date = checkpoint.get("last_collected_trade_date")
+            if due_state == "no_trade_day":
+                last_collected_trade_date = target_trade_date
+            await self._postgres.upsert_dragon_tiger_checkpoint(
+                job_name=DRAGON_TIGER_JOB_NAME,
+                next_due_at=next_due_at,
+                cooldown_until=None,
+                last_success_at=checkpoint.get("last_success_at"),
+                last_attempt_at=finished_at,
+                last_collected_trade_date=last_collected_trade_date,
+                failure_count=int(checkpoint.get("failure_count") or 0),
+                last_error=None,
+            )
+            await self._postgres.insert_dragon_tiger_collection_log(
+                job_name=DRAGON_TIGER_JOB_NAME,
+                status=due_state,
+                started_at=started_at,
+                finished_at=finished_at,
+                trade_date=target_trade_date,
+                error_message=None,
+                meta={"dueState": due_state},
+            )
+            logger.info("dragon-tiger collector skipped non-actionable target date", extra={"trade_date": target_trade_date.isoformat(), "due_state": due_state})
+            return
 
         try:
             daily_payload = await asyncio.to_thread(self._client.fetch_daily, trade_date=target_trade_date.isoformat())
@@ -104,7 +136,8 @@ class DragonTigerCollectorWorker:
             )
 
             if not daily_payload.get("items") and not institution_payload.get("items"):
-                raise DragonTigerClientError(f"no dragon-tiger rows available for {target_trade_date.isoformat()}")
+                await self._handle_no_rows_after_due(checkpoint, started_at=started_at, target_trade_date=target_trade_date)
+                return
 
             collected_at = datetime.now(UTC)
             await self._postgres.upsert_dragon_tiger_daily_items(
@@ -220,10 +253,32 @@ class DragonTigerCollectorWorker:
         last_collected = _coerce_trade_date(checkpoint.get("last_collected_trade_date"))
         current_china_date = datetime.now(CHINA_MARKET_TZ).date()
         if last_collected is None:
-            return current_china_date - timedelta(days=1)
+            return current_china_date
         if last_collected < current_china_date:
-            return last_collected + timedelta(days=1)
+            return self._advance_to_next_candidate_date(last_collected)
         return current_china_date
+
+    def _advance_to_next_candidate_date(self, current: date) -> date:
+        candidate = current + timedelta(days=1)
+        while _is_weekend(candidate):
+            candidate += timedelta(days=1)
+        return candidate
+
+    def _classify_target_trade_date_state(self, target_trade_date: date) -> str:
+        if _is_weekend(target_trade_date):
+            return "no_trade_day"
+        now_china = datetime.now(CHINA_MARKET_TZ)
+        collection_due = datetime.combine(
+            target_trade_date,
+            time(
+                hour=self._settings.dragon_tiger_collection_start_hour_china,
+                minute=self._settings.dragon_tiger_collection_start_minute_china,
+            ),
+            tzinfo=CHINA_MARKET_TZ,
+        )
+        if target_trade_date >= now_china.date() and now_china < collection_due:
+            return "not_due"
+        return "due"
 
     def _next_due_at(self, *, reference: datetime | None = None) -> datetime:
         reference_time = reference or datetime.now(UTC)
@@ -243,6 +298,49 @@ class DragonTigerCollectorWorker:
     def _cooldown_delta(self, failure_count: int) -> timedelta:
         base_seconds = max(int(self._settings.dragon_tiger_collector_poll_interval_seconds), 60)
         return timedelta(seconds=min(base_seconds * (2 ** max(failure_count - 1, 0)), 6 * 3600))
+
+    async def _handle_no_rows_after_due(self, checkpoint: dict[str, object], *, started_at: datetime, target_trade_date: date) -> None:
+        finished_at = datetime.now(UTC)
+        collection_due_local = datetime.combine(
+            target_trade_date,
+            time(
+                hour=self._settings.dragon_tiger_collection_start_hour_china,
+                minute=self._settings.dragon_tiger_collection_start_minute_china,
+            ),
+            tzinfo=CHINA_MARKET_TZ,
+        )
+        grace_deadline = collection_due_local.astimezone(UTC) + timedelta(seconds=max(int(self._settings.dragon_tiger_no_data_grace_seconds), 0))
+        if finished_at >= grace_deadline:
+            status = "unavailable"
+            next_due_at = self._next_due_at(reference=finished_at)
+            cooldown_until = None
+            last_collected_trade_date = target_trade_date
+        else:
+            status = "not_published_yet"
+            next_due_at = finished_at + self._cooldown_delta(1)
+            cooldown_until = next_due_at
+            last_collected_trade_date = checkpoint.get("last_collected_trade_date")
+
+        await self._postgres.upsert_dragon_tiger_checkpoint(
+            job_name=DRAGON_TIGER_JOB_NAME,
+            next_due_at=next_due_at,
+            cooldown_until=cooldown_until,
+            last_success_at=checkpoint.get("last_success_at"),
+            last_attempt_at=finished_at,
+            last_collected_trade_date=last_collected_trade_date,
+            failure_count=int(checkpoint.get("failure_count") or 0),
+            last_error=None,
+        )
+        await self._postgres.insert_dragon_tiger_collection_log(
+            job_name=DRAGON_TIGER_JOB_NAME,
+            status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            trade_date=target_trade_date,
+            error_message=None,
+            meta={"dueState": status, "graceDeadline": grace_deadline.isoformat()},
+        )
+        logger.info("dragon-tiger rows not available after due time", extra={"trade_date": target_trade_date.isoformat(), "due_state": status})
 
     async def _clear_dragon_tiger_caches(self) -> None:
         cursor = 0
