@@ -6,3 +6,4 @@ beautifulsoup4==4.12.3
 mootdx==0.11.7
 akshare==1.17.62
 pandas==2.2.3
+pytest==8.3.5

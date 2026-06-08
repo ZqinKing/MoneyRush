@@ -11,7 +11,7 @@ from redis.asyncio import Redis
 
 from collector.services.anomaly_aggregator import AnomalyAggregator
 from collector.services.ai_summary_client import is_ai_configured
-from collector.services.anomaly_reason_analyzer import AnomalyReasonAnalyzer
+from collector.services.anomaly_reason_analyzer import AnomalyReasonAnalyzer, compute_evidence_fingerprint
 from collector.services.market_overview_client import build_market_status
 from collector.services.persistence import PostgresStore
 from collector.services.tencent_quote_client import MarketQuoteClient
@@ -22,12 +22,63 @@ CHINA_MARKET_TZ = timezone(timedelta(hours=8))
 INTRADAY_EXPECTED_BUCKET_COUNT = 240
 ANOMALY_REASON_INTERVAL_SECONDS = 300
 ANOMALY_REASON_BATCH_SIZE = 10
+POST_CLOSE_REASON_INTERVAL_SECONDS = 300
 
 
 def _derive_llm_audit_status(*, attempted: bool, llm_succeeded: bool) -> str:
     if not attempted:
         return "skipped"
     return "completed" if llm_succeeded else "failed"
+
+
+def _next_retry_at(*, attempt_count: int, settings) -> datetime | None:
+    max_attempts = max(int(getattr(settings, "anomaly_reason_max_attempts", 3)), 1)
+    if attempt_count >= max_attempts:
+        return None
+    minutes = (
+        int(getattr(settings, "anomaly_reason_retry_cooldown_minutes", 15))
+        if attempt_count <= 1
+        else int(getattr(settings, "anomaly_reason_retry_backoff_minutes", 60))
+    )
+    return datetime.now(UTC) + timedelta(minutes=max(minutes, 1))
+
+
+def _post_close_review_due(settings, *, include_dragon_tiger: bool = False) -> bool:
+    now_china = datetime.now(CHINA_MARKET_TZ)
+    hour = (
+        int(settings.anomaly_dragon_tiger_review_start_hour_china)
+        if include_dragon_tiger
+        else int(settings.anomaly_post_close_review_start_hour_china)
+    )
+    minute = (
+        int(settings.anomaly_dragon_tiger_review_start_minute_china)
+        if include_dragon_tiger
+        else int(settings.anomaly_post_close_review_start_minute_china)
+    )
+    due = now_china.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    return now_china >= due
+
+
+def _dragon_tiger_evidence_deadline(settings, trade_date: date) -> datetime:
+    due_local = datetime.combine(
+        trade_date,
+        datetime.min.time(),
+        tzinfo=CHINA_MARKET_TZ,
+    ).replace(
+        hour=int(settings.anomaly_dragon_tiger_review_start_hour_china),
+        minute=int(settings.anomaly_dragon_tiger_review_start_minute_china),
+        second=0,
+        microsecond=0,
+    )
+    grace_seconds = max(int(getattr(settings, "dragon_tiger_no_data_grace_seconds", 0)), 0)
+    return due_local.astimezone(UTC) + timedelta(seconds=grace_seconds)
+
+
+def _record_get(row, key: str, default=None):
+    try:
+        return row[key]
+    except Exception:
+        return default
 
 
 class CollectorWorker:
@@ -55,6 +106,7 @@ class CollectorWorker:
         self._latest_daily_trade_day_by_symbol: dict[str, date] = {}
         self._last_anomaly_aggregation_at = 0.0
         self._last_anomaly_reason_analysis_at = 0.0
+        self._last_post_close_reason_analysis_at = 0.0
         self._postgres_ready = False
 
     async def run(self) -> None:
@@ -66,9 +118,11 @@ class CollectorWorker:
                 await self._consume_command_stream()
                 await self._aggregate_active_symbol_anomalies()
                 await self._analyze_pending_anomaly_reasons()
+                await self._analyze_post_close_anomaly_reasons()
                 await self._collect_active_symbols()
                 await self._aggregate_active_symbol_anomalies(force=True)
                 await self._analyze_pending_anomaly_reasons(force=True)
+                await self._analyze_post_close_anomaly_reasons(force=True)
             except Exception:
                 self._postgres_ready = False
                 logger.exception("collector loop failed; retrying")
@@ -125,7 +179,10 @@ class CollectorWorker:
         batch_limit = ANOMALY_REASON_BATCH_SIZE
         analyzed_count = 0
         try:
-            rows = await self._postgres.fetch_pending_anomaly_reasons(limit=batch_limit)
+            rows = await self._postgres.fetch_pending_anomaly_reasons(
+                limit=batch_limit,
+                max_attempts=int(self._settings.anomaly_reason_max_attempts),
+            )
             if not rows:
                 logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": 0})
                 return
@@ -133,7 +190,7 @@ class CollectorWorker:
             updates = []
             audit_rows = []
             for row in rows:
-                since_ts, until_ts = self._anomaly_reason_analyzer.reason_window(row["first_trigger_ts"])
+                since_ts, until_ts, cutoff_at = self._anomaly_reason_analyzer.reason_window(row["first_trigger_ts"], phase="intraday")
                 context = await self._postgres.fetch_anomaly_reason_context(
                     symbol=str(row["symbol"]),
                     since_ts=since_ts,
@@ -142,7 +199,20 @@ class CollectorWorker:
                     anomaly_date=row["anomaly_date"],
                     limit_per_kind=8,
                 )
-                result = await asyncio.to_thread(self._anomaly_reason_analyzer.analyze, row, context)
+                fingerprint = compute_evidence_fingerprint(row, context, phase="intraday", cutoff_at=cutoff_at)
+                previous_fingerprint = _record_get(row, "ai_reason_evidence_fingerprint")
+                if previous_fingerprint and previous_fingerprint == fingerprint:
+                    audit_rows.append(self._build_skipped_anomaly_audit_row(row, phase="intraday", fingerprint=fingerprint, cutoff_at=cutoff_at, skip_reason="fingerprint_unchanged"))
+                    continue
+                result = await asyncio.to_thread(
+                    self._anomaly_reason_analyzer.analyze,
+                    row,
+                    context,
+                    phase="intraday",
+                    evidence_cutoff_at=cutoff_at,
+                )
+                attempt_count = int(_record_get(row, "ai_reason_attempt_count") or 0) + 1
+                next_retry_at = _next_retry_at(attempt_count=attempt_count, settings=self._settings) if result.status == "failed" else None
                 invoked_at = datetime.now(UTC)
                 updates.append(
                     {
@@ -152,30 +222,18 @@ class CollectorWorker:
                         "ai_reason_generated_at": datetime.now(UTC) if result.status == "completed" else None,
                         "related_news_ids": result.related_news_ids,
                         "related_announcement_ids": result.related_announcement_ids,
+                        "ai_reason_phase": "intraday",
+                        "ai_reason_evidence_cutoff_at": result.evidence_cutoff_at,
+                        "ai_reason_includes_dragon_tiger": result.includes_dragon_tiger,
+                        "ai_reason_post_close_required": result.status == "completed",
+                        "ai_reason_post_close_status": "not_due",
+                        "ai_reason_evidence_fingerprint": result.evidence_fingerprint,
+                        "ai_reason_attempt_count": attempt_count,
+                        "ai_reason_next_retry_at": next_retry_at,
+                        "ai_reason_last_error": result.skip_reason if result.status == "failed" else None,
                     }
                 )
-                audit_rows.append(
-                    {
-                        "invoked_at": invoked_at,
-                        "audit_date": invoked_at.astimezone(CHINA_MARKET_TZ).date(),
-                        "menu_module": "events",
-                        "call_category": "anomaly_reason",
-                        "status": _derive_llm_audit_status(attempted=result.attempted, llm_succeeded=result.llm_succeeded),
-                        "model_used": result.model_used,
-                        "prompt_version": result.prompt_version,
-                        "latency_ms": result.latency_ms,
-                        "meta": {
-                            "anomalyId": row["id"],
-                            "symbol": str(row["symbol"] or ""),
-                            "anomalyType": str(row["anomaly_type"] or ""),
-                            "llmSucceeded": result.llm_succeeded,
-                            "skipReason": result.skip_reason,
-                            "relatedNewsCount": len(result.related_news_ids),
-                            "relatedAnnouncementCount": len(result.related_announcement_ids),
-                            "attempts": result.attempts or [],
-                        },
-                    }
-                )
+                audit_rows.append(self._build_anomaly_audit_row(row, result, phase="intraday", invoked_at=invoked_at, attempt_count=attempt_count))
 
             if updates:
                 await self._postgres.update_anomaly_ai_reasons(updates)
@@ -186,6 +244,182 @@ class CollectorWorker:
             logger.exception("collector anomaly reason analysis failed")
             return
         logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": analyzed_count})
+
+    async def _analyze_post_close_anomaly_reasons(self, *, force: bool = False) -> None:
+        if not self._settings.anomaly_post_close_review_enabled or not is_ai_configured(self._settings):
+            return
+        if not force and not _post_close_review_due(self._settings):
+            return
+        now = monotonic()
+        if not force and now - self._last_post_close_reason_analysis_at < POST_CLOSE_REASON_INTERVAL_SECONDS:
+            return
+        self._last_post_close_reason_analysis_at = now
+
+        trade_date = datetime.now(CHINA_MARKET_TZ).date()
+        dragon_tiger_review_due = _post_close_review_due(self._settings, include_dragon_tiger=True)
+        if not dragon_tiger_review_due:
+            logger.info("collector deferred post-close anomaly reasons until dragon-tiger review window", extra={"trade_date": trade_date.isoformat()})
+            return
+        batch_limit = max(int(self._settings.anomaly_post_close_batch_size), 1)
+        try:
+            rows = await self._postgres.fetch_post_close_anomaly_reasons(
+                trade_date=trade_date,
+                limit=batch_limit,
+                max_attempts=int(self._settings.anomaly_reason_max_attempts),
+            )
+            if not rows:
+                logger.info("collector analyzed post-close anomaly reasons", extra={"anomaly_count": 0})
+                return
+
+            updates = []
+            audit_rows = []
+            for row in rows:
+                since_ts, until_ts, cutoff_at = self._anomaly_reason_analyzer.reason_window(row["first_trigger_ts"], phase="post_close")
+                context = await self._postgres.fetch_anomaly_reason_context(
+                    symbol=str(row["symbol"]),
+                    since_ts=since_ts,
+                    until_ts=until_ts,
+                    trigger_ts=row["first_trigger_ts"],
+                    anomaly_date=row["anomaly_date"],
+                    limit_per_kind=8,
+                )
+                has_dragon_tiger = bool(context.get("dragon_tiger_daily") or context.get("dragon_tiger_institution"))
+                dragon_tiger_published_for_date = bool(context.get("dragon_tiger_published_for_date"))
+                if not has_dragon_tiger and not dragon_tiger_published_for_date:
+                    unavailable_after = _dragon_tiger_evidence_deadline(self._settings, row["anomaly_date"])
+                    if datetime.now(UTC) < unavailable_after:
+                        audit_rows.append(
+                            self._build_skipped_anomaly_audit_row(
+                                row,
+                                phase="post_close",
+                                fingerprint=_record_get(row, "ai_reason_post_close_evidence_fingerprint"),
+                                cutoff_at=cutoff_at,
+                                skip_reason="dragon_tiger_not_published_yet",
+                            )
+                        )
+                        continue
+                    await self._postgres.mark_anomaly_post_close_unavailable(
+                        trade_date=row["anomaly_date"],
+                        reason="dragon_tiger_unavailable_after_grace_window",
+                    )
+                    audit_rows.append(
+                        self._build_skipped_anomaly_audit_row(
+                            row,
+                            phase="post_close",
+                            fingerprint=_record_get(row, "ai_reason_post_close_evidence_fingerprint"),
+                            cutoff_at=cutoff_at,
+                            skip_reason="dragon_tiger_unavailable_after_grace_window",
+                        )
+                    )
+                    continue
+
+                fingerprint = compute_evidence_fingerprint(row, context, phase="post_close", cutoff_at=cutoff_at)
+                previous_fingerprint = _record_get(row, "ai_reason_post_close_evidence_fingerprint")
+                if previous_fingerprint and previous_fingerprint == fingerprint:
+                    audit_rows.append(self._build_skipped_anomaly_audit_row(row, phase="post_close", fingerprint=fingerprint, cutoff_at=cutoff_at, skip_reason="fingerprint_unchanged"))
+                    continue
+                result = await asyncio.to_thread(
+                    self._anomaly_reason_analyzer.analyze,
+                    row,
+                    context,
+                    phase="post_close",
+                    evidence_cutoff_at=cutoff_at,
+                )
+                attempt_count = int(_record_get(row, "ai_reason_post_close_attempt_count") or 0) + 1
+                next_retry_at = _next_retry_at(attempt_count=attempt_count, settings=self._settings) if result.status == "failed" else None
+                generated_at = datetime.now(UTC) if result.status == "completed" else None
+                updates.append(
+                    {
+                        "id": row["id"],
+                        "ai_reason_post_close": result.reason,
+                        "ai_reason_post_close_status": result.status,
+                        "ai_reason_post_close_generated_at": generated_at,
+                        "ai_reason_post_close_evidence_fingerprint": result.evidence_fingerprint,
+                        "ai_reason_post_close_attempt_count": attempt_count,
+                        "ai_reason_post_close_next_retry_at": next_retry_at,
+                        "ai_reason_phase": "post_close" if result.status == "completed" else _record_get(row, "ai_reason_phase", "intraday") or "intraday",
+                        "ai_reason_includes_dragon_tiger": result.includes_dragon_tiger,
+                        "ai_reason": result.reason if result.status == "completed" else None,
+                        "ai_reason_status": "completed" if result.status == "completed" else None,
+                        "ai_reason_generated_at": generated_at,
+                        "related_news_ids": result.related_news_ids,
+                        "related_announcement_ids": result.related_announcement_ids,
+                    }
+                )
+                audit_rows.append(self._build_anomaly_audit_row(row, result, phase="post_close", attempt_count=attempt_count))
+
+            if updates:
+                await self._postgres.update_anomaly_post_close_ai_reasons(updates)
+            if audit_rows:
+                await self._postgres.insert_llm_audit_rows(audit_rows)
+        except Exception:
+            logger.exception("collector post-close anomaly reason analysis failed")
+            return
+        logger.info("collector analyzed post-close anomaly reasons", extra={"anomaly_count": len(rows)})
+
+    def _build_anomaly_audit_row(
+        self,
+        row,
+        result,
+        *,
+        phase: str,
+        invoked_at: datetime | None = None,
+        attempt_count: int | None = None,
+        status: str | None = None,
+        skip_reason: str | None = None,
+    ) -> dict[str, object]:
+        audit_at = invoked_at or datetime.now(UTC)
+        return {
+            "invoked_at": audit_at,
+            "audit_date": audit_at.astimezone(CHINA_MARKET_TZ).date(),
+            "menu_module": "events",
+            "call_category": f"anomaly_reason_{phase}",
+            "status": status or _derive_llm_audit_status(attempted=result.attempted, llm_succeeded=result.llm_succeeded),
+            "model_used": result.model_used,
+            "prompt_version": result.prompt_version,
+            "latency_ms": result.latency_ms,
+            "meta": {
+                "anomalyId": row["id"],
+                "symbol": str(row["symbol"] or ""),
+                "anomalyType": str(row["anomaly_type"] or ""),
+                "phase": phase,
+                "fingerprint": result.evidence_fingerprint,
+                "attemptCount": attempt_count,
+                "includesDragonTiger": result.includes_dragon_tiger,
+                "llmSucceeded": result.llm_succeeded,
+                "skipReason": skip_reason or result.skip_reason,
+                "relatedNewsCount": len(result.related_news_ids),
+                "relatedAnnouncementCount": len(result.related_announcement_ids),
+                "attempts": result.attempts or [],
+            },
+        }
+
+    def _build_skipped_anomaly_audit_row(self, row, *, phase: str, fingerprint: str | None, cutoff_at: datetime, skip_reason: str) -> dict[str, object]:
+        audit_at = datetime.now(UTC)
+        return {
+            "invoked_at": audit_at,
+            "audit_date": audit_at.astimezone(CHINA_MARKET_TZ).date(),
+            "menu_module": "events",
+            "call_category": f"anomaly_reason_{phase}",
+            "status": "skipped",
+            "model_used": None,
+            "prompt_version": None,
+            "latency_ms": None,
+            "meta": {
+                "anomalyId": row["id"],
+                "symbol": str(row["symbol"] or ""),
+                "anomalyType": str(row["anomaly_type"] or ""),
+                "phase": phase,
+                "fingerprint": fingerprint,
+                "evidenceCutoffAt": cutoff_at.isoformat(),
+                "skipReason": skip_reason,
+                "llmSucceeded": False,
+                "includesDragonTiger": False,
+                "relatedNewsCount": 0,
+                "relatedAnnouncementCount": 0,
+                "attempts": [],
+            },
+        }
 
     async def _collect_symbol(self, symbol: str) -> None:
         if not await self._redis.sismember(self._settings.active_symbols_key, symbol):

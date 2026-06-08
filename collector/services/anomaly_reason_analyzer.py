@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -83,6 +85,48 @@ class AnomalyReasonResult:
     prompt_version: str = "v1"
     latency_ms: int | None = None
     attempts: list[dict[str, object]] | None = None
+    phase: str = "intraday"
+    evidence_cutoff_at: datetime | None = None
+    includes_dragon_tiger: bool = False
+    evidence_fingerprint: str | None = None
+
+
+def compute_evidence_fingerprint(anomaly: object, context: dict[str, object], *, phase: str, cutoff_at: datetime) -> str:
+    def row_identity(row: object) -> object:
+        if isinstance(row, dict):
+            return row.get("id") or row.get("dedupe_key") or row.get("trade_date") or row
+        try:
+            return row["id"]
+        except Exception:
+            try:
+                return row["dedupe_key"]
+            except Exception:
+                try:
+                    return row["trade_date"]
+                except Exception:
+                    return str(row)
+
+    normalized_cutoff = cutoff_at.astimezone(UTC).replace(second=0, microsecond=0)
+    payload = {
+        "phase": phase,
+        "symbol": _field(anomaly, "symbol"),
+        "anomaly_date": str(_field(anomaly, "anomaly_date")),
+        "anomaly_type": _field(anomaly, "anomaly_type"),
+        "first_trigger_bucket": _format_value(_field(anomaly, "first_trigger_bucket")),
+        "severity": _field(anomaly, "severity"),
+        "change_pct": _to_float(_field(anomaly, "change_pct")),
+        "volume_ratio": _to_float(_field(anomaly, "volume_ratio")),
+        "event_count": _field(anomaly, "event_count"),
+        "cutoff_at": normalized_cutoff.isoformat(),
+        "news": sorted(str(row_identity(row)) for row in context.get("news", []) if row is not None),
+        "announcements": sorted(str(row_identity(row)) for row in context.get("announcements", []) if row is not None),
+        "reports": sorted(str(row_identity(row)) for row in context.get("reports", []) if row is not None),
+        "dragon_tiger_daily": row_identity(context.get("dragon_tiger_daily")) if context.get("dragon_tiger_daily") else None,
+        "dragon_tiger_institution": row_identity(context.get("dragon_tiger_institution")) if context.get("dragon_tiger_institution") else None,
+        "market_summary": context.get("market_summary") or {},
+    }
+    encoded = json.dumps(payload, sort_keys=True, default=str, ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _to_float(value: object) -> float | None:
@@ -191,15 +235,20 @@ class AnomalyReasonAnalyzer:
     def is_configured(self) -> bool:
         return is_ai_configured(self._settings)
 
-    def reason_window(self, trigger_ts: datetime) -> tuple[datetime, datetime]:
+    def reason_window(self, trigger_ts: datetime, *, phase: str = "intraday") -> tuple[datetime, datetime, datetime]:
         normalized_ts = trigger_ts.astimezone(UTC) if trigger_ts.tzinfo else trigger_ts.replace(tzinfo=UTC)
-        return normalized_ts - timedelta(days=3), datetime.now(UTC) + timedelta(minutes=5)
+        cutoff_at = datetime.now(UTC)
+        until_ts = cutoff_at + timedelta(minutes=5) if phase == "intraday" else cutoff_at
+        return normalized_ts - timedelta(days=3), until_ts, cutoff_at
 
-    def analyze(self, anomaly, context: dict[str, list[object]]) -> AnomalyReasonResult:
+    def analyze(self, anomaly, context: dict[str, object], *, phase: str = "intraday", evidence_cutoff_at: datetime | None = None) -> AnomalyReasonResult:
         prompt_version = CONTENT_SUMMARY_PROMPT_VERSION
+        cutoff_at = evidence_cutoff_at or datetime.now(UTC)
+        includes_dragon_tiger = bool(context.get("dragon_tiger_daily") or context.get("dragon_tiger_institution"))
+        fingerprint = compute_evidence_fingerprint(anomaly, context, phase=phase, cutoff_at=cutoff_at)
         if not self.is_configured():
             logger.warning("anomaly ai reason config incomplete or unsafe")
-            return AnomalyReasonResult(reason=None, status="skipped", related_news_ids=[], related_announcement_ids=[], skip_reason="missing_model_config", prompt_version=prompt_version)
+            return AnomalyReasonResult(reason=None, status="skipped", related_news_ids=[], related_announcement_ids=[], skip_reason="missing_model_config", prompt_version=prompt_version, phase=phase, evidence_cutoff_at=cutoff_at, includes_dragon_tiger=includes_dragon_tiger, evidence_fingerprint=fingerprint)
 
         news_rows = context.get("news", [])
         announcement_rows = context.get("announcements", [])
@@ -207,9 +256,10 @@ class AnomalyReasonAnalyzer:
         market_summary = context.get("market_summary") if isinstance(context.get("market_summary"), dict) else None
         dragon_tiger_daily = context.get("dragon_tiger_daily") if isinstance(context.get("dragon_tiger_daily"), dict) else None
         dragon_tiger_institution = context.get("dragon_tiger_institution") if isinstance(context.get("dragon_tiger_institution"), dict) else None
+        dragon_tiger_published_for_date = bool(context.get("dragon_tiger_published_for_date"))
         fallback_reason = self._build_evidence_bound_fallback(anomaly, context)
         if not news_rows and not announcement_rows and not report_rows and not market_summary and not dragon_tiger_daily and not dragon_tiger_institution:
-            return AnomalyReasonResult(reason=fallback_reason, status="completed", related_news_ids=[], related_announcement_ids=[], skip_reason="no_supporting_context", prompt_version=prompt_version)
+            return AnomalyReasonResult(reason=fallback_reason, status="completed", related_news_ids=[], related_announcement_ids=[], skip_reason="no_supporting_context", prompt_version=prompt_version, phase=phase, evidence_cutoff_at=cutoff_at, includes_dragon_tiger=includes_dragon_tiger, evidence_fingerprint=fingerprint)
 
         prompt = USER_PROMPT_TEMPLATE.format(
             symbol=anomaly["symbol"],
@@ -223,7 +273,7 @@ class AnomalyReasonAnalyzer:
             announcement_context=self._format_announcements(announcement_rows),
             report_context=self._format_reports(report_rows),
             market_context=self._format_market_summary(market_summary),
-            dragon_tiger_context=self._format_dragon_tiger(dragon_tiger_daily, dragon_tiger_institution),
+            dragon_tiger_context=self._format_dragon_tiger(dragon_tiger_daily, dragon_tiger_institution, published_for_date=dragon_tiger_published_for_date),
         )
         result = self._call_model(prompt)
         if result is None:
@@ -239,6 +289,10 @@ class AnomalyReasonAnalyzer:
                     prompt_version=prompt_version,
                     latency_ms=self._last_latency_ms,
                     attempts=self._last_attempts,
+                    phase=phase,
+                    evidence_cutoff_at=cutoff_at,
+                    includes_dragon_tiger=includes_dragon_tiger,
+                    evidence_fingerprint=fingerprint,
                 )
             return AnomalyReasonResult(
                 reason=None,
@@ -251,6 +305,10 @@ class AnomalyReasonAnalyzer:
                 prompt_version=prompt_version,
                 latency_ms=self._last_latency_ms,
                 attempts=self._last_attempts,
+                phase=phase,
+                evidence_cutoff_at=cutoff_at,
+                includes_dragon_tiger=includes_dragon_tiger,
+                evidence_fingerprint=fingerprint,
             )
         if _contains_advice(result) or _looks_like_prompt_echo(result) or _looks_low_information_result(result):
             logger.warning("anomaly ai reason failed safety/quality checks; using safe fallback", extra={"symbol": anomaly["symbol"]})
@@ -268,6 +326,10 @@ class AnomalyReasonAnalyzer:
             prompt_version=prompt_version,
             latency_ms=self._last_latency_ms,
             attempts=self._last_attempts,
+            phase=phase,
+            evidence_cutoff_at=cutoff_at,
+            includes_dragon_tiger=includes_dragon_tiger,
+            evidence_fingerprint=fingerprint,
         )
 
     def _call_model(self, user_prompt: str) -> str | None:
@@ -412,7 +474,7 @@ class AnomalyReasonAnalyzer:
         return "\n".join(lines)
 
     @staticmethod
-    def _format_dragon_tiger(daily_row: dict[str, object] | None, institution_row: dict[str, object] | None) -> str:
+    def _format_dragon_tiger(daily_row: dict[str, object] | None, institution_row: dict[str, object] | None, *, published_for_date: bool = False) -> str:
         lines = []
         if daily_row:
             lines.append(
@@ -434,7 +496,9 @@ class AnomalyReasonAnalyzer:
                     reason=_clip(institution_row.get("reason"), 60),
                 )
             )
-        return "\n".join(lines) if lines else "无"
+        if lines:
+            return "\n".join(lines)
+        return "当日龙虎榜已发布，但该股未上榜且无机构席位记录" if published_for_date else "无"
 
     @staticmethod
     def _build_evidence_bound_fallback(anomaly, context: dict[str, list[object]]) -> str:
