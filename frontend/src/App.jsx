@@ -910,6 +910,20 @@ function dedupeDailyAnomalyItems(items) {
       ...representative,
       eventCountToday,
       relatedFunds: mergeDailyAnomalyFunds(symbolItems),
+      intradayTimeline: Array.isArray(representative?.intradayTimeline)
+        ? representative.intradayTimeline
+        : symbolItems.map((entry) => ({
+          triggerTime: entry?.triggerTime,
+          timeBucket: entry?.firstTriggerBucket || entry?.triggerTime,
+          displayTime: formatTime(entry?.firstTriggerBucket || entry?.triggerTime),
+          sessionSegment: entry?.sessionSegment,
+          anomalyType: entry?.anomalyType,
+          severity: entry?.severity,
+          changePct: entry?.changePct,
+          volumeRatio: entry?.volumeRatio,
+          aiReasonStatus: entry?.aiReasonStatus,
+          aiReasonPhase: entry?.aiReasonPhase || 'intraday',
+        })),
     });
   });
 
@@ -950,6 +964,41 @@ function getAiReasonStatusLabel(status) {
     return 'AI归因已跳过';
   }
   return 'AI归因待生成';
+}
+
+function getAiReasonPhaseLabel(phase) {
+  if (phase === 'post_close') {
+    return '盘后复核';
+  }
+  if (phase === 'reviewed') {
+    return '已复核';
+  }
+  return '盘中归因';
+}
+
+function getDragonTigerEvidenceLabel(item) {
+  if (item?.aiReasonIncludesDragonTiger) {
+    return '含龙虎榜线索';
+  }
+  if (item?.aiReasonPostCloseStatus === 'no_trade_day') {
+    return '非交易日无龙虎榜';
+  }
+  if (item?.aiReasonPostCloseStatus === 'unavailable') {
+    return '龙虎榜不可用';
+  }
+  if (item?.aiReasonPostCloseRequired) {
+    return '龙虎榜待披露';
+  }
+  return null;
+}
+
+function getSessionSegmentLabel(segment) {
+  if (segment === 'open') return '开盘';
+  if (segment === 'morning') return '早盘';
+  if (segment === 'midday') return '午间';
+  if (segment === 'afternoon') return '午后';
+  if (segment === 'close') return '尾盘';
+  return '盘外';
 }
 
 function getVolumeToneClass(ratio) {
@@ -5475,6 +5524,8 @@ function App() {
 
   function renderAnomalyCard(item) {
     const funds = Array.isArray(item?.relatedFunds) ? item.relatedFunds : [];
+    const timeline = Array.isArray(item?.intradayTimeline) ? item.intradayTimeline : [];
+    const dragonTigerLabel = getDragonTigerEvidenceLabel(item);
     const changeTone = getSnapshotCardTone(
       typeof item?.changePct === 'number' ? item.changePct : item?.latestPriceJumpPct,
     );
@@ -5529,9 +5580,30 @@ function App() {
           </div>
         ) : null}
         <div className="anomaly-ai-reason">
-          <span>{getAiReasonStatusLabel(item?.aiReasonStatus)}</span>
+          <div className="anomaly-ai-badge-row">
+            <span>{getAiReasonStatusLabel(item?.aiReasonStatus)}</span>
+            <span className="anomaly-phase-badge">{getAiReasonPhaseLabel(item?.aiReasonPhase)}</span>
+            {dragonTigerLabel ? <span className="anomaly-dragon-badge">{dragonTigerLabel}</span> : null}
+          </div>
           {item?.aiReason ? <p>{item.aiReason}</p> : null}
+          {item?.aiReasonPostClose && item.aiReasonPostClose !== item.aiReason ? <p className="post-close-reason">{item.aiReasonPostClose}</p> : null}
         </div>
+        {timeline.length > 0 ? (
+          <div className="anomaly-timeline">
+            <h4>{timeline.length > 1 ? '日内异动轨迹' : '日内异动触发点'}</h4>
+            <ul className="timeline-list">
+              {timeline.map((entry, index) => (
+                <li className={`timeline-item severity-${entry?.severity || 'normal'}`} key={`${item?.symbol || 'item'}-${entry?.timeBucket || entry?.triggerTime || index}`}>
+                  <span className="timeline-time">{entry?.displayTime || formatTime(entry?.timeBucket || entry?.triggerTime)}</span>
+                  <span className="timeline-segment">{getSessionSegmentLabel(entry?.sessionSegment)}</span>
+                  <span className="timeline-type">{getAnomalyTypeLabel(entry?.anomalyType)}</span>
+                  <span className="timeline-change">{formatSignedPercent(entry?.changePct)}</span>
+                  <span className="timeline-phase">{getAiReasonPhaseLabel(entry?.aiReasonPhase)}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         <p className="panel-tip compact">{item?.impactEstimate || '仅用于复盘观察，不构成投资建议。'}</p>
       </section>
     );

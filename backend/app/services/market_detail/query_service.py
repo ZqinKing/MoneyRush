@@ -786,6 +786,7 @@ class MarketDetailQueryService:
                     "latestPriceJumpPct": change_pct if row["anomaly_type"] == "price_jump" else None,
                     "triggerPrice": _to_float(row["trigger_price"]),
                     "triggerTime": _to_iso(row["first_trigger_ts"]),
+                    "firstTriggerBucket": _to_iso(row["first_trigger_bucket"]),
                     "volumeRatio": _to_float(row["volume_ratio"]),
                     "eventCountToday": _to_int(row["event_count"]) or 0,
                     "relatedFunds": symbol_funds,
@@ -800,6 +801,13 @@ class MarketDetailQueryService:
                         generated_at=row["ai_reason_generated_at"],
                         related_news_ids=_decode_jsonish_list(row["related_news_ids"]),
                         related_announcement_ids=_decode_jsonish_list(row["related_announcement_ids"]),
+                        phase=row["ai_reason_phase"],
+                        evidence_cutoff_at=row["ai_reason_evidence_cutoff_at"],
+                        includes_dragon_tiger=bool(row["ai_reason_includes_dragon_tiger"]),
+                        post_close_required=bool(row["ai_reason_post_close_required"]),
+                        post_close_status=row["ai_reason_post_close_status"],
+                        post_close_generated_at=row["ai_reason_post_close_generated_at"],
+                        post_close_reason=row["ai_reason_post_close"],
                     ),
                 }
             )
@@ -1258,14 +1266,29 @@ class MarketDetailQueryService:
         generated_at: object = None,
         related_news_ids: list[object] | None = None,
         related_announcement_ids: list[object] | None = None,
+        phase: str | None = None,
+        evidence_cutoff_at: object = None,
+        includes_dragon_tiger: bool = False,
+        post_close_required: bool = False,
+        post_close_status: str | None = None,
+        post_close_generated_at: object = None,
+        post_close_reason: str | None = None,
     ) -> dict[str, object]:
         generated_at_iso = _to_iso(generated_at)
+        post_close_generated_at_iso = _to_iso(post_close_generated_at)
         normalized_related_news_ids = list(related_news_ids or [])
         normalized_related_announcement_ids = list(related_announcement_ids or [])
         return {
             "aiReason": reason,
             "aiReasonStatus": status,
             "aiReasonGeneratedAt": generated_at_iso,
+            "aiReasonPhase": phase or "intraday",
+            "aiReasonEvidenceCutoffAt": _to_iso(evidence_cutoff_at),
+            "aiReasonIncludesDragonTiger": bool(includes_dragon_tiger),
+            "aiReasonPostCloseRequired": bool(post_close_required),
+            "aiReasonPostCloseStatus": post_close_status or "not_due",
+            "aiReasonPostCloseGeneratedAt": post_close_generated_at_iso,
+            "aiReasonPostClose": post_close_reason,
             "relatedNewsIds": normalized_related_news_ids,
             "relatedAnnouncementIds": normalized_related_announcement_ids,
             "aiAttribution": reason,
@@ -1378,7 +1401,13 @@ class MarketDetailQueryService:
                         if symbol_funds
                         else "监控标的出现显著变化，未匹配到最近披露基金持仓"
                     ),
-                    **MarketDetailQueryService._daily_anomaly_ai_fields(status="pending"),
+                    **MarketDetailQueryService._daily_anomaly_ai_fields(
+                        status="pending",
+                        phase="intraday",
+                        includes_dragon_tiger=False,
+                        post_close_required=severity in {"critical", "high"},
+                        post_close_status="not_due",
+                    ),
                 }
             )
         return candidates
@@ -1463,10 +1492,74 @@ class MarketDetailQueryService:
                     **representative,
                     "eventCountToday": event_count,
                     "relatedFunds": MarketDetailQueryService._merge_related_funds(symbol_items),
+                    "intradayTimeline": MarketDetailQueryService._build_intraday_anomaly_timeline(symbol_items),
                 }
             )
 
         return deduped_items
+
+    @staticmethod
+    def _build_intraday_anomaly_timeline(items: list[dict[str, object]]) -> list[dict[str, object]]:
+        timeline_by_bucket: dict[tuple[str, str], dict[str, object]] = {}
+        for item in items:
+            time_bucket = item.get("firstTriggerBucket") or item.get("triggerTime")
+            trigger_time = item.get("triggerTime")
+            session_segment = MarketDetailQueryService._session_segment_for_ts(trigger_time)
+            if session_segment == "off_session":
+                continue
+            anomaly_type = str(item.get("anomalyType") or "unknown")
+            bucket_key = str(time_bucket or item.get("triggerTime") or "")
+            if not bucket_key:
+                continue
+            candidate = {
+                "triggerTime": trigger_time,
+                "timeBucket": time_bucket,
+                "displayTime": MarketDetailQueryService._timeline_display_time(trigger_time),
+                "sessionSegment": session_segment,
+                "anomalyType": item.get("anomalyType"),
+                "severity": item.get("severity"),
+                "changePct": item.get("changePct"),
+                "volumeRatio": item.get("volumeRatio"),
+                "eventCountToday": _to_int(item.get("eventCountToday")) or 0,
+                "aiReasonStatus": item.get("aiReasonStatus"),
+                "aiReasonPhase": item.get("aiReasonPhase") or "intraday",
+            }
+            key = (bucket_key, anomaly_type)
+            current = timeline_by_bucket.get(key)
+            if current is None or MarketDetailQueryService._daily_anomaly_rank(candidate) > MarketDetailQueryService._daily_anomaly_rank(current):
+                timeline_by_bucket[key] = candidate
+        return sorted(timeline_by_bucket.values(), key=lambda entry: str(entry.get("timeBucket") or entry.get("triggerTime") or ""))
+
+    @staticmethod
+    def _timeline_display_time(value: object) -> str | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            local_ts = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(CHINA_MARKET_TZ)
+        except ValueError:
+            return None
+        return local_ts.strftime("%H:%M")
+
+    @staticmethod
+    def _session_segment_for_ts(value: object) -> str | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            local_ts = datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(CHINA_MARKET_TZ)
+        except ValueError:
+            return None
+        minutes = local_ts.hour * 60 + local_ts.minute
+        if 9 * 60 + 30 <= minutes < 10 * 60:
+            return "open"
+        if 10 * 60 <= minutes < 11 * 60 + 30:
+            return "morning"
+        if 11 * 60 + 30 <= minutes < 13 * 60:
+            return "midday"
+        if 13 * 60 <= minutes < 14 * 60 + 30:
+            return "afternoon"
+        if 14 * 60 + 30 <= minutes <= 15 * 60:
+            return "close"
+        return "off_session"
 
     @staticmethod
     def _funds_with_estimated_impact(funds: list[dict[str, object]], change_pct: float | None) -> list[dict[str, object]]:
