@@ -260,7 +260,7 @@ class CollectorWorker:
             return
         batch_limit = max(int(self._settings.anomaly_post_close_batch_size), 1)
         try:
-            rows = await self._postgres.fetch_post_close_anomaly_reasons(
+            rows = await self._postgres.fetch_post_close_review_candidates(
                 trade_date=trade_date,
                 limit=batch_limit,
                 max_attempts=int(self._settings.anomaly_reason_max_attempts),
@@ -281,28 +281,45 @@ class CollectorWorker:
                 )
                 has_dragon_tiger = bool(context.get("dragon_tiger_daily") or context.get("dragon_tiger_institution"))
                 dragon_tiger_published_for_date = bool(context.get("dragon_tiger_published_for_date"))
+                checkpoint_attempt_count = int(_record_get(row, "post_close_checkpoint_attempt_count") or 0)
                 if not has_dragon_tiger and not dragon_tiger_published_for_date:
                     unavailable_after = _dragon_tiger_evidence_deadline(self._settings, row["anomaly_date"])
                     if datetime.now(UTC) < unavailable_after:
+                        await self._postgres.upsert_post_close_review_checkpoint(
+                            {
+                                "trade_date": row["anomaly_date"],
+                                "symbol": str(row["symbol"]),
+                                "representative_anomaly_id": row["id"],
+                                "status": "pending",
+                                "attempt_count": checkpoint_attempt_count,
+                                "last_error": "dragon_tiger_not_published_yet",
+                            }
+                        )
                         await self._postgres.insert_llm_audit_rows([
                             self._build_skipped_anomaly_audit_row(
                                 row,
                                 phase="post_close",
-                                fingerprint=_record_get(row, "ai_reason_post_close_evidence_fingerprint"),
+                                fingerprint=_record_get(row, "post_close_checkpoint_evidence_fingerprint") or _record_get(row, "ai_reason_post_close_evidence_fingerprint"),
                                 cutoff_at=cutoff_at,
                                 skip_reason="dragon_tiger_not_published_yet",
                             )
                         ])
                         continue
-                    await self._postgres.mark_anomaly_post_close_unavailable(
-                        trade_date=row["anomaly_date"],
-                        reason="dragon_tiger_unavailable_after_grace_window",
+                    await self._postgres.upsert_post_close_review_checkpoint(
+                        {
+                            "trade_date": row["anomaly_date"],
+                            "symbol": str(row["symbol"]),
+                            "representative_anomaly_id": row["id"],
+                            "status": "unavailable",
+                            "attempt_count": checkpoint_attempt_count,
+                            "last_error": "dragon_tiger_unavailable_after_grace_window",
+                        }
                     )
                     await self._postgres.insert_llm_audit_rows([
                         self._build_skipped_anomaly_audit_row(
                             row,
                             phase="post_close",
-                            fingerprint=_record_get(row, "ai_reason_post_close_evidence_fingerprint"),
+                            fingerprint=_record_get(row, "post_close_checkpoint_evidence_fingerprint") or _record_get(row, "ai_reason_post_close_evidence_fingerprint"),
                             cutoff_at=cutoff_at,
                             skip_reason="dragon_tiger_unavailable_after_grace_window",
                         )
@@ -310,12 +327,6 @@ class CollectorWorker:
                     continue
 
                 fingerprint = compute_evidence_fingerprint(row, context, phase="post_close", cutoff_at=cutoff_at)
-                previous_fingerprint = _record_get(row, "ai_reason_post_close_evidence_fingerprint")
-                if previous_fingerprint and previous_fingerprint == fingerprint:
-                    await self._postgres.insert_llm_audit_rows([
-                        self._build_skipped_anomaly_audit_row(row, phase="post_close", fingerprint=fingerprint, cutoff_at=cutoff_at, skip_reason="fingerprint_unchanged")
-                    ])
-                    continue
                 invoked_at = datetime.now(UTC)
                 result = await asyncio.to_thread(
                     self._anomaly_reason_analyzer.analyze,
@@ -324,9 +335,27 @@ class CollectorWorker:
                     phase="post_close",
                     evidence_cutoff_at=cutoff_at,
                 )
-                attempt_count = int(_record_get(row, "ai_reason_post_close_attempt_count") or 0) + 1
+                attempt_count = checkpoint_attempt_count + 1
                 next_retry_at = _next_retry_at(attempt_count=attempt_count, settings=self._settings) if result.status == "failed" else None
                 generated_at = datetime.now(UTC) if result.status == "completed" else None
+                await self._postgres.upsert_post_close_review_checkpoint(
+                    {
+                        "trade_date": row["anomaly_date"],
+                        "symbol": str(row["symbol"]),
+                        "representative_anomaly_id": row["id"],
+                        "status": result.status,
+                        "reason": result.reason if result.status == "completed" else None,
+                        "generated_at": generated_at,
+                        "evidence_fingerprint": result.evidence_fingerprint,
+                        "evidence_cutoff_at": result.evidence_cutoff_at,
+                        "includes_dragon_tiger": result.includes_dragon_tiger,
+                        "related_news_ids": result.related_news_ids,
+                        "related_announcement_ids": result.related_announcement_ids,
+                        "attempt_count": attempt_count,
+                        "next_retry_at": next_retry_at,
+                        "last_error": result.skip_reason if result.status == "failed" else None,
+                    }
+                )
                 update = {
                     "id": row["id"],
                     "ai_reason_post_close": result.reason,
