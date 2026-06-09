@@ -1578,6 +1578,7 @@ class MarketDetailQueryService:
         deduped_items: list[dict[str, object]] = list(unkeyed_items)
         for symbol_items in grouped_items.values():
             representative = max(symbol_items, key=MarketDetailQueryService._daily_anomaly_rank)
+            ai_representative = max(symbol_items, key=MarketDetailQueryService._daily_anomaly_ai_rank)
             event_count = sum(
                 value
                 for value in (_to_int(item.get("eventCountToday")) for item in symbol_items)
@@ -1586,6 +1587,7 @@ class MarketDetailQueryService:
             deduped_items.append(
                 {
                     **representative,
+                    **MarketDetailQueryService._daily_anomaly_ai_snapshot(ai_representative),
                     "eventCountToday": event_count,
                     "relatedFunds": MarketDetailQueryService._merge_related_funds(symbol_items),
                     "intradayTimeline": MarketDetailQueryService._build_intraday_anomaly_timeline(symbol_items),
@@ -1593,6 +1595,39 @@ class MarketDetailQueryService:
             )
 
         return deduped_items
+
+    @staticmethod
+    def _daily_anomaly_ai_rank(item: dict[str, object]) -> tuple[int, int, str]:
+        status_priority = {"completed": 3, "failed": 2, "skipped": 1, "pending": 0}
+        phase_priority = {"post_close": 2, "reviewed": 1, "intraday": 0}
+        status = str(item.get("aiReasonStatus") or "pending")
+        phase = str(item.get("aiReasonPhase") or "intraday")
+        generated_at = str(item.get("aiReasonGeneratedAt") or item.get("aiReasonPostCloseGeneratedAt") or "")
+        return (
+            status_priority.get(status, 0),
+            phase_priority.get(phase, 0),
+            generated_at,
+        )
+
+    @staticmethod
+    def _daily_anomaly_ai_snapshot(item: dict[str, object]) -> dict[str, object]:
+        return {
+            "aiReason": item.get("aiReason"),
+            "aiReasonStatus": item.get("aiReasonStatus"),
+            "aiReasonGeneratedAt": item.get("aiReasonGeneratedAt"),
+            "aiReasonPhase": item.get("aiReasonPhase"),
+            "aiReasonEvidenceCutoffAt": item.get("aiReasonEvidenceCutoffAt"),
+            "aiReasonIncludesDragonTiger": item.get("aiReasonIncludesDragonTiger"),
+            "aiReasonPostCloseRequired": item.get("aiReasonPostCloseRequired"),
+            "aiReasonPostCloseStatus": item.get("aiReasonPostCloseStatus"),
+            "aiReasonPostCloseGeneratedAt": item.get("aiReasonPostCloseGeneratedAt"),
+            "aiReasonPostClose": item.get("aiReasonPostClose"),
+            "relatedNewsIds": item.get("relatedNewsIds"),
+            "relatedAnnouncementIds": item.get("relatedAnnouncementIds"),
+            "aiAttribution": item.get("aiAttribution"),
+            "aiAttributionStatus": item.get("aiAttributionStatus"),
+            "aiAttributionGeneratedAt": item.get("aiAttributionGeneratedAt"),
+        }
 
     @staticmethod
     def _build_intraday_anomaly_timeline(items: list[dict[str, object]]) -> list[dict[str, object]]:

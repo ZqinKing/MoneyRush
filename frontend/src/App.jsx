@@ -975,6 +975,26 @@ function getDailyAnomalyRank(item) {
   ];
 }
 
+function getDailyAnomalyAiRank(item) {
+  const statusPriority = {
+    completed: 3,
+    failed: 2,
+    skipped: 1,
+    pending: 0,
+  };
+  const phasePriority = {
+    post_close: 2,
+    reviewed: 1,
+    intraday: 0,
+  };
+  const generatedTime = Date.parse(item?.aiReasonGeneratedAt || item?.aiReasonPostCloseGeneratedAt || '');
+  return [
+    statusPriority[item?.aiReasonStatus] || 0,
+    phasePriority[item?.aiReasonPhase] || 0,
+    Number.isNaN(generatedTime) ? 0 : generatedTime,
+  ];
+}
+
 function isHigherDailyAnomalyRank(candidate, current) {
   const candidateRank = getDailyAnomalyRank(candidate);
   const currentRank = getDailyAnomalyRank(current);
@@ -982,6 +1002,35 @@ function isHigherDailyAnomalyRank(candidate, current) {
   return candidateRank.some((value, index) => value > currentRank[index] && candidateRank
     .slice(0, index)
     .every((previousValue, previousIndex) => previousValue === currentRank[previousIndex]));
+}
+
+function isHigherDailyAnomalyAiRank(candidate, current) {
+  const candidateRank = getDailyAnomalyAiRank(candidate);
+  const currentRank = getDailyAnomalyAiRank(current);
+
+  return candidateRank.some((value, index) => value > currentRank[index] && candidateRank
+    .slice(0, index)
+    .every((previousValue, previousIndex) => previousValue === currentRank[previousIndex]));
+}
+
+function getDailyAnomalyAiSnapshot(item) {
+  return {
+    aiReason: item?.aiReason,
+    aiReasonStatus: item?.aiReasonStatus,
+    aiReasonGeneratedAt: item?.aiReasonGeneratedAt,
+    aiReasonPhase: item?.aiReasonPhase,
+    aiReasonEvidenceCutoffAt: item?.aiReasonEvidenceCutoffAt,
+    aiReasonIncludesDragonTiger: item?.aiReasonIncludesDragonTiger,
+    aiReasonPostCloseRequired: item?.aiReasonPostCloseRequired,
+    aiReasonPostCloseStatus: item?.aiReasonPostCloseStatus,
+    aiReasonPostCloseGeneratedAt: item?.aiReasonPostCloseGeneratedAt,
+    aiReasonPostClose: item?.aiReasonPostClose,
+    relatedNewsIds: item?.relatedNewsIds,
+    relatedAnnouncementIds: item?.relatedAnnouncementIds,
+    aiAttribution: item?.aiAttribution,
+    aiAttributionStatus: item?.aiAttributionStatus,
+    aiAttributionGeneratedAt: item?.aiAttributionGeneratedAt,
+  };
 }
 
 function mergeDailyAnomalyFunds(items) {
@@ -1016,12 +1065,17 @@ function dedupeDailyAnomalyItems(items) {
       (current, candidate) => (isHigherDailyAnomalyRank(candidate, current) ? candidate : current),
       symbolItems[0],
     );
+    const aiRepresentative = symbolItems.reduce(
+      (current, candidate) => (isHigherDailyAnomalyAiRank(candidate, current) ? candidate : current),
+      symbolItems[0],
+    );
     const eventCountToday = symbolItems.reduce(
       (total, item) => total + (typeof item?.eventCountToday === 'number' ? item.eventCountToday : 0),
       0,
     );
     dedupedItems.push({
       ...representative,
+      ...getDailyAnomalyAiSnapshot(aiRepresentative),
       eventCountToday,
       relatedFunds: mergeDailyAnomalyFunds(symbolItems),
       intradayTimeline: Array.isArray(representative?.intradayTimeline)
