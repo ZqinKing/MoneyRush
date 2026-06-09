@@ -1224,6 +1224,8 @@ class PostgresStore:
                         amount = EXCLUDED.amount,
                         source = EXCLUDED.source,
                         raw = EXCLUDED.raw
+                    WHERE COALESCE(stock_kline.raw ->> 'synthetic', 'false') = 'true'
+                       OR COALESCE(EXCLUDED.raw ->> 'synthetic', 'false') <> 'true'
                     """,
                     rows,
                 )

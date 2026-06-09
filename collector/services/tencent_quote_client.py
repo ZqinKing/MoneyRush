@@ -3,14 +3,17 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
+from importlib import import_module
 import logging
 import random
 from time import monotonic, sleep
+from typing import Protocol, cast
 from urllib.request import urlopen
 
 from mootdx.quotes import Quotes
 
 from collector.services.akshare_sector_client import AkshareSectorClient, StockSectorInfo
+from collector.services.vendor_scheduler import VendorScheduler
 
 
 QUOTE_URL = "https://qt.gtimg.cn/q="
@@ -24,6 +27,9 @@ HISTORY_FAILURE_BACKOFF_MAX_SECONDS = 300.0
 SECTOR_CACHE_TTL_SECONDS = 6 * 60 * 60
 SECTOR_FAILURE_CACHE_TTL_SECONDS = 30 * 60
 SECTOR_FETCH_TIMEOUT_SECONDS = 10.0
+AKSHARE_INTRADAY_SOURCE = "eastmoney-akshare"
+MOOTDX_INTRADAY_SOURCE = "mootdx"
+REALTIME_AGGREGATED_SOURCE = "realtime-quote-aggregate"
 logger = logging.getLogger(__name__)
 
 
@@ -260,6 +266,96 @@ class MootdxQuote:
     daily_bucket: datetime
 
 
+class DataFrameLike(Protocol):
+    @property
+    def empty(self) -> bool: ...
+
+    def copy(self) -> "DataFrameLike": ...
+
+    def to_dict(self, orient: str) -> list[dict[str, object]]: ...
+
+
+class AkshareMinuteModule(Protocol):
+    def stock_zh_a_hist_min_em(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        period: str,
+        adjust: str,
+    ) -> DataFrameLike | None: ...
+
+
+class AkshareMinuteClient:
+    def __init__(self, akshare_module: AkshareMinuteModule | None = None) -> None:
+        self._akshare = akshare_module or self._load_akshare()
+
+    def fetch_intraday_history(self, symbol: str, trade_day: date) -> list[dict[str, object]]:
+        start_date = f"{trade_day:%Y-%m-%d} 09:30:00"
+        end_date = f"{trade_day:%Y-%m-%d} 15:00:00"
+        frame = self._akshare.stock_zh_a_hist_min_em(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            period="1",
+            adjust="",
+        )
+        if frame is None or frame.empty:
+            return []
+
+        normalized_frame = frame.copy()
+        records: list[dict[str, object]] = []
+        for row in normalized_frame.to_dict("records"):
+            bucket_ts = _to_utc_intraday_bucket(
+                row.get("时间")
+                or row.get("datetime")
+                or row.get("date")
+                or row.get("time"),
+                trade_day=trade_day,
+            )
+            open_price = _to_float(str(row.get("开盘") if row.get("开盘") is not None else row.get("open")))
+            high_price = _to_float(str(row.get("最高") if row.get("最高") is not None else row.get("high")))
+            low_price = _to_float(str(row.get("最低") if row.get("最低") is not None else row.get("low")))
+            close_price = _to_float(str(row.get("收盘") if row.get("收盘") is not None else row.get("close")))
+            volume = _to_int(str(row.get("成交量") if row.get("成交量") is not None else row.get("volume")))
+            amount = _to_float(str(row.get("成交额") if row.get("成交额") is not None else row.get("amount")))
+            if bucket_ts is None or None in (open_price, high_price, low_price, close_price):
+                continue
+            records.append(
+                {
+                    "bucketTs": bucket_ts,
+                    "symbol": symbol,
+                    "period": "1m",
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "volume": volume,
+                    "amount": amount,
+                    "source": AKSHARE_INTRADAY_SOURCE,
+                    "raw": {
+                        **row,
+                        "provider": AKSHARE_INTRADAY_SOURCE,
+                        "quality": "vendor_verified",
+                        "synthetic": False,
+                        "volumeUnit": "shares",
+                    },
+                }
+            )
+
+        deduped: dict[datetime, dict[str, object]] = {}
+        for item in records:
+            bucket_ts = item.get("bucketTs")
+            if isinstance(bucket_ts, datetime):
+                deduped[bucket_ts] = item
+        return [deduped[key] for key in sorted(deduped.keys())]
+
+    @staticmethod
+    def _load_akshare() -> AkshareMinuteModule:
+        module = import_module("akshare")
+        return cast(AkshareMinuteModule, cast(object, module))
+
+
 class TencentQuoteClient:
     def fetch_quote(self, symbol: str) -> TencentQuote:
         vendor_code = _symbol_to_vendor_code(symbol)
@@ -445,7 +541,9 @@ class MootdxQuoteClient:
 
         deduped: dict[datetime, dict[str, object]] = {}
         for item in records:
-            deduped[item["bucketTs"]] = item
+            bucket_ts = item.get("bucketTs")
+            if isinstance(bucket_ts, datetime):
+                deduped[bucket_ts] = item
         return [deduped[key] for key in sorted(deduped.keys(), reverse=True)[:limit]]
 
     def fetch_intraday_history(self, symbol: str, trade_day: date) -> list[dict[str, object]]:
@@ -489,6 +587,8 @@ class MootdxQuoteClient:
                     "raw": {
                         **row,
                         "provider": "mootdx",
+                        "quality": "vendor_verified",
+                        "synthetic": False,
                         "providerVolumeUnit": "lots",
                         "volumeUnit": "shares",
                         "tradeDate": day_code,
@@ -498,7 +598,9 @@ class MootdxQuoteClient:
 
         deduped: dict[datetime, dict[str, object]] = {}
         for item in records:
-            deduped[item["bucketTs"]] = item
+            bucket_ts = item.get("bucketTs")
+            if isinstance(bucket_ts, datetime):
+                deduped[bucket_ts] = item
         return [deduped[key] for key in sorted(deduped.keys())]
 
     @staticmethod
@@ -638,6 +740,8 @@ class MootdxQuoteClient:
                     "raw": {
                         **row,
                         "provider": "mootdx",
+                        "quality": "vendor_verified",
+                        "synthetic": False,
                         "providerVolumeUnit": "lots",
                         "volumeUnit": "shares",
                     },
@@ -646,7 +750,9 @@ class MootdxQuoteClient:
 
         deduped: dict[datetime, dict[str, object]] = {}
         for item in records:
-            deduped[item["bucketTs"]] = item
+            bucket_ts = item.get("bucketTs")
+            if isinstance(bucket_ts, datetime):
+                deduped[bucket_ts] = item
         return [deduped[key] for key in sorted(deduped.keys())]
 
     @staticmethod
@@ -697,7 +803,9 @@ class MarketQuoteClient:
         self._settings = settings
         self._mootdx_quote_client = MootdxQuoteClient()
         self._mootdx_history_client = MootdxQuoteClient()
+        self._akshare_minute_client = AkshareMinuteClient()
         self._tencent_client = TencentQuoteClient()
+        self._vendor_scheduler = VendorScheduler()
         self._sector_client: AkshareSectorClient | None = None
         self._sector_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sector-enrichment")
         self._tencent_cache: dict[str, tuple[TencentQuote, float]] = {}
@@ -774,32 +882,32 @@ class MarketQuoteClient:
 
     def fetch_intraday_history(self, symbol: str, trade_day: date | None = None) -> list[dict[str, object]]:
         trade_day = trade_day or datetime.now(CHINA_MARKET_TZ).date()
-        self._raise_if_history_backoff_active(symbol, trade_day, "intraday")
-        self._wait_for_history_slot()
-        try:
-            history = self._mootdx_history_client.fetch_intraday_history(symbol, trade_day=trade_day)
-        except Exception as exc:
-            self._record_history_failure(
-                symbol,
-                trade_day,
-                scope="intraday",
-                reason=self._classify_mootdx_failure(exc),
-                transport_failure=self._is_transport_failure(exc),
-            )
-            raise
+        errors: list[str] = []
+        for source, fetch in (
+            ("eastmoney-push2his", lambda: self._akshare_minute_client.fetch_intraday_history(symbol, trade_day)),
+            ("mootdx", lambda: self._mootdx_history_client.fetch_intraday_history(symbol, trade_day=trade_day)),
+        ):
+            try:
+                self._vendor_scheduler.raise_if_symbol_source_cooldown_active(source, symbol, "intraday")
+                self._vendor_scheduler.wait_for_slot(source)
+                history = fetch()
+            except Exception as exc:
+                reason = self._classify_mootdx_failure(exc) if source == "mootdx" else self._classify_generic_vendor_failure(exc)
+                errors.append(f"{source}:{reason}")
+                self._vendor_scheduler.record_failure(source, reason=reason)
+                self._vendor_scheduler.record_symbol_source_failure(source, symbol, "intraday", cooldown_seconds=HISTORY_FAILURE_BACKOFF_INITIAL_SECONDS, reason=reason)
+                logger.exception("intraday minute source failed; trying next source", extra={"symbol": symbol, "trade_day": trade_day.isoformat(), "source": source, "reason": reason})
+                continue
 
-        if not history:
-            self._record_history_failure(
-                symbol,
-                trade_day,
-                scope="intraday",
-                reason="history_empty",
-                transport_failure=False,
-            )
-            raise ValueError(f"empty mootdx intraday history payload for {symbol} on {trade_day.isoformat()}")
+            if history:
+                self._vendor_scheduler.record_success(source)
+                return history
 
-        self._clear_history_backoff(symbol, trade_day, "intraday")
-        return history
+            errors.append(f"{source}:history_empty")
+            self._vendor_scheduler.record_symbol_source_failure(source, symbol, "intraday", cooldown_seconds=HISTORY_FAILURE_BACKOFF_INITIAL_SECONDS, reason="history_empty")
+            logger.warning("intraday minute source returned no rows; trying next source", extra={"symbol": symbol, "trade_day": trade_day.isoformat(), "source": source})
+
+        raise ValueError(f"empty intraday history payload for {symbol} on {trade_day.isoformat()} after sources {', '.join(errors)}")
 
     def _wait_for_history_slot(self) -> None:
         now = monotonic()
@@ -811,6 +919,9 @@ class MarketQuoteClient:
             sleep(desired_interval - elapsed)
 
         self._last_history_request_at = monotonic()
+
+    def source_health_snapshot(self) -> dict[str, dict[str, object]]:
+        return self._vendor_scheduler.health_snapshot()
 
     def _get_mootdx_quote(self, symbol: str) -> MootdxQuote:
         now = monotonic()
@@ -958,6 +1069,21 @@ class MarketQuoteClient:
             return "parse_error"
         if MarketQuoteClient._is_transport_failure(exc):
             return "transport_error"
+        return "unknown_error"
+
+    @staticmethod
+    def _classify_generic_vendor_failure(exc: Exception) -> str:
+        message = str(exc).lower()
+        if "403" in message or "forbidden" in message:
+            return "forbidden"
+        if "429" in message or "too many" in message:
+            return "rate_limited"
+        if MarketQuoteClient._is_transport_failure(exc):
+            return "transport_error"
+        if isinstance(exc, ValueError) and "empty" in message:
+            return "empty_payload"
+        if isinstance(exc, (IndexError, KeyError, TypeError)):
+            return "parse_error"
         return "unknown_error"
 
     def _get_tencent_quote(self, symbol: str) -> TencentQuote:

@@ -23,6 +23,7 @@ INTRADAY_EXPECTED_BUCKET_COUNT = 240
 ANOMALY_REASON_INTERVAL_SECONDS = 300
 ANOMALY_REASON_BATCH_SIZE = 10
 POST_CLOSE_REASON_INTERVAL_SECONDS = 300
+REALTIME_AGGREGATED_SOURCE = "realtime-quote-aggregate"
 
 
 def _derive_llm_audit_status(*, attempted: bool, llm_succeeded: bool) -> str:
@@ -489,6 +490,9 @@ class CollectorWorker:
             kline=market_state["kline"],
             event=market_state["event"],
         )
+        realtime_intraday_bar = self._build_realtime_intraday_bar(market_state)
+        if realtime_intraday_bar is not None:
+            await self._postgres.persist_kline_history([realtime_intraday_bar])
 
         await self._redis.set(
             f"{self._settings.market_snapshot_key_prefix}:{symbol}",
@@ -516,6 +520,65 @@ class CollectorWorker:
                 "source": market_state["snapshot"]["source"],
             },
         )
+
+    @staticmethod
+    def _build_realtime_intraday_bar(market_state: dict[str, dict[str, object]]) -> dict[str, object] | None:
+        tick = market_state.get("tick") or {}
+        snapshot = market_state.get("snapshot") or {}
+        raw_ts = tick.get("ts") or snapshot.get("updatedAt")
+        if isinstance(raw_ts, str):
+            try:
+                tick_ts = datetime.fromisoformat(raw_ts)
+            except ValueError:
+                return None
+        elif isinstance(raw_ts, datetime):
+            tick_ts = raw_ts
+        else:
+            return None
+
+        local_ts = tick_ts.astimezone(CHINA_MARKET_TZ) if tick_ts.tzinfo else tick_ts.replace(tzinfo=UTC).astimezone(CHINA_MARKET_TZ)
+        if not CollectorWorker._is_trading_minute(local_ts):
+            return None
+
+        price = tick.get("price")
+        if not isinstance(price, (int, float)):
+            return None
+        normalized_price = float(price)
+
+        symbol = tick.get("symbol") or snapshot.get("symbol")
+        if not isinstance(symbol, str) or not symbol:
+            return None
+
+        bucket_ts = local_ts.replace(second=0, microsecond=0).astimezone(UTC)
+        volume = tick.get("volume") if isinstance(tick.get("volume"), int) else None
+        raw_amount = tick.get("amount")
+        amount = float(raw_amount) if isinstance(raw_amount, (int, float)) else None
+        return {
+            "bucketTs": bucket_ts,
+            "symbol": symbol,
+            "period": "1m",
+            "open": normalized_price,
+            "high": normalized_price,
+            "low": normalized_price,
+            "close": normalized_price,
+            "volume": volume,
+            "amount": amount,
+            "source": REALTIME_AGGREGATED_SOURCE,
+            "raw": {
+                "provider": REALTIME_AGGREGATED_SOURCE,
+                "quality": "realtime_aggregated",
+                "synthetic": True,
+                "observedTickCount": 1,
+                "filledBy": "collector-realtime-quote",
+                "sourcePriority": 4,
+                "vendorSnapshotSource": snapshot.get("source"),
+            },
+        }
+
+    @staticmethod
+    def _is_trading_minute(local_ts: datetime) -> bool:
+        minutes = local_ts.hour * 60 + local_ts.minute
+        return (9 * 60 + 30 <= minutes < 11 * 60 + 30) or (13 * 60 <= minutes < 15 * 60)
 
     def _clear_symbol_runtime_state(self, symbol: str) -> None:
         self._last_collected_at.pop(symbol, None)
