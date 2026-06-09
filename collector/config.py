@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import ClassVar
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,23 +23,27 @@ class Settings(BaseSettings):
     fund_holdings_key_prefix: str = "moneyrush:fund"
     fund_auto_link_stocks_key_prefix: str = "moneyrush:fund:auto_link"
     stock_funds_key_prefix: str = "moneyrush:stock"
-    collector_poll_interval_seconds: int = 5
-    collector_symbol_min_interval_seconds: int = 10
-    collector_unchanged_quote_backoff_threshold: int = 2
-    collector_unchanged_quote_backoff_base_seconds: int = 30
-    collector_unchanged_quote_backoff_max_seconds: int = 300
-    collector_tencent_enrichment_interval_seconds: int = 600
-    collector_vendor_failure_cooldown_seconds: int = 60
+    # Internal vendor-governance defaults. Public/free market-data endpoints do
+    # not publish stable rate-limit contracts, so these low-level intervals,
+    # cooldowns, retries, and validation thresholds are intentionally not
+    # environment-overridable. Compose exposes feature toggles, not vendor QPS.
+    collector_poll_interval_seconds: ClassVar[int] = 5
+    collector_symbol_min_interval_seconds: ClassVar[int] = 10
+    collector_unchanged_quote_backoff_threshold: ClassVar[int] = 2
+    collector_unchanged_quote_backoff_base_seconds: ClassVar[int] = 30
+    collector_unchanged_quote_backoff_max_seconds: ClassVar[int] = 300
+    collector_tencent_enrichment_interval_seconds: ClassVar[int] = 600
+    collector_vendor_failure_cooldown_seconds: ClassVar[int] = 60
     collector_intraday_history_enabled: bool = True
-    collector_intraday_history_refresh_seconds: int = 1800
-    collector_intraday_history_request_interval_seconds: int = 8
-    collector_intraday_history_request_jitter_seconds: int = 2
-    collector_intraday_history_vendor_cooldown_seconds: int = 3600
-    collector_intraday_post_close_reconciliation_seconds: int = 900
-    collector_enable_runtime_data_repair: bool = False
-    collector_vendor_price_divergence_limit_pct: float = 15.0
+    collector_intraday_history_refresh_seconds: ClassVar[int] = 1800
+    collector_intraday_history_request_interval_seconds: ClassVar[int] = 8
+    collector_intraday_history_request_jitter_seconds: ClassVar[int] = 2
+    collector_intraday_history_vendor_cooldown_seconds: ClassVar[int] = 3600
+    collector_intraday_post_close_reconciliation_seconds: ClassVar[int] = 900
+    collector_enable_runtime_data_repair: ClassVar[bool] = False
+    collector_vendor_price_divergence_limit_pct: ClassVar[float] = 15.0
     anomaly_aggregation_enabled: bool = True
-    anomaly_aggregation_interval_seconds: int = 300
+    anomaly_aggregation_interval_seconds: ClassVar[int] = 300
     anomaly_post_close_review_enabled: bool = True
     anomaly_post_close_review_start_hour_china: int = 15
     anomaly_post_close_review_start_minute_china: int = 15
@@ -46,28 +51,28 @@ class Settings(BaseSettings):
     anomaly_dragon_tiger_review_start_minute_china: int = 40
     anomaly_post_close_batch_size: int = 20
     anomaly_reason_max_attempts: int = 3
-    anomaly_reason_retry_cooldown_minutes: int = 15
-    anomaly_reason_retry_backoff_minutes: int = 60
+    anomaly_reason_retry_cooldown_minutes: ClassVar[int] = 15
+    anomaly_reason_retry_backoff_minutes: ClassVar[int] = 60
     anomaly_materiality_threshold: float = 0.0
     content_collector_enabled: bool = True
-    content_collector_poll_interval_seconds: int = 5
+    content_collector_poll_interval_seconds: ClassVar[int] = 5
     content_collector_batch_size: int = 3
-    content_fetch_min_interval_seconds: int = 10
-    content_fetch_jitter_seconds: int = 2
-    content_fetch_cooldown_base_seconds: int = 1800
-    content_report_refresh_seconds: int = 43200
-    content_news_refresh_seconds: int = 1800
-    content_announcement_refresh_seconds: int = 7200
-    content_market_news_refresh_seconds: int = 900
+    content_fetch_min_interval_seconds: ClassVar[int] = 10
+    content_fetch_jitter_seconds: ClassVar[int] = 2
+    content_fetch_cooldown_base_seconds: ClassVar[int] = 1800
+    content_report_refresh_seconds: ClassVar[int] = 43200
+    content_news_refresh_seconds: ClassVar[int] = 1800
+    content_announcement_refresh_seconds: ClassVar[int] = 7200
+    content_market_news_refresh_seconds: ClassVar[int] = 900
     market_overview_collector_enabled: bool = True
-    market_overview_refresh_seconds: int = 30
+    market_overview_refresh_seconds: ClassVar[int] = 30
     market_overview_tencent_fallback_enabled: bool = True
-    market_overview_tencent_refresh_seconds: int = 120
-    market_overview_tencent_failure_cooldown_seconds: int = 180
+    market_overview_tencent_refresh_seconds: ClassVar[int] = 120
+    market_overview_tencent_failure_cooldown_seconds: ClassVar[int] = 180
     market_overview_legu_breadth_enabled: bool = True
-    market_overview_legu_breadth_refresh_seconds: int = 300
-    market_overview_legu_breadth_timeout_seconds: int = 10
-    market_overview_legu_breadth_failure_cooldown_seconds: int = 600
+    market_overview_legu_breadth_refresh_seconds: ClassVar[int] = 300
+    market_overview_legu_breadth_timeout_seconds: ClassVar[int] = 10
+    market_overview_legu_breadth_failure_cooldown_seconds: ClassVar[int] = 600
     gold_dashboard_collector_enabled: bool = True
     gold_dashboard_refresh_seconds: int = 15
     gold_dashboard_offsession_refresh_seconds: int = 60
@@ -79,8 +84,8 @@ class Settings(BaseSettings):
     gold_xau_url: str = "https://hq.sinajs.cn/list=hf_XAU"
     gold_etf_url: str = "https://qt.gtimg.cn/q=sh518880"
     fund_collector_enabled: bool = True
-    fund_collector_poll_interval_seconds: int = 3600
-    fund_collector_request_interval_seconds: float = 1.0
+    fund_collector_poll_interval_seconds: ClassVar[int] = 3600
+    fund_collector_request_interval_seconds: ClassVar[float] = 1.0
     content_report_backfill_days: int = 365
     content_announcement_backfill_pages: int = 5
     content_news_backfill_max_items: int = 100
@@ -95,20 +100,20 @@ class Settings(BaseSettings):
     ai_context_length: int = 131072
     ai_max_tokens: int = 8192
     dragon_tiger_collector_enabled: bool = True
-    dragon_tiger_collector_poll_interval_seconds: int = 300
+    dragon_tiger_collector_poll_interval_seconds: ClassVar[int] = 300
     dragon_tiger_collection_start_hour_china: int = 16
     dragon_tiger_collection_start_minute_china: int = 35
-    dragon_tiger_request_timeout_seconds: float = 15.0
-    dragon_tiger_request_retry_attempts: int = 3
-    dragon_tiger_request_retry_backoff_seconds: float = 0.6
-    dragon_tiger_no_data_grace_seconds: int = 10800
+    dragon_tiger_request_timeout_seconds: ClassVar[float] = 15.0
+    dragon_tiger_request_retry_attempts: ClassVar[int] = 3
+    dragon_tiger_request_retry_backoff_seconds: ClassVar[float] = 0.6
+    dragon_tiger_no_data_grace_seconds: ClassVar[int] = 10800
     capital_flow_collector_enabled: bool = True
-    capital_flow_collector_poll_interval_seconds: int = 1800
+    capital_flow_collector_poll_interval_seconds: ClassVar[int] = 1800
     capital_flow_collection_start_hour_china: int = 17
     capital_flow_collection_start_minute_china: int = 10
-    capital_flow_request_timeout_seconds: float = 15.0
-    capital_flow_request_retry_attempts: int = 3
-    capital_flow_request_retry_backoff_seconds: float = 0.8
+    capital_flow_request_timeout_seconds: ClassVar[float] = 15.0
+    capital_flow_request_retry_attempts: ClassVar[int] = 3
+    capital_flow_request_retry_backoff_seconds: ClassVar[float] = 0.8
     capital_flow_eastmoney_base_url: str = "https://push2his.eastmoney.com/api/qt/stock/fflow/daykline/get"
     capital_flow_akshare_fallback_enabled: bool = True
     macro_monitor_enabled: bool = True
