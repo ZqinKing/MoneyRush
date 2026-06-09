@@ -2513,7 +2513,7 @@ function App() {
   }, [activeView]);
 
   useEffect(() => {
-    if (activeView !== 'funds' && activeView !== 'management') {
+    if (activeView !== 'funds' && activeView !== 'management' && !selectedSnapshotSymbol) {
       return undefined;
     }
 
@@ -2550,7 +2550,7 @@ function App() {
       cancelled = true;
       window.clearInterval(intervalId);
     };
-  }, [activeView]);
+  }, [activeView, selectedSnapshotSymbol]);
 
   useEffect(() => {
     setFundPortfolioAnalysis(null);
@@ -2632,6 +2632,49 @@ function App() {
       window.clearInterval(intervalId);
     };
   }, [activeView, macroCapabilities.enabled]);
+
+  useEffect(() => {
+    if (!selectedSnapshotSymbol || !activeFunds.length) {
+      return undefined;
+    }
+
+    const missingFundCodes = activeFunds.filter((fundCodeValue) => !fundDetails[fundCodeValue]);
+    if (!missingFundCodes.length) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadActiveFundDetails() {
+      const detailEntries = await Promise.all(
+        missingFundCodes.map(async (fundCodeValue) => {
+          try {
+            const response = await fetch(`${apiBaseUrl}/api/v1/funds/${encodeURIComponent(fundCodeValue)}/detail`);
+            const payload = await parseJsonOrThrow(response, 'fund detail fetch failed');
+            return [fundCodeValue, payload];
+          } catch {
+            return null;
+          }
+        }),
+      );
+      if (cancelled) {
+        return;
+      }
+      const loadedDetails = detailEntries.filter(Boolean);
+      if (!loadedDetails.length) {
+        return;
+      }
+      setFundDetails((current) => ({
+        ...current,
+        ...Object.fromEntries(loadedDetails),
+      }));
+    }
+
+    loadActiveFundDetails();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeFundsKey, fundDetails, selectedSnapshotSymbol]);
 
   useEffect(() => {
     if (!selectedFundCode) {
@@ -3220,6 +3263,13 @@ function App() {
   function handleOpenFundDetail(fundCodeValue) {
     setSelectedFundCode(fundCodeValue);
     setFundDetailRequestState(fundDetails[fundCodeValue] ? 'ready' : 'loading');
+  }
+
+  function handleOpenFundDetailFromStock(fundCodeValue) {
+    handleOpenFundDetail(fundCodeValue);
+    setSelectedSnapshotSymbol(null);
+    setDetailRequestState('idle');
+    setActiveView('funds');
   }
 
   function handleCloseFundDetail() {
@@ -5232,6 +5282,35 @@ function App() {
     const orderBook = detailPayload?.orderBook || {};
     const capabilities = detailPayload?.capabilities || {};
     const stockFundHoldings = Array.isArray(detailPayload?.fundHoldingSummary?.items) ? detailPayload.fundHoldingSummary.items : [];
+    const activeFundCodeSet = new Set(activeFunds.map((item) => (item || '').trim()).filter(Boolean));
+    const displayedFundHoldings = stockFundHoldings.slice(0, 12);
+    const monitoredFundHoldingMap = new Map(
+      stockFundHoldings
+        .filter((item) => activeFundCodeSet.has((item?.fundCode || '').trim()))
+        .map((item) => [(item?.fundCode || '').trim(), item]),
+    );
+    activeFunds.forEach((fundCodeValue) => {
+      const fundDetail = fundDetails[fundCodeValue];
+      const matchingHolding = Array.isArray(fundDetail?.topHoldings)
+        ? fundDetail.topHoldings.find((holding) => normalizeStockSymbolCandidate(holding?.stockSymbol) === selectedSnapshotSymbol)
+        : null;
+      if (!matchingHolding || monitoredFundHoldingMap.has(fundCodeValue)) {
+        return;
+      }
+      const profile = fundDetail?.profile || {};
+      const snapshot = fundSnapshots[fundCodeValue] || fundDetail?.snapshot || {};
+      monitoredFundHoldingMap.set(fundCodeValue, {
+        fundCode: fundCodeValue,
+        fundName: profile.fundName || snapshot.fundName || matchingHolding.fundName || fundCodeValue,
+        fundType: profile.fundType || snapshot.fundType || '基金',
+        reportDate: matchingHolding.reportDate,
+        weightPercent: matchingHolding.weightPercent,
+        holdMarketValue: matchingHolding.holdMarketValue,
+      });
+    });
+    const monitoredFundHoldings = activeFunds.map((fundCodeValue) => monitoredFundHoldingMap.get(fundCodeValue)).filter(Boolean);
+    const monitoredFundCodeSet = new Set(monitoredFundHoldings.map((item) => (item?.fundCode || '').trim()).filter(Boolean));
+    const otherFundHoldings = displayedFundHoldings.filter((item) => !monitoredFundCodeSet.has((item?.fundCode || '').trim()));
     const capitalFlow = detailPayload?.capitalFlow || null;
     const events = dedupeEvents(selectedDetail?.events || []);
     const readableEvents = buildReadableEventItems(events);
@@ -5847,29 +5926,78 @@ function App() {
               {detailPayload?.fundHoldingSummary?.latestReportDate ? <span className="table-meta-badge">报告期 {detailPayload.fundHoldingSummary.latestReportDate}</span> : null}
             </div>
             {stockFundHoldings.length ? (
-              <div className="detail-table-wrap detail-table-wrap-scrollable">
-                <table className="detail-table">
-                  <thead>
-                    <tr>
-                      <th>基金</th>
-                      <th>类型</th>
-                      <th>报告期</th>
-                      <th>净值占比</th>
-                      <th>持股市值</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {stockFundHoldings.slice(0, 12).map((item) => (
-                      <tr key={`${item.fundCode}-${item.reportDate}`}>
-                        <td>{item.fundName || item.fundCode}<span className="table-subtext">{item.fundCode}</span></td>
-                        <td>{item.fundType || '--'}</td>
-                        <td>{item.reportDate || '--'}</td>
-                        <td>{formatSignedPercent(item.weightPercent).replace('+', '')}</td>
-                        <td>{formatTurnoverAmount(item.holdMarketValue)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+              <div className="stock-fund-holding-split">
+                <section className="stock-fund-holding-section monitored">
+                  <div className="stock-fund-holding-section-heading">
+                    <div>
+                      <h4>我的监控基金</h4>
+                      <p className="panel-tip compact">已加入基金监控，点击可查看基金详情。</p>
+                    </div>
+                    <span className="table-meta-badge">{monitoredFundHoldings.length} 只</span>
+                  </div>
+                  {monitoredFundHoldings.length ? (
+                    <div className="monitored-fund-holding-grid">
+                      {monitoredFundHoldings.map((item) => (
+                        <article className="monitored-fund-holding-card" key={`monitored-${item.fundCode}-${item.reportDate}`}>
+                          <div className="monitored-fund-holding-card-header">
+                            <div className="monitored-fund-holding-main">
+                              <strong>{item.fundName || item.fundCode}</strong>
+                              <span className="table-subtext">{item.fundCode} · {item.fundType || '基金'}</span>
+                            </div>
+                            <button type="button" className="fund-holding-action-button detail" onClick={() => handleOpenFundDetailFromStock(item.fundCode)}>
+                              查看详情
+                            </button>
+                          </div>
+                          <dl className="monitored-fund-holding-meta">
+                            <div><dt>报告期</dt><dd>{item.reportDate || '--'}</dd></div>
+                            <div><dt>净值占比</dt><dd>{formatSignedPercent(item.weightPercent).replace('+', '')}</dd></div>
+                            <div><dt>持股市值</dt><dd>{formatTurnoverAmount(item.holdMarketValue)}</dd></div>
+                          </dl>
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="panel-tip compact stock-fund-holding-empty">暂无监控基金持有该股票。</p>
+                  )}
+                </section>
+
+                <section className="stock-fund-holding-section">
+                  <div className="stock-fund-holding-section-heading">
+                    <div>
+                      <h4>其他关联基金</h4>
+                      <p className="panel-tip compact">持有该股票但尚未加入监控的其他关联基金。</p>
+                    </div>
+                    <span className="table-meta-badge">{otherFundHoldings.length} 只</span>
+                  </div>
+                  {otherFundHoldings.length ? (
+                    <div className="detail-table-wrap detail-table-wrap-scrollable">
+                      <table className="detail-table stock-fund-holding-table">
+                        <thead>
+                          <tr>
+                            <th>基金</th>
+                            <th>类型</th>
+                            <th>报告期</th>
+                            <th>净值占比</th>
+                            <th>持股市值</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {otherFundHoldings.map((item) => (
+                            <tr key={`other-${item.fundCode}-${item.reportDate}`}>
+                              <td>{item.fundName || item.fundCode}<span className="table-subtext">{item.fundCode}</span></td>
+                              <td>{item.fundType || '--'}</td>
+                              <td>{item.reportDate || '--'}</td>
+                              <td>{formatSignedPercent(item.weightPercent).replace('+', '')}</td>
+                              <td>{formatTurnoverAmount(item.holdMarketValue)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <p className="panel-tip compact stock-fund-holding-empty success">当前展示的关联基金均已加入监控。</p>
+                  )}
+                </section>
               </div>
             ) : (
               <p className="panel-tip compact">暂无基金持仓反查数据。</p>

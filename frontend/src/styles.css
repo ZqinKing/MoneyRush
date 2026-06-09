@@ -2829,6 +2829,125 @@ textarea {
   color: #ffd58c;
 }
 
+.stock-fund-holding-split,
+.stock-fund-holding-section {
+  display: grid;
+  gap: 12px;
+}
+
+.stock-fund-holding-split {
+  gap: 18px;
+}
+
+.stock-fund-holding-section {
+  border-radius: 16px;
+  border: 1px solid rgba(157, 180, 255, 0.12);
+  background: rgba(6, 11, 22, 0.38);
+  padding: 14px;
+}
+
+.stock-fund-holding-section.monitored {
+  border-color: rgba(157, 180, 255, 0.14);
+  background: rgba(6, 11, 22, 0.38);
+}
+
+.stock-fund-holding-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.stock-fund-holding-section-heading h4 {
+  margin: 0 0 4px;
+  color: #f2f6ff;
+}
+
+.monitored-fund-holding-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.monitored-fund-holding-card {
+  display: grid;
+  gap: 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(157, 180, 255, 0.14);
+  background: rgba(4, 8, 16, 0.72);
+  padding: 14px;
+}
+
+.monitored-fund-holding-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.monitored-fund-holding-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.monitored-fund-holding-meta {
+  grid-template-columns: 1fr;
+}
+
+.fund-holding-action-button {
+  border: 1px solid rgba(111, 229, 179, 0.28);
+  border-radius: 999px;
+  padding: 7px 12px;
+  background: rgba(19, 78, 60, 0.78);
+  color: #d7ffef;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.fund-holding-action-button.detail {
+  width: fit-content;
+  border-color: rgba(129, 164, 255, 0.28);
+  background: rgba(43, 96, 255, 0.14);
+  color: #dbe6ff;
+}
+
+.fund-holding-action-button:hover,
+.fund-holding-action-button:focus-visible {
+  border-color: rgba(111, 229, 179, 0.48);
+  transform: translateY(-1px);
+  outline: none;
+}
+
+.fund-holding-action-button.detail:hover,
+.fund-holding-action-button.detail:focus-visible {
+  border-color: rgba(129, 164, 255, 0.48);
+}
+
+.fund-holding-action-button:disabled {
+  cursor: progress;
+  opacity: 0.68;
+  transform: none;
+}
+
+.stock-fund-holding-table {
+  min-width: 680px;
+}
+
+.stock-fund-holding-empty {
+  border-radius: 12px;
+  border: 1px dashed rgba(157, 180, 255, 0.18);
+  background: rgba(8, 14, 26, 0.56);
+  padding: 12px;
+}
+
+.stock-fund-holding-empty.success {
+  border-color: rgba(111, 229, 179, 0.22);
+  background: rgba(10, 34, 28, 0.38);
+  color: #c8f6e3;
+}
+
 .positive-tone .line-chart-area-stop.start {
   stop-color: rgba(255, 138, 138, 0.34);
 }
