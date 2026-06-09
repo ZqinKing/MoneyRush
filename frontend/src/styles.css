@@ -1425,6 +1425,18 @@ textarea {
   flex-wrap: wrap;
 }
 
+.dragon-tiger-card-title-row strong {
+  line-height: 1.25;
+}
+
+.dragon-tiger-card-tag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 5px;
+}
+
 .dragon-tiger-reason-count {
   display: inline-flex;
   align-items: center;
@@ -1462,16 +1474,65 @@ textarea {
 
 .dragon-tiger-card-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 14px;
 }
 
-.dragon-tiger-card-right {
+.dragon-tiger-card-main {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.dragon-tiger-card-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
+  width: max-content;
+  max-width: 150px;
+}
+
+.dragon-tiger-card-side-meta {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
-  flex-shrink: 0;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.dragon-tiger-monitor-button {
+  border: 1px solid rgba(111, 229, 179, 0.34);
+  border-radius: 999px;
+  padding: 6px 12px;
+  background: rgba(111, 229, 179, 0.12);
+  color: #9ff0ca;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 700;
+  min-width: 96px;
+  white-space: nowrap;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.dragon-tiger-monitor-button:hover,
+.dragon-tiger-monitor-button:focus-visible {
+  border-color: rgba(111, 229, 179, 0.62);
+  background: rgba(111, 229, 179, 0.2);
+  color: #eafff5;
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.dragon-tiger-monitor-button.active,
+.dragon-tiger-monitor-button:disabled {
+  border-color: rgba(157, 180, 255, 0.18);
+  background: rgba(157, 180, 255, 0.1);
+  color: #9fb0d5;
+  cursor: default;
+  transform: none;
 }
 
 .dragon-tiger-source-chip {

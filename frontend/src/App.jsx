@@ -70,6 +70,11 @@ const requestStateLabels = {
 
 const symbolInputPattern = /^\d{6}$/;
 
+function normalizeStockSymbolCandidate(value) {
+  const match = `${value || ''}`.match(/\d{6}/);
+  return match ? match[0] : '';
+}
+
 const connectionStateLabels = {
   connecting: '连接中',
   connected: '已连接',
@@ -110,22 +115,16 @@ const llmAuditDefaultPageSize = 50;
 const dragonTigerDailyTabs = [
   { value: 'single', label: '单日榜' },
   { value: 'three', label: '三日榜' },
-  { value: 'ten', label: '十日榜' },
-  { value: 'month', label: '月榜' },
 ];
 
 const dragonTigerDailyTabLabels = {
   single: '单日榜',
   three: '三日榜',
-  ten: '十日榜',
-  month: '月榜',
 };
 
 const dragonTigerDailyTabPriority = {
   single: 0,
   three: 1,
-  ten: 2,
-  month: 3,
 };
 
 const llmAuditModuleLabels = {
@@ -813,14 +812,8 @@ function sortDragonTigerItems(items, sortKey, direction = 'desc') {
 function getDragonTigerDailyTab(item) {
   const text = [item?.reason, item?.explain].filter(Boolean).join(' ');
 
-  if (/连续十个交易日/.test(text)) {
-    return 'ten';
-  }
   if (/连续三个交易日/.test(text)) {
     return 'three';
-  }
-  if (/[月]|近\s*30\s*个?交易日/.test(text)) {
-    return 'month';
   }
   return 'single';
 }
@@ -2010,6 +2003,7 @@ function App() {
   const [connectionState, setConnectionState] = useState('connecting');
   const [requestState, setRequestState] = useState('idle');
   const [removingSymbol, setRemovingSymbol] = useState('');
+  const [dragonTigerActivatingSymbol, setDragonTigerActivatingSymbol] = useState('');
   const [activeSymbols, setActiveSymbols] = useState([]);
   const [snapshots, setSnapshots] = useState({});
   const [messages, setMessages] = useState([]);
@@ -2055,6 +2049,8 @@ function App() {
   const [dragonTigerSeatDetail, setDragonTigerSeatDetail] = useState([]);
   const [dragonTigerRequestState, setDragonTigerRequestState] = useState('idle');
   const [dragonTigerErrorMessage, setDragonTigerErrorMessage] = useState('');
+  const [dragonTigerActivationMessage, setDragonTigerActivationMessage] = useState('');
+  const [dragonTigerActivationTone, setDragonTigerActivationTone] = useState('neutral');
   const [dragonTigerStatsExpanded, setDragonTigerStatsExpanded] = useState(false);
   const [dragonTigerStatsRequestState, setDragonTigerStatsRequestState] = useState('idle');
   const [dragonTigerStatsErrorMessage, setDragonTigerStatsErrorMessage] = useState('');
@@ -2095,6 +2091,9 @@ function App() {
   const [llmAuditPageOffset, setLlmAuditPageOffset] = useState(0);
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
   const activeFundsKey = useMemo(() => [...activeFunds].sort().join(','), [activeFunds]);
+  const activeStockSymbolSet = useMemo(() => {
+    return new Set(activeSymbols.map((item) => normalizeStockSymbolCandidate(item)).filter(Boolean));
+  }, [activeSymbolsKey]);
 
   const wsUrl = useMemo(() => `${wsBaseUrl}/ws/market`, []);
   const dailyAnomalyItems = useMemo(() => {
@@ -3095,6 +3094,29 @@ function App() {
     setSelectedSnapshotSymbol((current) => (current === symbolToRemove ? null : current));
   }
 
+  function addSymbolToState(symbolToAdd) {
+    setActiveSymbols((current) => (current.includes(symbolToAdd) ? current : [...current, symbolToAdd]));
+  }
+
+  async function activateSymbol(normalizedSymbol) {
+    const response = await fetch(`${apiBaseUrl}/api/v1/symbols/activate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ symbol: normalizedSymbol }),
+    });
+
+    const payload = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      throw new Error(payload.detail || payload.message || `激活失败（HTTP ${response.status}）`);
+    }
+
+    addSymbolToState(normalizedSymbol);
+    return payload;
+  }
+
   async function handleSubmit(event) {
     event.preventDefault();
     const normalizedSymbol = symbol.trim().toUpperCase();
@@ -3112,24 +3134,48 @@ function App() {
     setRequestState('submitting');
 
     try {
-      const response = await fetch(`${apiBaseUrl}/api/v1/symbols/activate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ symbol: normalizedSymbol }),
-      });
-
-      const payload = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        throw new Error(payload.detail || payload.message || `激活失败（HTTP ${response.status}）`);
-      }
-
+      const payload = await activateSymbol(normalizedSymbol);
       setRequestState(typeof payload.status === 'string' ? payload.status : 'accepted');
       setSymbol('');
     } catch (error) {
       setRequestState(error.message);
+    }
+  }
+
+  async function handleAddDragonTigerSymbol(rawSymbol) {
+    const normalizedSymbol = normalizeStockSymbolCandidate(rawSymbol);
+
+    if (!symbolInputPattern.test(normalizedSymbol)) {
+      setRequestState('请输入6位股票代码');
+      setDragonTigerActivationMessage('无法添加：股票代码格式异常');
+      setDragonTigerActivationTone('error');
+      return;
+    }
+    if (activeStockSymbolSet.has(normalizedSymbol) || dragonTigerActivatingSymbol) {
+      return;
+    }
+
+    setDragonTigerActivatingSymbol(normalizedSymbol);
+    setRequestState(`正在添加 ${normalizedSymbol} 到监控列表...`);
+    setDragonTigerActivationMessage(`正在添加 ${normalizedSymbol} 到监控列表...`);
+    setDragonTigerActivationTone('pending');
+
+    try {
+      const payload = await activateSymbol(normalizedSymbol);
+      if (payload.status === 'already_active') {
+        setRequestState(`${normalizedSymbol} 已在监控列表中`);
+        setDragonTigerActivationMessage(`${normalizedSymbol} 已在监控列表中`);
+      } else {
+        setRequestState(`已添加 ${normalizedSymbol} 到监控列表`);
+        setDragonTigerActivationMessage(`已添加 ${normalizedSymbol} 到监控列表`);
+      }
+      setDragonTigerActivationTone('success');
+    } catch (error) {
+      setRequestState(error.message);
+      setDragonTigerActivationMessage(error.message || '添加监控失败');
+      setDragonTigerActivationTone('error');
+    } finally {
+      setDragonTigerActivatingSymbol('');
     }
   }
 
@@ -4178,6 +4224,9 @@ function App() {
 
   function renderDragonTigerCard(item, index) {
     const dragonTigerSymbol = item.code || item.symbol;
+    const normalizedDragonTigerSymbol = normalizeStockSymbolCandidate(dragonTigerSymbol);
+    const dragonTigerIsActive = normalizedDragonTigerSymbol ? activeStockSymbolSet.has(normalizedDragonTigerSymbol) : false;
+    const dragonTigerIsActivating = normalizedDragonTigerSymbol === dragonTigerActivatingSymbol;
     const sectorSource = item.sector || item.sectorInfo || snapshots[dragonTigerSymbol]?.sector || snapshots[dragonTigerSymbol]?.sectorInfo;
     const dealAmountLabel = typeof item.dealAmountRatio === 'number' ? `龙虎榜成交额 · ${formatPercentValue(item.dealAmountRatio)}` : '龙虎榜成交额';
     const details = Array.isArray(item.dailyDetails) && item.dailyDetails.length
@@ -4187,9 +4236,11 @@ function App() {
     return (
       <article className="dragon-tiger-card" key={`${item.code || item.symbol || item.name || 'dragon-tiger'}-${item.tradeDate || item.latestDate || 'unknown-date'}-${index}`}>
         <header className="dragon-tiger-card-header">
-          <div>
+          <div className="dragon-tiger-card-main">
             <div className="dragon-tiger-card-title-row">
               <strong>{item.name || '--'}</strong>
+            </div>
+            <div className="dragon-tiger-card-tag-row">
               <span className="dragon-tiger-source-chip">{dragonTigerDailyTabLabels[item.dailyTab] || '单日榜'}</span>
               {reasonCount > 1 ? <span className="dragon-tiger-reason-count">同日 {reasonCount} 个原因</span> : null}
             </div>
@@ -4198,9 +4249,20 @@ function App() {
             </p>
             <SectorTagRow sector={sectorSource} maxConcepts={1} className="dragon-tiger-sector-row" />
           </div>
-          <div className="dragon-tiger-card-right">
-            <span className="dragon-tiger-metric">{formatPrice(item.closePrice)}</span>
-            <span className="dragon-tiger-source-chip">东方财富</span>
+          <div className="dragon-tiger-card-side">
+            <div className="dragon-tiger-card-side-meta">
+              <span className="dragon-tiger-metric">{formatPrice(item.closePrice)}</span>
+              <span className="dragon-tiger-source-chip">东方财富</span>
+            </div>
+            <button
+              type="button"
+              className={dragonTigerIsActive ? 'dragon-tiger-monitor-button active' : 'dragon-tiger-monitor-button'}
+              disabled={!normalizedDragonTigerSymbol || dragonTigerIsActive || dragonTigerIsActivating}
+              onClick={() => handleAddDragonTigerSymbol(normalizedDragonTigerSymbol)}
+              title={dragonTigerIsActive ? '该股票已在监控列表中' : '添加到监控列表'}
+            >
+              {dragonTigerIsActive ? '✓ 已监控' : dragonTigerIsActivating ? '添加中…' : '+ 添加监控'}
+            </button>
           </div>
         </header>
         <div className="dragon-tiger-reason-list">
@@ -4316,6 +4378,7 @@ function App() {
 
         {dragonTigerRequestState === 'ready' && dragonTigerErrorMessage ? <p className="status-line pending">{dragonTigerErrorMessage}</p> : null}
         {dragonTigerRequestState === 'error' && dragonTigerErrorMessage ? <p className="panel-tip compact">{dragonTigerErrorMessage}</p> : null}
+        {dragonTigerActivationMessage ? <p className={`status-line ${dragonTigerActivationTone}`}>{dragonTigerActivationMessage}</p> : null}
 
         <div className="dragon-tiger-section">
           <div className="section-heading">
