@@ -203,9 +203,6 @@ class CollectorWorker:
                 fingerprint = compute_evidence_fingerprint(row, context, phase="intraday", cutoff_at=cutoff_at)
                 previous_fingerprint = _record_get(row, "ai_reason_evidence_fingerprint")
                 if previous_fingerprint and previous_fingerprint == fingerprint:
-                    await self._postgres.insert_llm_audit_rows([
-                        self._build_skipped_anomaly_audit_row(row, phase="intraday", fingerprint=fingerprint, cutoff_at=cutoff_at, skip_reason="fingerprint_unchanged")
-                    ])
                     continue
                 invoked_at = datetime.now(UTC)
                 result = await asyncio.to_thread(
@@ -296,15 +293,6 @@ class CollectorWorker:
                                 "last_error": "dragon_tiger_not_published_yet",
                             }
                         )
-                        await self._postgres.insert_llm_audit_rows([
-                            self._build_skipped_anomaly_audit_row(
-                                row,
-                                phase="post_close",
-                                fingerprint=_record_get(row, "post_close_checkpoint_evidence_fingerprint") or _record_get(row, "ai_reason_post_close_evidence_fingerprint"),
-                                cutoff_at=cutoff_at,
-                                skip_reason="dragon_tiger_not_published_yet",
-                            )
-                        ])
                         continue
                     await self._postgres.upsert_post_close_review_checkpoint(
                         {
@@ -316,18 +304,8 @@ class CollectorWorker:
                             "last_error": "dragon_tiger_unavailable_after_grace_window",
                         }
                     )
-                    await self._postgres.insert_llm_audit_rows([
-                        self._build_skipped_anomaly_audit_row(
-                            row,
-                            phase="post_close",
-                            fingerprint=_record_get(row, "post_close_checkpoint_evidence_fingerprint") or _record_get(row, "ai_reason_post_close_evidence_fingerprint"),
-                            cutoff_at=cutoff_at,
-                            skip_reason="dragon_tiger_unavailable_after_grace_window",
-                        )
-                    ])
                     continue
 
-                fingerprint = compute_evidence_fingerprint(row, context, phase="post_close", cutoff_at=cutoff_at)
                 invoked_at = datetime.now(UTC)
                 result = await asyncio.to_thread(
                     self._anomaly_reason_analyzer.analyze,
@@ -416,33 +394,6 @@ class CollectorWorker:
                 "relatedNewsCount": len(result.related_news_ids),
                 "relatedAnnouncementCount": len(result.related_announcement_ids),
                 "attempts": result.attempts or [],
-            },
-        }
-
-    def _build_skipped_anomaly_audit_row(self, row, *, phase: str, fingerprint: str | None, cutoff_at: datetime, skip_reason: str) -> dict[str, object]:
-        audit_at = datetime.now(UTC)
-        return {
-            "invoked_at": audit_at,
-            "audit_date": audit_at.astimezone(CHINA_MARKET_TZ).date(),
-            "menu_module": "events",
-            "call_category": f"anomaly_reason_{phase}",
-            "status": "skipped",
-            "model_used": None,
-            "prompt_version": None,
-            "latency_ms": None,
-            "meta": {
-                "anomalyId": row["id"],
-                "symbol": str(row["symbol"] or ""),
-                "anomalyType": str(row["anomaly_type"] or ""),
-                "phase": phase,
-                "fingerprint": fingerprint,
-                "evidenceCutoffAt": cutoff_at.isoformat(),
-                "skipReason": skip_reason,
-                "llmSucceeded": False,
-                "includesDragonTiger": False,
-                "relatedNewsCount": 0,
-                "relatedAnnouncementCount": 0,
-                "attempts": [],
             },
         }
 
