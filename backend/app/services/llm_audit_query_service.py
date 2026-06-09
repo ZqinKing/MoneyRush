@@ -226,6 +226,7 @@ class LlmAuditQueryService:
                 SELECT COUNT(*) AS total_count, MAX(invoked_at) AS latest_invoked_at
                 FROM llm_invocation_audit
                 WHERE audit_date = $1
+                  AND status <> 'skipped'
                 """,
                 target_date,
             )
@@ -234,6 +235,7 @@ class LlmAuditQueryService:
                 SELECT menu_module, COUNT(*) AS item_count
                 FROM llm_invocation_audit
                 WHERE audit_date = $1
+                  AND status <> 'skipped'
                 GROUP BY menu_module
                 ORDER BY item_count DESC, menu_module ASC
                 """,
@@ -244,6 +246,7 @@ class LlmAuditQueryService:
                 SELECT call_category, COUNT(*) AS item_count
                 FROM llm_invocation_audit
                 WHERE audit_date = $1
+                  AND status <> 'skipped'
                 GROUP BY call_category
                 ORDER BY item_count DESC, call_category ASC
                 """,
@@ -254,6 +257,7 @@ class LlmAuditQueryService:
                 SELECT status, COUNT(*) AS item_count
                 FROM llm_invocation_audit
                 WHERE audit_date = $1
+                  AND status <> 'skipped'
                 GROUP BY status
                 ORDER BY item_count DESC, status ASC
                 """,
@@ -264,6 +268,7 @@ class LlmAuditQueryService:
                 SELECT menu_module, call_category, COUNT(*) AS item_count
                 FROM llm_invocation_audit
                 WHERE audit_date = $1
+                  AND status <> 'skipped'
                 GROUP BY menu_module, call_category
                 ORDER BY menu_module ASC, call_category ASC
                 """,
@@ -275,6 +280,7 @@ class LlmAuditQueryService:
                        model_used, prompt_version, latency_ms, meta
                 FROM llm_invocation_audit
                 WHERE audit_date = $1
+                  AND status <> 'skipped'
                 ORDER BY invoked_at DESC, id DESC
                 LIMIT $2
                 OFFSET $3
