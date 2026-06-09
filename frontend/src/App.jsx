@@ -5058,6 +5058,27 @@ function App() {
         : intradayDataMode === 'tick'
           ? 'Tick 回退'
           : '暂无数据';
+    const intradayQuality = intradayChartPoints.find((point) => point?.quality)?.quality || intradayCompleteness?.quality?.dominantQuality || (intradayDataMode === 'minute' ? 'vendor_verified' : intradayDataMode === 'sampled' ? 'tick_aggregated' : intradayDataMode === 'tick' ? 'tick_aggregated' : 'unavailable');
+    const intradayProvider = intradayChartPoints.find((point) => point?.provider)?.provider || intradayCompleteness?.quality?.providers?.[0] || intradayChartPoints.find((point) => point?.source)?.source || null;
+    const intradaySyntheticCount = intradayCompleteness?.quality?.syntheticCount || intradayChartPoints.filter((point) => point?.synthetic).length;
+    const intradayQualityLabel = intradayQuality === 'vendor_verified'
+      ? '真实分钟线'
+      : intradayQuality === 'realtime_aggregated'
+        ? '实时聚合补线'
+        : intradayQuality === 'tick_aggregated'
+          ? 'Tick 聚合回退'
+          : intradayQuality === 'interpolated'
+            ? '估算展示'
+            : intradayQuality === 'stale'
+              ? '数据可能滞后'
+              : '质量未知';
+    const intradayQualityTone = intradayQuality === 'vendor_verified'
+      ? 'muted'
+      : intradayQuality === 'realtime_aggregated'
+        ? 'warning'
+        : intradayQuality === 'tick_aggregated'
+          ? 'warning'
+          : 'muted';
     const intradayCompletenessStatus = typeof intradayCompleteness?.status === 'string' ? intradayCompleteness.status : 'unavailable';
     const intradayCompletenessLabel = intradayCompletenessStatus === 'complete'
       ? '分时完整'
@@ -5202,10 +5223,12 @@ function App() {
                       <h4>
                         分时线
                         <span className={`intraday-render-badge intraday-render-badge-${intradayDataMode}`}>{intradayDataModeLabel}</span>
+                        <span className={`market-breadth-chip ${intradayQualityTone}`}>{intradayQualityLabel}</span>
                         {shouldShowIntradayCompletenessNotice ? <span className={`market-breadth-chip ${intradayCompletenessTone}`}>{intradayCompletenessLabel}</span> : null}
                       </h4>
-                      <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · {intradayDataModeLabel} · 白线价格 / 黄线均价</span>
+                      <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · {intradayDataModeLabel} · {intradayQualityLabel}{intradayProvider ? ` · ${intradayProvider}` : ''} · 白线价格 / 黄线均价</span>
                     </div>
+                    {intradaySyntheticCount > 0 ? <p className="panel-tip compact intraday-completeness-tip">当前包含 {intradaySyntheticCount} 个聚合/补线分钟桶，仅用于提升盘中连续性；真实供应商分钟线补回后会自动覆盖。</p> : null}
                     {shouldShowIntradayCompletenessNotice ? <p className="panel-tip compact intraday-completeness-tip">{intradayCompletenessMessage}</p> : null}
                     <div className="chart-interaction-layer">
                     <svg

@@ -1009,6 +1009,10 @@ class MarketDetailQueryService:
                     "volume": volume_delta,
                     "amount": amount_delta,
                     "source": source,
+                    "quality": "tick_aggregated",
+                    "provider": source,
+                    "synthetic": True,
+                    "filledBy": "backend-tick-fallback",
                 }
                 bars.append(current_bar)
             elif current_bar is not None:
@@ -1018,6 +1022,9 @@ class MarketDetailQueryService:
                 current_bar["volume"] += volume_delta
                 current_bar["amount"] += amount_delta
                 current_bar["source"] = source
+                current_bar["quality"] = "tick_aggregated"
+                current_bar["provider"] = source
+                current_bar["synthetic"] = True
 
             if volume is not None:
                 previous_volume = volume
@@ -1057,7 +1064,7 @@ class MarketDetailQueryService:
         day_start_utc, day_end_utc = trade_day_window
         rows = await self._fetch(
             """
-            SELECT bucket_ts, source
+            SELECT bucket_ts, source, raw
             FROM stock_kline
             WHERE symbol = $1
               AND period = '1m'
@@ -1099,6 +1106,7 @@ class MarketDetailQueryService:
             "isFinal": status != "pending",
             "status": status,
             "source": rows[-1]["source"] if rows else None,
+            "quality": self._intraday_quality_from_rows(rows),
         }
 
     async def _fetch_intraday_bars_from_kline(
@@ -1111,7 +1119,7 @@ class MarketDetailQueryService:
         day_start_utc, day_end_utc = trade_day_window
         rows = await self._fetch(
             """
-            SELECT bucket_ts, open, high, low, close, volume, amount, source
+            SELECT bucket_ts, open, high, low, close, volume, amount, source, raw
             FROM stock_kline
             WHERE symbol = $1
               AND period = '1m'
@@ -1139,6 +1147,7 @@ class MarketDetailQueryService:
             volume = _to_int(row["volume"])
             amount = _to_float(row["amount"])
             source = row["source"]
+            raw_payload = _decode_jsonish(row["raw"]) or {}
 
             if not isinstance(bucket_ts, datetime) or None in (open_price, high_price, low_price, close_price):
                 continue
@@ -1156,6 +1165,9 @@ class MarketDetailQueryService:
                     "volume": volume or 0,
                     "amount": amount or 0.0,
                     "source": source,
+                    "quality": raw_payload.get("quality") or "vendor_verified",
+                    "synthetic": bool(raw_payload.get("synthetic", False)),
+                    "provider": raw_payload.get("provider") or source,
                 }
                 bars.append(current_bar)
                 continue
@@ -1169,8 +1181,45 @@ class MarketDetailQueryService:
             current_bar["volume"] += volume or 0
             current_bar["amount"] += amount or 0.0
             current_bar["source"] = source
+            current_bar["quality"] = self._merge_intraday_quality(str(current_bar.get("quality") or "vendor_verified"), str(raw_payload.get("quality") or "vendor_verified"))
+            current_bar["synthetic"] = bool(current_bar.get("synthetic")) or bool(raw_payload.get("synthetic", False))
 
         return bars
+
+    @staticmethod
+    def _merge_intraday_quality(left: str, right: str) -> str:
+        priority = {
+            "vendor_verified": 0,
+            "realtime_aggregated": 1,
+            "tick_aggregated": 2,
+            "interpolated": 3,
+            "stale": 4,
+        }
+        return left if priority.get(left, 99) >= priority.get(right, 99) else right
+
+    @staticmethod
+    def _intraday_quality_from_rows(rows: list[asyncpg.Record]) -> dict[str, object] | None:
+        if not rows:
+            return None
+        quality_counts: dict[str, int] = {}
+        synthetic_count = 0
+        providers: set[str] = set()
+        for row in rows:
+            raw_payload = _decode_jsonish(row["raw"]) or {}
+            quality = str(raw_payload.get("quality") or "vendor_verified")
+            quality_counts[quality] = quality_counts.get(quality, 0) + 1
+            if raw_payload.get("synthetic"):
+                synthetic_count += 1
+            provider = raw_payload.get("provider") or row["source"]
+            if provider is not None:
+                providers.add(str(provider))
+        dominant_quality = max(quality_counts.items(), key=lambda item: item[1])[0]
+        return {
+            "dominantQuality": dominant_quality,
+            "qualityCounts": quality_counts,
+            "syntheticCount": synthetic_count,
+            "providers": sorted(providers),
+        }
 
     async def _latest_intraday_trade_day_window(self, symbol: str) -> tuple[datetime, datetime] | None:
         latest_tick_row = await self._fetchrow(
