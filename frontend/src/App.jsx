@@ -146,7 +146,7 @@ const llmAuditCategoryLabels = {
 };
 
 const llmAuditStatusLabels = {
-  completed: '完成',
+  completed: '成功',
   failed: '失败',
   skipped: '跳过',
 };
@@ -645,6 +645,113 @@ function formatFreshnessDays(value) {
   return `距今 ${value} 天`;
 }
 
+function formatDisclosureFreshness(value) {
+  if (typeof value !== 'number') {
+    return '披露时间未知';
+  }
+  return `${value}天前披露`;
+}
+
+function formatFundDisclosureSummary(reportDate, freshnessDays, disclosedWeightPercent) {
+  if (!reportDate) {
+    return '--';
+  }
+
+  const parts = [];
+  if (typeof freshnessDays === 'number') {
+    parts.push(formatDisclosureFreshness(freshnessDays));
+  }
+  if (typeof disclosedWeightPercent === 'number') {
+    parts.push(`覆盖率${Math.round(disclosedWeightPercent)}%`);
+  }
+
+  return parts.length ? `${formatReportQuarter(reportDate)}（${parts.join('，')}）` : formatReportQuarter(reportDate);
+}
+
+function getReadableSourceLabel(...values) {
+  const rawSource = values.filter(Boolean).join(' · ');
+  const sourceText = rawSource.toLowerCase();
+
+  if (!rawSource) {
+    return '数据来源待更新';
+  }
+  if (sourceText.includes('akshare-sge-history') || sourceText.includes('au(t+d)')) {
+    return '数据来源：上海黄金交易所';
+  }
+  if (sourceText.includes('sina:nf_au0')) {
+    return '数据来源：国内期货行情';
+  }
+  if (sourceText.includes('sina:')) {
+    return '数据来源：新浪行情';
+  }
+  if (sourceText.includes('tencent:sh518880')) {
+    return '数据来源：基金实时行情';
+  }
+  if (sourceText.includes('eastmoney') || sourceText.includes('akshare')) {
+    return '数据来源：东方财富';
+  }
+  if (sourceText.includes('tencent')) {
+    return '数据来源：腾讯行情';
+  }
+  if (sourceText.includes('mootdx')) {
+    return '数据来源：实时行情';
+  }
+
+  if (sourceText === 'unknown') {
+    return '数据来源待更新';
+  }
+
+  return '数据来源：其他渠道';
+}
+
+function getSourceTitle(...values) {
+  return values.filter(Boolean).join(' · ') || '原始数据源未返回';
+}
+
+function getDataStatusLabel(status) {
+  if (status === 'ok' || status === 'success' || status === 'completed') {
+    return '数据正常';
+  }
+  if (status === 'stale') {
+    return '数据延迟';
+  }
+  if (status === 'disabled') {
+    return '已停用';
+  }
+  if (status === 'failed' || status === 'error') {
+    return '数据异常';
+  }
+  return status || '--';
+}
+
+function getMacroImpactLabel(value) {
+  const labels = {
+    positive: '正面',
+    negative: '负面',
+    neutral: '中性',
+    mixed: '分化',
+  };
+  return labels[value] || value || '--';
+}
+
+function getSignalStrengthLabel(value) {
+  const labels = {
+    low: '较低',
+    medium: '中等',
+    high: '较高',
+  };
+  return labels[value] || value || '--';
+}
+
+function formatAuditTokenSummary(item) {
+  const hasTokenMetadata = ['inputTokens', 'outputTokens', 'totalTokens'].some((key) => typeof item?.[key] === 'number');
+  if (!hasTokenMetadata) {
+    return '未记录';
+  }
+
+  return `${formatAuditTokenCount(item?.inputTokens)} → ${formatAuditTokenCount(item?.outputTokens)}（总 ${formatAuditTokenCount(item?.totalTokens)}）`;
+}
+
 function getRiskSignalTone(signal) {
   const severity = signal?.severity;
   if (severity === 'high') {
@@ -1136,10 +1243,10 @@ function getAiReasonStatusLabel(status) {
 
 function getAiReasonPhaseLabel(phase) {
   if (phase === 'post_close') {
-    return '盘后复核';
+    return '已分析';
   }
   if (phase === 'reviewed') {
-    return '已复核';
+    return '已分析';
   }
   return '盘中归因';
 }
@@ -3226,7 +3333,7 @@ function App() {
                   <h3>AI 风险解读</h3>
                   <p className="panel-tip compact">
                     {aiEnabled
-                      ? '在规则提示基础上，复用共享 LLM 配置生成保守解释；输出只解释观察池结构，不提供交易建议。'
+                      ? '基于 AI 分析生成保守解释，仅供观察池结构参考，不构成投资建议。'
                       : '当前未启用 AI 风险解读，页面仍完整显示规则型风险提示。'}
                   </p>
                 </div>
@@ -3295,7 +3402,7 @@ function App() {
             <SectorTagRow sector={snapshot?.sector || snapshot?.sectorInfo} maxConcepts={1} />
           </div>
           <div className="snapshot-header-side">
-            <span>{snapshot?.source || '等待采集'}</span>
+            <span title={getSourceTitle(snapshot?.source)}>{getReadableSourceLabel(snapshot?.source)}</span>
             <span className="freshness-chip">{formatAgeLabel(snapshot?.updatedAt)}</span>
           </div>
         </header>
@@ -3428,7 +3535,7 @@ function App() {
       <article className="macro-metric-card" key={label}>
         <div>
           <strong>{label}</strong>
-          <p className="snapshot-subtitle">数据日 {metric?.date || '--'}</p>
+          <p className="snapshot-subtitle">数据日期 {metric?.date || '--'}</p>
         </div>
         <div className="snapshot-metric">{formatMacroYield(metric?.value)}</div>
         <dl className="watchlist-meta-grid">
@@ -3461,11 +3568,11 @@ function App() {
         <div className="panel-heading">
           <div>
             <h2>美债宏观</h2>
-            <p className="panel-tip compact">FRED 日度数据驱动，后端检测到 FRED_API_KEY 后才展示此页面。</p>
+            <p className="panel-tip compact">数据来源于 FRED（美联储经济数据），每日更新。</p>
           </div>
           <div className="management-meta">
-            <span className="symbol-count-badge">数据日 {macroSnapshot?.date || '--'}</span>
-            <span className="symbol-count-badge">状态 {macroCollectorStatus?.status || macroSnapshot?.status || '--'}</span>
+            <span className="symbol-count-badge">数据日期 {macroSnapshot?.date || '--'}</span>
+            <span className="symbol-count-badge" title={`原始状态：${macroCollectorStatus?.status || macroSnapshot?.status || '--'}`}>状态 {getDataStatusLabel(macroCollectorStatus?.status || macroSnapshot?.status)}</span>
           </div>
         </div>
         {macroRequestState === 'loading' ? <p className="status-line pending">宏观数据加载中...</p> : null}
@@ -3495,7 +3602,7 @@ function App() {
             <div>
               <h3>宏观解读</h3>
               <p className="panel-tip compact">
-                {macroCapabilities.analysisEngine === 'llm' ? '当前复用容器 LLM 配置生成解读；输出仅作宏观观察，不提供交易操作建议。' : 'LLM 不可用时使用规则兜底解读；输出仅作宏观观察，不提供交易操作建议。'}
+                {macroCapabilities.analysisEngine === 'llm' ? '基于 AI 分析生成，仅供参考，不构成投资建议。' : '基于内置规则生成，仅供参考，不构成投资建议。'}
               </p>
             </div>
             <button type="button" className="view-tab" onClick={handleGenerateMacroAnalysis} disabled={macroAnalysisRequestState === 'loading' || !macroSnapshot}>
@@ -3506,9 +3613,9 @@ function App() {
             <>
               <p className="macro-analysis-summary">{analysisPayload.summary || '--'}</p>
               <div className="macro-analysis-meta">
-                <span className="market-breadth-chip">影响 {analysisPayload.impactDirection || '--'}</span>
-                <span className="market-breadth-chip">强度 {analysisPayload.impactLevel || '--'}</span>
-                <span className="market-breadth-chip">置信度 {typeof analysisPayload.confidence === 'number' ? `${Math.round(analysisPayload.confidence * 100)}%` : '--'}</span>
+                <span className="market-breadth-chip" title={`原始影响：${analysisPayload.impactDirection || '--'}`}>市场影响：{getMacroImpactLabel(analysisPayload.impactDirection)}</span>
+                <span className="market-breadth-chip" title={`原始强度：${analysisPayload.impactLevel || '--'}`}>信号强度：{getSignalStrengthLabel(analysisPayload.impactLevel)}</span>
+                <span className="market-breadth-chip">置信度：{typeof analysisPayload.confidence === 'number' ? `${Math.round(analysisPayload.confidence * 100)}%` : '--'}</span>
               </div>
               <p className="panel-tip compact">{analysisPayload.watch?.specific || analysisPayload.reasoning?.qdiiImpact || '仅提供宏观观察，不构成投资建议。'}</p>
             </>
@@ -3585,8 +3692,8 @@ function App() {
       <article className="panel wide llm-audit-panel">
         <div className="panel-heading">
           <div>
-            <h2>LLM审计</h2>
-            <p className="panel-tip compact">按时间倒序展示当日 LLM 调用日志；历史记录缺少 token 元数据时显示为未记录。</p>
+            <h2>AI 服务审计</h2>
+            <p className="panel-tip compact">当日 AI 服务调用记录。</p>
           </div>
           <div className="management-meta">
             <span className="symbol-count-badge">日期 {summary?.date || '--'}</span>
@@ -3606,7 +3713,7 @@ function App() {
           <article className="llm-audit-summary-card">
             <strong>可用能力</strong>
             <div className="market-index-metric">{availableFeatureCount}</div>
-            <p className="panel-tip compact">已启用 {Object.keys(features).length} 个 LLM 相关能力中的 {availableFeatureCount} 个。</p>
+            <p className="panel-tip compact">已启用 {Object.keys(features).length} 个 AI 相关能力中的 {availableFeatureCount} 个。</p>
           </article>
           <article className="llm-audit-summary-card">
             <strong>最新调用</strong>
@@ -3638,7 +3745,7 @@ function App() {
           <div className="section-heading compact-heading">
             <div>
               <h3>调用日志</h3>
-              <p className="panel-tip compact">最新记录在前；默认每页 {llmAuditDefaultPageSize} 条，输入/输出 token 来自供应商 usage，历史缺字段显示为 --。</p>
+              <p className="panel-tip compact">最新记录在前；默认每页 {llmAuditDefaultPageSize} 条，缺少 token 元数据时显示为未记录。</p>
             </div>
           </div>
           {auditItems.length ? (
@@ -3661,6 +3768,7 @@ function App() {
                     const categoryLabel = llmAuditCategoryLabels[item?.callCategory] || item?.callCategory || '--';
                     const statusLabel = llmAuditStatusLabels[item?.status] || item?.status || '--';
                     const detailText = item?.skipReason || item?.finishReason || item?.attemptStatus || item?.symbol || item?.scope || '';
+                    const technicalDetailText = [item?.promptVersion, detailText, item?.statusCode ? `HTTP ${item.statusCode}` : null].filter(Boolean).join(' · ');
                     return (
                       <tr key={item?.id || `${item?.invokedAt}-${item?.callCategory}`}>
                         <td>
@@ -3675,12 +3783,12 @@ function App() {
                         </td>
                         <td>{item?.modelUsed || '--'}</td>
                         <td className="llm-audit-token-cell">
-                          入 {formatAuditTokenCount(item?.inputTokens)} / 出 {formatAuditTokenCount(item?.outputTokens)} / 总 {formatAuditTokenCount(item?.totalTokens)}
+                          {formatAuditTokenSummary(item)}
                         </td>
                         <td>{formatAuditLatency(item?.latencyMs)}</td>
                         <td className="llm-audit-detail-cell">
-                          <span className="table-subtext">{item?.promptVersion || 'prompt 未记录'}</span>
-                          <span className="table-subtext">{detailText || '细节未记录'}{item?.statusCode ? ` · HTTP ${item.statusCode}` : ''}</span>
+                          <span className="table-subtext" title={technicalDetailText || '技术细节未记录'}>{statusLabel}</span>
+                          <span className="table-subtext">{detailText || '细节未记录'}</span>
                         </td>
                       </tr>
                     );
@@ -3688,7 +3796,7 @@ function App() {
                 </tbody>
               </table>
             </div>
-          ) : <p className="panel-tip compact">当日暂无 LLM 调用日志。</p>}
+          ) : <p className="panel-tip compact">当日暂无 AI 服务调用记录。</p>}
           <div className="dragon-tiger-pagination-row llm-audit-pagination-row">
             <span className="table-meta-badge">
               第 {pageStart || 0}-{pageEnd || 0} 条 / 共 {totalCount} 条 · 每页 {pageSize} 条
@@ -3725,13 +3833,7 @@ function App() {
   function renderGoldQuoteCard(item) {
     const tone = getSnapshotCardTone(item?.changePct);
     const sourceState = goldDashboard?.sources?.[item?.id] || {};
-    const statusLabel = sourceState?.status === 'ok'
-      ? '正常'
-      : sourceState?.status === 'stale'
-        ? '降级'
-        : sourceState?.status === 'disabled'
-          ? '停用'
-          : '异常';
+    const statusLabel = getDataStatusLabel(sourceState?.status);
 
     return (
       <section className={`snapshot-card trend-${tone} gold-quote-card`} key={item?.id || item?.code || item?.name}>
@@ -3741,7 +3843,7 @@ function App() {
             <p className="snapshot-subtitle">{item?.code || '--'} · {item?.market || '--'}</p>
           </div>
           <div className="snapshot-header-side">
-            <span>{item?.source || '--'}</span>
+            <span title={getSourceTitle(item?.source)}>{getReadableSourceLabel(item?.source)}</span>
             <span className={`market-breadth-chip ${sourceState?.status === 'ok' ? 'positive' : sourceState?.status === 'stale' ? 'warning' : sourceState?.status === 'disabled' ? 'muted' : 'negative'}`}>{statusLabel}</span>
           </div>
         </header>
@@ -3778,8 +3880,8 @@ function App() {
             <p className="snapshot-subtitle">{item?.fundCode || '--'} · {item?.fundType || '基金'}</p>
           </div>
           <div className="snapshot-header-side">
-            <span>{item?.source || '--'}</span>
-            <span className="freshness-chip">净值日 {item?.navDate || '--'}</span>
+            <span title={getSourceTitle(item?.source)}>{getReadableSourceLabel(item?.source)}</span>
+            <span className="freshness-chip">净值日期 {item?.navDate || '--'}</span>
           </div>
         </header>
         <div className="snapshot-metric">{formatNav(item?.nav)}</div>
@@ -3789,7 +3891,7 @@ function App() {
             <dd className={item?.dailyReturn > 0 ? 'positive' : item?.dailyReturn < 0 ? 'negative' : ''}>{formatSignedPercent(item?.dailyReturn)}</dd>
           </div>
           <div>
-            <dt>估算联动</dt>
+            <dt title="基于重仓股实时价格估算的净值联动变化">净值联动</dt>
             <dd className={item?.estimatedIntradayReturn > 0 ? 'positive' : item?.estimatedIntradayReturn < 0 ? 'negative' : ''}>{formatSignedPercent(item?.estimatedIntradayReturn)}</dd>
           </div>
           <div>
@@ -3828,12 +3930,12 @@ function App() {
         <div className="panel-heading">
           <div>
             <h2>黄金</h2>
-            <p className="panel-tip compact">已验证数据源驱动的跨市场黄金看板，当前先聚焦实时价格、黄金基金和相关新闻。</p>
+            <p className="panel-tip compact">跨市场黄金价格监控，当前聚焦实时价格、黄金基金和相关新闻。</p>
           </div>
           <div className="content-status-summary">
             <span className="symbol-count-badge">最近更新 {formatRelativeDateTime(goldDashboard.generatedAt)}</span>
             <span className="symbol-count-badge">刷新模式 {goldDashboard.isTradingSession ? '交易时段' : '非交易时段'}</span>
-            {goldDashboard.degraded ? <span className="symbol-count-badge warning">来源降级 {degradedSources.length}</span> : null}
+            {goldDashboard.degraded ? <span className="symbol-count-badge warning" title={`原始异常来源数量：${degradedSources.length}`}>备用数据源</span> : null}
           </div>
         </div>
 
@@ -3842,8 +3944,8 @@ function App() {
 
         <div className="gold-source-row">
           {goldSources.map((item) => (
-            <span className={`market-breadth-chip ${item?.status === 'ok' ? 'positive' : item?.status === 'stale' ? 'warning' : item?.status === 'disabled' ? 'muted' : 'negative'}`} key={`${item?.id || 'gold-source'}-${item?.status || 'unknown'}`}>
-              {(item?.id || '').toUpperCase() || 'SOURCE'} · {item?.status === 'ok' ? '正常' : item?.status === 'stale' ? '降级' : item?.status === 'disabled' ? '停用' : '异常'}
+            <span className={`market-breadth-chip ${item?.status === 'ok' ? 'positive' : item?.status === 'stale' ? 'warning' : item?.status === 'disabled' ? 'muted' : 'negative'}`} title={getSourceTitle(item?.source)} key={`${item?.id || 'gold-source'}-${item?.status || 'unknown'}`}>
+              {getReadableSourceLabel(item?.source)} · {getDataStatusLabel(item?.status)}
             </span>
           ))}
         </div>
@@ -3856,7 +3958,7 @@ function App() {
           <div className="section-heading compact-heading">
             <div>
               <h3>走势对比</h3>
-              <p className="panel-tip compact">历史叠加图会在黄金历史落库后补齐；当前版本先保证实时价格、黄金基金和资讯链路稳定可用。</p>
+              <p className="panel-tip compact">历史走势图将在数据补齐后展示；当前版本先保证实时价格、黄金基金和资讯稳定可用。</p>
             </div>
           </div>
         </section>
@@ -3865,7 +3967,7 @@ function App() {
           <div className="section-heading">
             <div>
               <h3>我的黄金基金</h3>
-              <p className="panel-tip compact">复用现有基金监控快照，自动筛出已激活的黄金相关基金。</p>
+              <p className="panel-tip compact">自动同步基金监控中已激活的黄金基金。</p>
             </div>
             <span className="table-meta-badge">共 {Array.isArray(goldDashboard.funds) ? goldDashboard.funds.length : 0} 只</span>
           </div>
@@ -3880,7 +3982,7 @@ function App() {
           <div className="section-heading">
             <div>
               <h3>关联资讯</h3>
-              <p className="panel-tip compact">复用现有市场快讯链路，按黄金关键词过滤标题。</p>
+              <p className="panel-tip compact">关联黄金相关市场资讯。</p>
             </div>
             <span className="table-meta-badge">共 {Array.isArray(goldDashboard.news) ? goldDashboard.news.length : 0} 条</span>
           </div>
@@ -3906,7 +4008,7 @@ function App() {
               {item} · {snapshot?.exchange || '--'}
             </p>
           </div>
-          <span className="watchlist-source-chip">{snapshot?.source || '等待采集'}</span>
+          <span className="watchlist-source-chip" title={getSourceTitle(snapshot?.source)}>{getReadableSourceLabel(snapshot?.source)}</span>
         </div>
         <div className="watchlist-price-row">
           <div className="snapshot-metric small">{formatPrice(snapshot?.lastPrice)}</div>
@@ -4008,8 +4110,8 @@ function App() {
                 <span className="market-breadth-chip">涨停 {breadth.limitUpCount ?? '--'}</span>
                 <span className="market-breadth-chip">跌停 {breadth.limitDownCount ?? '--'}</span>
                 <span className="market-breadth-chip muted">样本 {breadth.sampleSize ?? '--'}</span>
-                <span className={`market-breadth-chip ${breadthIsDegraded ? 'warning' : 'muted'}`}>
-                  {breadthIsDegraded ? '降级样本' : `来源 ${breadthSource}`}
+                <span className={`market-breadth-chip ${breadthIsDegraded ? 'warning' : 'muted'}`} title={getSourceTitle(breadthSource)}>
+                  {breadthIsDegraded ? '样本延迟' : getReadableSourceLabel(breadthSource)}
                 </span>
               </div>
             </>
@@ -4063,7 +4165,7 @@ function App() {
         </header>
         <p className="content-card-summary">{item.aiSummary || item.summary || '当前仅同步到标题与基础元信息。'}</p>
         <div className="content-card-footer">
-          <span className="content-source">{item.provider || '--'} · {item.source || '--'}</span>
+          <span className="content-source" title={getSourceTitle(item.provider, item.source)}>{getReadableSourceLabel(item.provider, item.source)}</span>
           {item.url ? (
             <a className="content-link" href={item.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
               查看原文
@@ -4219,7 +4321,7 @@ function App() {
           <div className="section-heading">
             <div>
               <h3>日榜总览</h3>
-              <p className="panel-tip compact">支持按代码、名称和同日原因筛选，切换 Tab 后会重置分页；四个 Tab 都是同一天出榜数据。
+              <p className="panel-tip compact">支持按代码、名称和同日原因筛选，切换分类会重置列表位置。
               </p>
             </div>
             <div className="content-status-summary">
@@ -4547,11 +4649,11 @@ function App() {
         <div className="panel-heading">
           <div>
             <h2>资讯情报</h2>
-            <p className="panel-tip compact">研报、新闻与公告统一入库，优先保证可回溯与后续回测，而不是伪实时抓取。</p>
+            <p className="panel-tip compact">研报、新闻与公告每日同步，确保数据完整性与可追溯性。</p>
           </div>
           <div className="content-status-summary">
-            <span className="symbol-count-badge">最近入库 {formatRelativeDateTime(contentStatus.latestIngestedAt)}</span>
-            {contentStatus.summary?.degradedJobs ? <span className="symbol-count-badge warning">异常 lane {contentStatus.summary.degradedJobs}</span> : null}
+            <span className="symbol-count-badge">最近同步 {formatRelativeDateTime(contentStatus.latestIngestedAt)}</span>
+            {contentStatus.summary?.degradedJobs ? <span className="symbol-count-badge warning">异常通道 {contentStatus.summary.degradedJobs}</span> : null}
           </div>
         </div>
 
@@ -4606,7 +4708,7 @@ function App() {
           </div>
         </div>
 
-        {hasCooldown ? <p className="panel-tip compact">当前部分内容 lane 处于冷却期，页面继续使用已入库数据并稍后自动刷新。</p> : null}
+        {hasCooldown ? <p className="panel-tip compact">当前部分内容通道处于冷却期，页面继续使用已同步数据并稍后自动刷新。</p> : null}
         {degradedJobs.length ? (
           <div className="content-health-grid">
             {degradedJobs.map((job) => (
@@ -4617,10 +4719,10 @@ function App() {
                 </div>
                 <p>
                   {job.lastError
-                    ? `最近抓取失败：${job.lastError}`
+                    ? `最近同步失败：${job.lastError}`
                     : job.isStale
-                      ? '当前 lane 已超过健康刷新窗口，页面继续显示已入库旧数据。'
-                      : '当前 lane 状态异常。'}
+                      ? '当前数据通道已超过健康刷新窗口，页面继续显示已同步数据。'
+                      : '当前数据通道状态异常。'}
                 </p>
                 <div className="content-health-meta">
                   <span>上次成功 {formatRelativeDateTime(job.lastSuccessAt)}</span>
@@ -4659,8 +4761,8 @@ function App() {
             <p className="snapshot-subtitle">{item} · {snapshot.fundType || '基金'}</p>
           </div>
           <div className="snapshot-header-side">
-            <span>{snapshot.source || '等待采集'}</span>
-            <span className="freshness-chip">净值日 {snapshot.navDate || '--'}</span>
+            <span title={getSourceTitle(snapshot.source)}>{getReadableSourceLabel(snapshot.source)}</span>
+            <span className="freshness-chip">净值日期 {snapshot.navDate || '--'}</span>
           </div>
         </header>
         <div className="snapshot-metric">{formatNav(snapshot.nav)}</div>
@@ -4670,16 +4772,8 @@ function App() {
             <dd className={snapshot.dailyReturn > 0 ? 'positive' : snapshot.dailyReturn < 0 ? 'negative' : ''}>{formatSignedPercent(snapshot.dailyReturn)}</dd>
           </div>
           <div>
-            <dt>估算联动</dt>
+            <dt title="基于重仓股实时价格估算的净值联动变化">净值联动</dt>
             <dd className={snapshot.estimatedIntradayReturn > 0 ? 'positive' : snapshot.estimatedIntradayReturn < 0 ? 'negative' : ''}>{formatSignedPercent(snapshot.estimatedIntradayReturn)}</dd>
-          </div>
-          <div>
-            <dt>披露覆盖</dt>
-            <dd>{typeof transparency.disclosedWeightPercent === 'number' ? formatPercentValue(transparency.disclosedWeightPercent) : '--'}</dd>
-          </div>
-          <div>
-            <dt>报告期</dt>
-            <dd>{transparency.latestReportDate ? `${formatReportQuarter(transparency.latestReportDate)} · ${formatFreshnessDays(transparency.freshnessDays)}` : '--'}</dd>
           </div>
           <div>
             <dt>重仓摘要</dt>
@@ -4691,11 +4785,9 @@ function App() {
           </div>
         </dl>
         <div className="fund-card-signal-row">
-          {transparency.latestReportDate ? <span className="market-breadth-chip muted">{formatReportQuarter(transparency.latestReportDate)}</span> : null}
-          {typeof transparency.freshnessDays === 'number' ? <span className={`market-breadth-chip ${transparency.freshnessDays >= 45 ? 'warning' : 'muted'}`}>{formatFreshnessDays(transparency.freshnessDays)}</span> : null}
-          {typeof transparency.disclosedWeightPercent === 'number' ? <span className="market-breadth-chip muted">披露约 {Math.round(transparency.disclosedWeightPercent)}%</span> : null}
+          {transparency.latestReportDate ? <span className={`market-breadth-chip ${transparency.freshnessDays >= 45 ? 'warning' : 'muted'}`}>{formatFundDisclosureSummary(transparency.latestReportDate, transparency.freshnessDays, transparency.disclosedWeightPercent)}</span> : null}
         </div>
-        <p className="panel-tip compact fund-card-note">估算联动仅基于已披露重仓与实时股价。</p>
+        <p className="panel-tip compact fund-card-note">净值联动仅基于已披露重仓与实时股价。</p>
       </section>
     );
   }
@@ -4712,7 +4804,7 @@ function App() {
               {item} · {snapshot.fundType || '基金'}
             </p>
           </div>
-          <span className="watchlist-source-chip">{snapshot.source || '等待采集'}</span>
+          <span className="watchlist-source-chip" title={getSourceTitle(snapshot.source)}>{getReadableSourceLabel(snapshot.source)}</span>
         </div>
         <div className="watchlist-price-row">
           <div className="snapshot-metric small">{formatNav(snapshot.nav)}</div>
@@ -4722,11 +4814,11 @@ function App() {
         </div>
         <dl className="watchlist-meta-grid">
           <div>
-            <dt>净值日</dt>
+            <dt>净值日期</dt>
             <dd>{snapshot.navDate || '--'}</dd>
           </div>
           <div>
-            <dt>估算联动</dt>
+            <dt title="基于重仓股实时价格估算的净值联动变化">净值联动</dt>
             <dd className={snapshot.estimatedIntradayReturn > 0 ? 'positive' : snapshot.estimatedIntradayReturn < 0 ? 'negative' : ''}>
               {formatSignedPercent(snapshot.estimatedIntradayReturn)}
             </dd>
@@ -4769,12 +4861,12 @@ function App() {
           <div>
             <p className="eyebrow">基金详情</p>
             <h2>{profile.fundName || snapshot.fundName || selectedFundCode}</h2>
-            <p className="lede">{selectedFundCode} · {profile.fundType || snapshot.fundType || '基金'} · 净值日 {snapshot.navDate || '--'}</p>
+            <p className="lede">{selectedFundCode} · {profile.fundType || snapshot.fundType || '基金'} · 净值日期 {snapshot.navDate || '--'}</p>
           </div>
           <div className="detail-header-metrics">
             <span className="snapshot-metric small">{formatNav(snapshot.nav)}</span>
             <span className={snapshot.dailyReturn > 0 ? 'positive' : snapshot.dailyReturn < 0 ? 'negative' : ''}>{formatSignedPercent(snapshot.dailyReturn)}</span>
-            <span className={snapshot.estimatedIntradayReturn > 0 ? 'positive' : snapshot.estimatedIntradayReturn < 0 ? 'negative' : ''}>估算联动 {formatSignedPercent(snapshot.estimatedIntradayReturn)}</span>
+            <span className={snapshot.estimatedIntradayReturn > 0 ? 'positive' : snapshot.estimatedIntradayReturn < 0 ? 'negative' : ''} title="基于重仓股实时价格估算的净值联动变化">净值联动 {formatSignedPercent(snapshot.estimatedIntradayReturn)}</span>
           </div>
         </div>
         {fundDetailRequestState === 'loading' ? <p className="status-line pending">基金详情加载中...</p> : null}
@@ -4809,11 +4901,11 @@ function App() {
             <h3>披露与估算边界</h3>
             <dl>
               <div><dt>最新报告期</dt><dd>{transparency.latestReportDate ? `${formatReportQuarter(transparency.latestReportDate)} · ${transparency.latestReportDate}` : '--'}</dd></div>
-              <div><dt>披露覆盖</dt><dd>{typeof transparency.disclosedWeightPercent === 'number' ? formatPercentValue(transparency.disclosedWeightPercent) : '--'}</dd></div>
+              <div><dt>持仓披露覆盖率</dt><dd>{typeof transparency.disclosedWeightPercent === 'number' ? formatPercentValue(transparency.disclosedWeightPercent) : '--'}</dd></div>
               <div><dt>未披露部分</dt><dd>{typeof transparency.undisclosedWeightPercent === 'number' ? formatPercentValue(transparency.undisclosedWeightPercent) : '--'}</dd></div>
               <div><dt>距今时效</dt><dd>{typeof transparency.freshnessDays === 'number' ? formatFreshnessDays(transparency.freshnessDays) : '--'}</dd></div>
             </dl>
-            <p className="panel-tip compact">估算联动 = 已披露重仓权重 x 实时股价变化，不代表官方实时净值。</p>
+            <p className="panel-tip compact">净值联动 = 已披露重仓权重 x 实时股价变化，不代表官方实时净值。</p>
           </section>
           <section className="detail-card">
             <h3>风险提示</h3>
@@ -4875,7 +4967,7 @@ function App() {
               <>
                 {fundRequestState === 'loading' ? <p className="status-line pending">基金列表加载中...</p> : null}
                 {fundRequestState === 'error' ? <p className="status-line error">基金列表加载失败，请稍后重试。</p> : null}
-                <p className="panel-tip compact">添加或移除基金请进入「监控管理」页面；这里专注查看净值、重仓和估算联动。</p>
+                <p className="panel-tip compact">添加或移除基金请进入「监控管理」页面；这里专注查看净值、重仓和净值联动。</p>
                 <div className="snapshot-grid fund-grid">
                   {activeFunds.length ? activeFunds.map((item) => renderFundCard(item)) : <p className="panel-tip compact">尚无激活基金。</p>}
                 </div>
@@ -5149,7 +5241,7 @@ function App() {
           : 'muted';
     const shouldShowIntradayCompletenessNotice = showingIntraday && intradayCompletenessStatus !== 'complete';
     const intradayCompletenessMessage = intradayCompletenessStatus === 'pending'
-      ? `分时数据仍在补齐中，当前仅展示已入库的真实点位${intradayCompleteness?.lastBucketTs ? `；最新分钟 ${formatTime(intradayCompleteness.lastBucketTs)}` : ''}。`
+      ? `分时数据仍在补齐中，当前仅展示已同步的真实点位${intradayCompleteness?.lastBucketTs ? `；最新分钟 ${formatTime(intradayCompleteness.lastBucketTs)}` : ''}。`
       : intradayCompletenessStatus === 'incomplete'
         ? `尾盘分时数据仍不完整，图表只展示已接收到的真实分钟线${intradayCompleteness?.missingBucketCount > 0 ? `；当前缺少 ${intradayCompleteness.missingBucketCount} 个分钟桶。` : '。'}`
         : '当前没有可用于判定完整性的 1 分钟分时数据。';
@@ -5211,8 +5303,8 @@ function App() {
                 <h3>{activeChartTitle}</h3>
                 <p className="panel-tip compact">
                   {showingIntraday
-                    ? `${intradayMinuteBars.length ? '优先展示已入库的 1 分钟精度分时线' : intradaySampledBars.length ? '当前展示 5 分钟聚合分时线' : '当前回退为 Tick 分时线'}，并按日内波动自动缩放${intradayDateLabel ? `；当前展示 ${intradayDateLabel} 数据。` : '。'}`
-                    : '日 K 优先展示详情接口返回的 60 根日线，并与当前已入库历史保持一致。'}
+                    ? `${intradayMinuteBars.length ? '优先展示已同步的 1 分钟精度分时线' : intradaySampledBars.length ? '当前展示 5 分钟聚合分时线' : '当前展示实时快照估算分时线'}，并按日内波动自动缩放${intradayDateLabel ? `；当前展示 ${intradayDateLabel} 数据。` : '。'}`
+                    : '日 K 优先展示详情接口返回的 60 根日线，并与当前已同步历史保持一致。'}
                 </p>
               </div>
               <div className="chart-summary-badge">
@@ -5279,7 +5371,7 @@ function App() {
                         <span className={`market-breadth-chip ${intradayQualityTone}`}>{intradayQualityLabel}</span>
                         {shouldShowIntradayCompletenessNotice ? <span className={`market-breadth-chip ${intradayCompletenessTone}`}>{intradayCompletenessLabel}</span> : null}
                       </h4>
-                      <span>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · {intradayDataModeLabel} · {intradayQualityLabel}{intradayProvider ? ` · ${intradayProvider}` : ''} · 白线价格 / 黄线均价</span>
+                      <span title={getSourceTitle(intradayProvider)}>{intradayDateLabel ? `${intradayDateLabel} · ` : ''}{intradayChartPoints.length} 个点位 · {intradayDataModeLabel} · {intradayQualityLabel}{intradayProvider ? ` · ${getReadableSourceLabel(intradayProvider)}` : ''} · 白线价格 / 黄线均价</span>
                     </div>
                     {intradaySyntheticCount > 0 ? <p className="panel-tip compact intraday-completeness-tip">当前包含 {intradaySyntheticCount} 个聚合/补线分钟桶，仅用于提升盘中连续性；真实供应商分钟线补回后会自动覆盖。</p> : null}
                     {shouldShowIntradayCompletenessNotice ? <p className="panel-tip compact intraday-completeness-tip">{intradayCompletenessMessage}</p> : null}
@@ -5584,7 +5676,7 @@ function App() {
               </div>
               <div>
                 <dt>数据来源</dt>
-                <dd>{snapshot?.source || '--'}</dd>
+                <dd title={getSourceTitle(snapshot?.source)}>{getReadableSourceLabel(snapshot?.source)}</dd>
               </div>
               <div>
                 <dt>PE / PB</dt>
@@ -5634,7 +5726,7 @@ function App() {
               </div>
               <div className="capital-flow-header-meta">
                 <span className="table-meta-badge">交易日 {capitalFlow?.tradeDate ? formatDate(capitalFlow.tradeDate) : '--'}</span>
-                <span className={`market-breadth-chip ${capitalFlow?.stale ? 'warning' : 'muted'}`}>{capitalFlow?.stale ? '降级缓存' : '日级已更新'}</span>
+                <span className={`market-breadth-chip ${capitalFlow?.stale ? 'warning' : 'muted'}`}>{capitalFlow?.stale ? '数据延迟' : '日级已更新'}</span>
               </div>
             </div>
             {capitalFlow ? (
@@ -5672,7 +5764,7 @@ function App() {
                   </article>
                 </div>
                 <div className="capital-flow-footnote-row">
-                  <span className="panel-tip compact">来源 {capitalFlow?.source || '--'}</span>
+                  <span className="panel-tip compact" title={getSourceTitle(capitalFlow?.source)}>{getReadableSourceLabel(capitalFlow?.source)}</span>
                   <span className="panel-tip compact">采集于 {formatDateTime(capitalFlow?.collectedAt)}</span>
                   <span className="panel-tip compact">最近尝试 {formatDateTime(capitalFlow?.lastAttemptAt || capitalFlow?.collectedAt)}</span>
                 </div>
@@ -5818,7 +5910,7 @@ function App() {
           <span className={`event-jump-badge trend-${changeTone} ${getJumpSeverityClass(item?.severity)}`.trim()}>
             {typeof item?.changePct === 'number'
               ? `日内 ${formatSignedPercent(item.changePct)}`
-              : `最新一步 ${formatSignedPercent(item?.latestPriceJumpPct)}`}
+              : `当前涨跌幅 ${formatSignedPercent(item?.latestPriceJumpPct)}`}
           </span>
         </div>
         <dl>
@@ -5827,11 +5919,11 @@ function App() {
             <dd>{formatPrice(item?.triggerPrice)}</dd>
           </div>
           <div>
-            <dt>最新一步</dt>
+            <dt>当前涨跌幅</dt>
             <dd>{formatSignedPercent(item?.latestPriceJumpPct)}</dd>
           </div>
           <div>
-            <dt>量能相对20日</dt>
+            <dt title="相对20日均量">量比</dt>
             <dd className={getVolumeToneClass(item?.volumeRatio)}>{formatRatioMultiple(item?.volumeRatio)}</dd>
           </div>
           <div>
@@ -5911,7 +6003,7 @@ function App() {
         <div className="section-heading">
           <div>
             <h2>持仓异动日报</h2>
-            <p className="panel-tip compact">从“盯最新一步”改为复盘今日显著变化；量能为相对 20 日日均量的粗略参考。</p>
+            <p className="panel-tip compact">复盘今日显著变化；量能基于20日均量估算，仅供参考。</p>
           </div>
           {dailyAnomalyRequestState === 'error' ? (
             <div className="event-status-slot" aria-live="polite">
@@ -6051,7 +6143,7 @@ function App() {
               type="button"
               onClick={() => setActiveView('llmAudit')}
             >
-              LLM审计
+              AI服务审计
             </button>
           ) : null}
           <button
