@@ -3580,7 +3580,6 @@ function App() {
     const nextPageOffset = Number.isFinite(Number(summary?.nextOffset)) ? Number(summary.nextOffset) : pageOffset + pageSize;
     const completedCount = byStatus.find((item) => item.status === 'completed')?.count || 0;
     const failedCount = byStatus.find((item) => item.status === 'failed')?.count || 0;
-    const skippedCount = byStatus.find((item) => item.status === 'skipped')?.count || 0;
 
     return (
       <article className="panel wide llm-audit-panel">
@@ -3600,9 +3599,9 @@ function App() {
         {llmAuditRequestState === 'error' ? <p className="status-line error">审计数据加载失败，请稍后重试。</p> : null}
         <div className="llm-audit-summary-grid">
           <article className="llm-audit-summary-card">
-            <strong>当日总量</strong>
+            <strong>当日真实调用</strong>
             <div className="market-index-metric">{totalCount}</div>
-            <p className="panel-tip compact">完成 {completedCount} · 失败 {failedCount} · 跳过 {skippedCount}</p>
+            <p className="panel-tip compact">完成 {completedCount} · 失败 {failedCount}</p>
           </article>
           <article className="llm-audit-summary-card">
             <strong>可用能力</strong>
