@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 import logging
@@ -9,7 +10,7 @@ from urllib.request import urlopen
 
 from mootdx.quotes import Quotes
 
-from collector.services.eastmoney_sector_client import EastmoneySectorClient
+from collector.services.akshare_sector_client import AkshareSectorClient, StockSectorInfo
 
 
 QUOTE_URL = "https://qt.gtimg.cn/q="
@@ -22,6 +23,7 @@ HISTORY_FAILURE_BACKOFF_INITIAL_SECONDS = 60.0
 HISTORY_FAILURE_BACKOFF_MAX_SECONDS = 300.0
 SECTOR_CACHE_TTL_SECONDS = 6 * 60 * 60
 SECTOR_FAILURE_CACHE_TTL_SECONDS = 30 * 60
+SECTOR_FETCH_TIMEOUT_SECONDS = 10.0
 logger = logging.getLogger(__name__)
 
 
@@ -696,7 +698,8 @@ class MarketQuoteClient:
         self._mootdx_quote_client = MootdxQuoteClient()
         self._mootdx_history_client = MootdxQuoteClient()
         self._tencent_client = TencentQuoteClient()
-        self._sector_client = EastmoneySectorClient()
+        self._sector_client: AkshareSectorClient | None = None
+        self._sector_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sector-enrichment")
         self._tencent_cache: dict[str, tuple[TencentQuote, float]] = {}
         self._sector_cache: dict[str, tuple[dict[str, object] | None, float]] = {}
         self._quote_symbol_failure_until: dict[str, float] = {}
@@ -1012,13 +1015,13 @@ class MarketQuoteClient:
             return cached_entry[0] if cached_entry is not None else None
 
         try:
-            sector_info = self._sector_client.fetch_sector_info(symbol)
+            sector_info = self._fetch_sector_info_with_timeout(symbol)
         except Exception:
             self._sector_failure_until = now + SECTOR_FAILURE_CACHE_TTL_SECONDS
             if cached_entry is not None:
-                logger.exception("eastmoney sector fetch failed; reusing cached sector info", extra={"symbol": symbol})
+                logger.exception("akshare sector fetch failed; reusing cached sector info", extra={"symbol": symbol})
                 return cached_entry[0]
-            logger.exception("eastmoney sector fetch failed; continuing without sector info", extra={"symbol": symbol})
+            logger.exception("akshare sector fetch failed; continuing without sector info", extra={"symbol": symbol})
             self._sector_cache[symbol] = (None, now - SECTOR_CACHE_TTL_SECONDS + SECTOR_FAILURE_CACHE_TTL_SECONDS)
             return None
 
@@ -1026,6 +1029,20 @@ class MarketQuoteClient:
         payload = sector_info.to_payload() if sector_info is not None else None
         self._sector_cache[symbol] = (payload, now)
         return payload
+
+    def _fetch_sector_info_with_timeout(self, symbol: str) -> StockSectorInfo | None:
+        sector_client = self._get_sector_client()
+        future = self._sector_executor.submit(sector_client.fetch_sector_info, symbol)
+        try:
+            return future.result(timeout=SECTOR_FETCH_TIMEOUT_SECONDS)
+        except FutureTimeoutError:
+            future.cancel()
+            raise TimeoutError(f"akshare sector fetch timed out after {SECTOR_FETCH_TIMEOUT_SECONDS:.1f}s")
+
+    def _get_sector_client(self) -> AkshareSectorClient:
+        if self._sector_client is None:
+            self._sector_client = AkshareSectorClient()
+        return self._sector_client
 
     @staticmethod
     def _align_trade_day(mootdx_quote: MootdxQuote, tencent_quote: TencentQuote) -> MootdxQuote:
