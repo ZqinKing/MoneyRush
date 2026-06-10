@@ -42,6 +42,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}
       GOLD_DASHBOARD_CACHE_KEY: ${GOLD_DASHBOARD_CACHE_KEY:-moneyrush:gold:dashboard}
+      GLOBAL_MARKETS_CACHE_KEY: ${GLOBAL_MARKETS_CACHE_KEY:-moneyrush:global_markets:latest}
       WS_HEARTBEAT_INTERVAL_SECONDS: ${WS_HEARTBEAT_INTERVAL_SECONDS:-2}
     depends_on:
       db:
@@ -127,6 +128,25 @@ services:
       GOLD_AU0_URL: ${GOLD_AU0_URL:-https://hq.sinajs.cn/list=nf_AU0}
       GOLD_XAU_URL: ${GOLD_XAU_URL:-https://hq.sinajs.cn/list=hf_XAU}
       GOLD_ETF_URL: ${GOLD_ETF_URL:-https://qt.gtimg.cn/q=sh518880}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  global-markets-collector:
+    build:
+      context: ../..
+      dockerfile: infra/docker/collector.Dockerfile
+    command: ["python", "-m", "collector.global_markets_main"]
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      GLOBAL_MARKETS_COLLECTOR_ENABLED: ${GLOBAL_MARKETS_COLLECTOR_ENABLED:-true}
+      GLOBAL_MARKETS_REFRESH_SECONDS: ${GLOBAL_MARKETS_REFRESH_SECONDS:-30}
+      GLOBAL_MARKETS_CACHE_KEY: ${GLOBAL_MARKETS_CACHE_KEY:-moneyrush:global_markets:latest}
+      GLOBAL_MARKETS_REQUEST_TIMEOUT_SECONDS: ${GLOBAL_MARKETS_REQUEST_TIMEOUT_SECONDS:-10}
+      GLOBAL_MARKETS_STALE_AFTER_MINUTES: ${GLOBAL_MARKETS_STALE_AFTER_MINUTES:-30}
     depends_on:
       redis:
         condition: service_healthy
