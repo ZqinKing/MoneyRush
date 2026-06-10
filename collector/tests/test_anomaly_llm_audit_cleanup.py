@@ -67,8 +67,10 @@ class FakePostgres:
         self.ai_reason_updates = []
         self.post_close_updates = []
         self.checkpoints = []
+        self.pending_reason_trade_dates = []
 
-    async def fetch_pending_anomaly_reasons(self, *, limit, max_attempts):
+    async def fetch_pending_anomaly_reasons(self, *, trade_date, limit, max_attempts):
+        self.pending_reason_trade_dates.append(trade_date)
         return self.pending_rows
 
     async def fetch_post_close_review_candidates(self, *, trade_date, limit, max_attempts):
@@ -132,6 +134,41 @@ def test_intraday_unchanged_fingerprint_does_not_write_audit(monkeypatch):
     assert analyzer.analyze_calls == 0
     assert postgres.audit_rows == []
     assert postgres.ai_reason_updates == []
+
+
+def test_intraday_pending_reason_fetch_uses_china_trade_date(monkeypatch):
+    row = _anomaly_row(anomaly_date=date(2026, 6, 10))
+    postgres = FakePostgres(pending_rows=[row])
+    result = AnomalyReasonResult(
+        reason="异动可能与公告进展有关",
+        status="completed",
+        related_news_ids=[],
+        related_announcement_ids=[],
+        llm_succeeded=True,
+        attempted=True,
+        model_used="test-model",
+        prompt_version="test-v1",
+        phase="intraday",
+        evidence_cutoff_at=datetime(2026, 6, 10, 2, 5, tzinfo=UTC),
+        evidence_fingerprint="trade-date-fingerprint",
+    )
+    analyzer = FakeAnalyzer(result)
+    worker = _worker(postgres, analyzer)
+    monkeypatch.setattr(symbol_loop, "is_ai_configured", lambda settings: True)
+    monkeypatch.setattr(symbol_loop, "build_market_status", lambda: ({"state": "open"}, True))
+
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            current = datetime(2026, 6, 9, 17, 30, tzinfo=UTC)
+            return current.astimezone(tz) if tz is not None else current.replace(tzinfo=None)
+
+    monkeypatch.setattr(symbol_loop, "datetime", FixedDateTime)
+
+    asyncio.run(worker._analyze_pending_anomaly_reasons(force=True))
+
+    assert postgres.pending_reason_trade_dates == [date(2026, 6, 10)]
+    assert analyzer.analyze_calls == 1
 
 
 def test_post_close_unpublished_dragon_tiger_does_not_write_audit(monkeypatch):

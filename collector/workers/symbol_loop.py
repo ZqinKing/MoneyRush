@@ -180,9 +180,11 @@ class CollectorWorker:
             return
         self._last_anomaly_reason_analysis_at = now
         batch_limit = ANOMALY_REASON_BATCH_SIZE
+        trade_date = datetime.now(CHINA_MARKET_TZ).date()
         analyzed_count = 0
         try:
             rows = await self._postgres.fetch_pending_anomaly_reasons(
+                trade_date=trade_date,
                 limit=batch_limit,
                 max_attempts=int(self._settings.anomaly_reason_max_attempts),
             )
@@ -214,7 +216,7 @@ class CollectorWorker:
                 )
                 attempt_count = int(_record_get(row, "ai_reason_attempt_count") or 0) + 1
                 next_retry_at = _next_retry_at(attempt_count=attempt_count, settings=self._settings) if result.status == "failed" else None
-                update = {
+                update: dict[str, object] = {
                     "id": row["id"],
                     "ai_reason": result.reason,
                     "ai_reason_status": result.status,
@@ -335,7 +337,7 @@ class CollectorWorker:
                         "last_error": result.skip_reason if result.status == "failed" else None,
                     }
                 )
-                update = {
+                update: dict[str, object] = {
                     "id": row["id"],
                     "ai_reason_post_close": result.reason,
                     "ai_reason_post_close_status": result.status,

@@ -1326,26 +1326,62 @@ class PostgresStore:
                 rows,
             )
 
-    async def fetch_pending_anomaly_reasons(self, *, limit: int = 10, max_attempts: int = 3) -> list[asyncpg.Record]:
+    async def fetch_pending_anomaly_reasons(self, *, trade_date: date, limit: int = 10, max_attempts: int = 3) -> list[asyncpg.Record]:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")
 
         async with self._pool.acquire() as connection:
             return await connection.fetch(
                 """
+                WITH anomaly_candidates AS (
+                    SELECT id, anomaly_date, symbol, anomaly_type, severity, trigger_price, reference_price,
+                           change_pct, trigger_volume, volume_ratio, first_trigger_ts, last_trigger_ts,
+                           duration_minutes, event_count, payload, first_trigger_bucket,
+                           ai_reason_status, ai_reason_phase, ai_reason_evidence_fingerprint,
+                           ai_reason_attempt_count, ai_reason_next_retry_at, ai_reason_post_close_required,
+                           updated_at,
+                           CASE severity
+                               WHEN 'critical' THEN 3
+                               WHEN 'high' THEN 2
+                               WHEN 'medium' THEN 1
+                               ELSE 0
+                           END AS severity_rank,
+                           GREATEST(
+                               COALESCE(ABS(change_pct), 0),
+                               COALESCE(ABS(volume_ratio), 0)
+                           ) AS magnitude_rank
+                    FROM significant_anomaly
+                    WHERE anomaly_date = $1::date
+                      AND severity = ANY($2::text[])
+                      AND (ai_reason_status IS NULL OR ai_reason_status IN ('pending', 'failed'))
+                      AND ai_reason_attempt_count < $3
+                      AND (ai_reason_next_retry_at IS NULL OR ai_reason_next_retry_at <= NOW())
+                ), ranked AS (
+                    SELECT *,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY symbol
+                               ORDER BY severity_rank DESC,
+                                        magnitude_rank DESC,
+                                        COALESCE(last_trigger_ts, first_trigger_ts) DESC,
+                                        updated_at DESC,
+                                        id DESC
+                           ) AS row_rank
+                    FROM anomaly_candidates
+                )
                 SELECT id, anomaly_date, symbol, anomaly_type, severity, trigger_price, reference_price,
                        change_pct, trigger_volume, volume_ratio, first_trigger_ts, last_trigger_ts,
                        duration_minutes, event_count, payload, first_trigger_bucket,
                        ai_reason_status, ai_reason_phase, ai_reason_evidence_fingerprint,
                        ai_reason_attempt_count, ai_reason_next_retry_at, ai_reason_post_close_required
-                FROM significant_anomaly
-                WHERE severity = ANY($1::text[])
-                  AND (ai_reason_status IS NULL OR ai_reason_status IN ('pending', 'failed'))
-                  AND ai_reason_attempt_count < $2
-                  AND (ai_reason_next_retry_at IS NULL OR ai_reason_next_retry_at <= NOW())
-                ORDER BY anomaly_date ASC, first_trigger_ts ASC
-                LIMIT $3
+                FROM ranked
+                WHERE row_rank = 1
+                ORDER BY severity_rank DESC,
+                         magnitude_rank DESC,
+                         COALESCE(last_trigger_ts, first_trigger_ts) DESC,
+                         id DESC
+                LIMIT $4
                 """,
+                trade_date,
                 ["critical", "high"],
                 max(int(max_attempts), 1),
                 max(int(limit), 1),
