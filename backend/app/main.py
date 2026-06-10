@@ -10,6 +10,7 @@ from app.api.routes.content import router as content_router
 from app.api.routes.dragon_tiger import router as dragon_tiger_router
 from app.api.routes.funds import router as funds_router
 from app.api.routes.gold import router as gold_router
+from app.api.routes.global_markets import router as global_markets_router
 from app.api.routes.health import router as health_router
 from app.api.routes.llm_audit import router as llm_audit_router
 from app.api.routes.macro import router as macro_router
@@ -61,6 +62,7 @@ async def lifespan(app: FastAPI):
         market_event_key_prefix=settings.market_event_key_prefix,
         market_events_stream_key=settings.market_events_stream_key,
         market_overview_cache_key=settings.market_overview_cache_key,
+        global_markets_cache_key=settings.global_markets_cache_key,
         gold_dashboard_cache_key=settings.gold_dashboard_cache_key,
         active_funds_key=settings.active_funds_key,
         fund_snapshot_key_prefix=settings.fund_snapshot_key_prefix,
@@ -140,6 +142,7 @@ def create_app() -> FastAPI:
     app.include_router(anomaly_router, prefix="/api/v1")
     app.include_router(market_router, prefix="/api/v1")
     app.include_router(gold_router, prefix="/api/v1")
+    app.include_router(global_markets_router, prefix="/api/v1")
     app.include_router(symbols_router, prefix="/api/v1")
     app.include_router(content_router, prefix="/api/v1")
     app.include_router(dragon_tiger_router, prefix="/api/v1")
