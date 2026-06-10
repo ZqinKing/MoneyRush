@@ -936,6 +936,160 @@ textarea {
   justify-content: flex-end;
 }
 
+.global-markets-panel {
+  overflow: hidden;
+}
+
+.global-markets-heading {
+  align-items: center;
+}
+
+.global-markets-content {
+  display: grid;
+  gap: 16px;
+}
+
+.global-markets-summary-card,
+.global-market-index-card {
+  border-radius: 16px;
+  border: 1px solid rgba(157, 180, 255, 0.12);
+  background: rgba(4, 8, 16, 0.9);
+}
+
+.global-markets-summary-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  min-width: 0;
+  background:
+    radial-gradient(circle at 22% 20%, rgba(43, 96, 255, 0.2), transparent 32%),
+    linear-gradient(180deg, rgba(12, 25, 50, 0.86), rgba(4, 8, 16, 0.94));
+}
+
+.global-markets-summary-toolbar,
+.global-markets-summary-footer,
+.global-market-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.global-markets-summary-toolbar h3,
+.global-market-card-header h3 {
+  margin: 0;
+}
+
+.global-markets-legend,
+.global-markets-summary-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #9fb4df;
+  font-size: 0.82rem;
+}
+
+.global-markets-legend span,
+.global-markets-summary-footer span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border-radius: 999px;
+  padding: 6px 10px;
+  border: 1px solid rgba(129, 164, 255, 0.16);
+  background: rgba(6, 11, 22, 0.68);
+}
+
+.legend-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  display: inline-block;
+  background: #8fa6d8;
+}
+
+.legend-dot.positive {
+  background: #ff8a8a;
+}
+
+.legend-dot.negative {
+  background: #6fe5b3;
+}
+
+.global-markets-status-row {
+  display: grid;
+  gap: 6px;
+}
+
+.global-markets-status-row .status-line,
+.global-markets-status-row .panel-tip {
+  width: fit-content;
+  margin: 0;
+  border-radius: 999px;
+  padding: 7px 11px;
+  border: 1px solid rgba(129, 164, 255, 0.18);
+  background: rgba(6, 11, 22, 0.82);
+}
+
+.global-markets-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.global-market-index-card {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+
+.global-market-index-card.positive {
+  border-color: rgba(255, 120, 120, 0.32);
+}
+
+.global-market-index-card.negative {
+  border-color: rgba(92, 208, 155, 0.32);
+}
+
+.global-market-index-card.neutral {
+  border-color: rgba(129, 164, 255, 0.2);
+}
+
+.global-market-index-card.muted {
+  opacity: 0.72;
+}
+
+.global-market-card-price {
+  color: #eff4ff;
+  font-size: 1.55rem;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+
+.global-market-card-meta {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.global-market-card-meta div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.global-market-card-meta dt {
+  color: #8fa6d8;
+}
+
+.global-market-card-meta dd {
+  margin: 0;
+  text-align: right;
+}
+
 .fund-watchlist-row {
   display: flex;
   flex-wrap: wrap;
@@ -3142,6 +3296,8 @@ textarea {
   .market-overview-header,
   .market-overview-meta,
   .market-index-meta-row,
+  .global-markets-summary-toolbar,
+  .global-market-card-header,
   .snapshot-header-side,
   .watchlist-card-header,
   .watchlist-card-footer,
@@ -3157,6 +3313,10 @@ textarea {
    .chart-summary-badge,
    .content-card-time {
      justify-items: start;
+     text-align: left;
+   }
+
+   .global-market-card-meta dd {
      text-align: left;
    }
 
@@ -3274,13 +3434,24 @@ textarea {
 
   .market-overview-header,
   .market-overview-meta,
-  .market-index-meta-row {
+  .market-index-meta-row,
+  .global-markets-summary-toolbar,
+  .global-market-card-header {
     flex-direction: column;
     align-items: flex-start;
   }
 
   .market-index-grid {
     grid-template-columns: 1fr;
+  }
+
+  .global-markets-card-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .global-markets-summary-card {
+    gap: 12px;
+    padding: 12px;
   }
 
   .overview-sort-controls,

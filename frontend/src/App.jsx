@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, lazy, useEffect, useMemo, useState } from 'react';
+
+const GlobalMarketsGlobe = lazy(() => import('./GlobalMarketsGlobe'));
 
 function getBrowserHostname() {
   if (typeof window === 'undefined') {
@@ -166,6 +168,37 @@ const dragonTigerSortOptions = {
   ],
 };
 
+const globalMarketIndexFallbacks = [
+  { id: 'dow_jones', cardTestId: 'index-card-dow_jones', name: '道琼斯工业平均指数', region: 'US', country: 'US', exchange: 'INDEXDJX', currency: 'USD' },
+  { id: 'sp500', cardTestId: 'index-card-sp500', name: '标普500指数', region: 'US', country: 'US', exchange: 'SP', currency: 'USD' },
+  { id: 'nasdaq_composite', cardTestId: 'index-card-nasdaq_composite', name: '纳斯达克综合指数', region: 'US', country: 'US', exchange: 'NASDAQ', currency: 'USD' },
+  { id: 'hang_seng', cardTestId: 'index-card-hang_seng', name: '恒生指数', region: 'HK', country: 'HK', exchange: 'HKEX', currency: 'HKD' },
+  { id: 'shanghai_composite', cardTestId: 'index-card-shanghai_composite', name: '上证指数', region: 'CN', country: 'CN', exchange: 'SSE', currency: 'CNY' },
+  { id: 'shenzhen_component', cardTestId: 'index-card-shenzhen_component', name: '深证成指', region: 'CN', country: 'CN', exchange: 'SZSE', currency: 'CNY' },
+  { id: 'nikkei_225', cardTestId: 'index-card-nikkei_225', name: '日经225指数', region: 'JP', country: 'JP', exchange: 'TSE', currency: 'JPY' },
+  { id: 'kospi', cardTestId: 'index-card-kospi', name: '韩国KOSPI指数', region: 'KR', country: 'KR', exchange: 'KRX', currency: 'KRW' },
+  { id: 'ftse_100', cardTestId: 'index-card-ftse_100', name: '英国富时100指数', region: 'GB', country: 'GB', exchange: 'LSE', currency: 'GBP' },
+  { id: 'dax', cardTestId: 'index-card-dax', name: '德国DAX指数', region: 'DE', country: 'DE', exchange: 'XETRA', currency: 'EUR' },
+  { id: 'cac40', cardTestId: 'index-card-cac40', name: '法国CAC40指数', region: 'FR', country: 'FR', exchange: 'EURONEXT', currency: 'EUR' },
+  { id: 'moex_russia', cardTestId: 'index-card-moex_russia', name: '俄罗斯MOEX指数', region: 'RU', country: 'RU', exchange: 'MOEX', currency: 'RUB' },
+  { id: 'sensex', cardTestId: 'index-card-sensex', name: '印度SENSEX指数', region: 'IN', country: 'IN', exchange: 'BSE', currency: 'INR' },
+  { id: 'ibovespa', cardTestId: 'index-card-ibovespa', name: '巴西IBOVESPA指数', region: 'BR', country: 'BR', exchange: 'B3', currency: 'BRL' },
+];
+
+const globalMarketRegionLabels = {
+  US: '美股',
+  HK: '港股',
+  CN: 'A股',
+  JP: '日股',
+  KR: '韩股',
+  GB: '英股',
+  DE: '德股',
+  FR: '法股',
+  RU: '俄股',
+  IN: '印股',
+  BR: '巴股',
+};
+
 function buildContentFeedUrl({ symbol = '', type = 'all', timeRange = 'today', limit = 20, before = '' }) {
   const params = new URLSearchParams();
   if (symbol) {
@@ -207,6 +240,10 @@ function buildMarketOverviewUrl() {
 
 function buildGoldDashboardUrl() {
   return `${apiBaseUrl}/api/v1/gold/dashboard`;
+}
+
+function buildGlobalMarketsUrl() {
+  return `${apiBaseUrl}/api/v1/global-markets/latest`;
 }
 
 function buildMacroCapabilitiesUrl() {
@@ -296,6 +333,18 @@ async function parseJsonOrThrow(response, fallbackMessage) {
   return response.json();
 }
 
+function normalizeGlobalMarketsPayload(payload) {
+  return {
+    items: Array.isArray(payload?.items) ? payload.items : [],
+    regions: Array.isArray(payload?.regions) ? payload.regions : [],
+    source: typeof payload?.source === 'string' ? payload.source : null,
+    updatedAt: typeof payload?.updatedAt === 'string' ? payload.updatedAt : null,
+    delayLabel: typeof payload?.delayLabel === 'string' ? payload.delayLabel : '',
+    stale: Boolean(payload?.stale),
+    errors: Array.isArray(payload?.errors) ? payload.errors : [],
+  };
+}
+
 function formatRelativeDateTime(value) {
   if (!value) {
     return '--';
@@ -360,6 +409,94 @@ function getSnapshotCardTone(changePct) {
   }
 
   return 'neutral';
+}
+
+function getGlobalMarketTone(changePercent) {
+  if (typeof changePercent !== 'number' || Number.isNaN(changePercent)) {
+    return 'neutral';
+  }
+
+  if (changePercent > 0) {
+    return 'positive';
+  }
+
+  if (changePercent < 0) {
+    return 'negative';
+  }
+
+  return 'neutral';
+}
+
+function getGlobalMarketRegionSummary(regions, regionId, items = []) {
+  const summary = Array.isArray(regions) ? regions.find((region) => region?.id === regionId) : null;
+  if (summary) {
+    return summary;
+  }
+
+  const regionItems = items.filter((item) => item?.region === regionId);
+  const changes = regionItems
+    .map((item) => item?.changePercent)
+    .filter((value) => typeof value === 'number' && !Number.isNaN(value));
+
+  return {
+    id: regionId,
+    displayName: globalMarketRegionLabels[regionId] || regionId,
+    changePercent: changes.length ? changes.reduce((sum, value) => sum + value, 0) / changes.length : null,
+    stale: regionItems.length > 0 && regionItems.every((item) => item?.stale),
+  };
+}
+
+function getGlobalMarketRegionTone(regions, regionId, items = []) {
+  const summary = getGlobalMarketRegionSummary(regions, regionId, items);
+  if (typeof summary?.changePercent === 'number') {
+    return getGlobalMarketTone(summary.changePercent);
+  }
+
+  const primaryItem = items.find((item) => item?.region === regionId);
+  return getGlobalMarketTone(primaryItem?.changePercent);
+}
+
+function formatGlobalMarketSourceLabel(source, fallback = '--') {
+  if (typeof source !== 'string' || !source.trim()) {
+    return fallback;
+  }
+
+  const tokens = source
+    .split('+')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => (item.startsWith('yahoo-finance') ? 'yahoo' : item));
+  const seen = new Set();
+  const deduped = tokens.filter((item) => {
+    if (seen.has(item)) {
+      return false;
+    }
+    seen.add(item);
+    return true;
+  });
+
+  return deduped.length ? deduped.join('+') : fallback;
+}
+
+function buildGlobalMarketDisplayItems(items) {
+  const byId = new Map((Array.isArray(items) ? items : []).map((item) => [item?.id, item]));
+
+  return globalMarketIndexFallbacks.map((fallback) => {
+    const item = byId.get(fallback.id) || {};
+
+    return {
+      ...fallback,
+      ...item,
+      id: fallback.id,
+      name: item.name || item.displayName || fallback.name,
+      region: item.region || fallback.region,
+      country: item.country || fallback.country,
+      exchange: item.exchange || fallback.exchange,
+      currency: item.currency || fallback.currency,
+      hasSnapshot: Boolean(byId.get(fallback.id)),
+      tone: getGlobalMarketTone(item.changePercent),
+    };
+  });
 }
 
 function getContentItemMeta(item, snapshotMap = {}) {
@@ -2012,6 +2149,8 @@ function App() {
   const [marketOverview, setMarketOverview] = useState({ indexes: [], generatedAt: null });
   const [goldDashboard, setGoldDashboard] = useState({ generatedAt: null, isTradingSession: false, quotes: [], sources: {}, degraded: false, funds: [], news: [] });
   const [goldRequestState, setGoldRequestState] = useState('idle');
+  const [globalMarkets, setGlobalMarkets] = useState({ items: [], regions: [], source: null, updatedAt: null, delayLabel: '', stale: false, errors: [] });
+  const [globalMarketsRequestState, setGlobalMarketsRequestState] = useState('idle');
   const [activeView, setActiveView] = useState('overview');
   const [managementAssetView, setManagementAssetView] = useState('stock');
   const [managementActionView, setManagementActionView] = useState('activate');
@@ -2505,6 +2644,43 @@ function App() {
 
     loadGoldDashboard();
     const intervalId = window.setInterval(() => loadGoldDashboard({ keepReadyState: true }), 15000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'globalMarkets') {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadGlobalMarkets({ keepReadyState = false } = {}) {
+      if (!keepReadyState) {
+        setGlobalMarketsRequestState('loading');
+      }
+
+      try {
+        const response = await fetch(buildGlobalMarketsUrl());
+        const payload = await parseJsonOrThrow(response, 'global markets fetch failed');
+        if (cancelled) {
+          return;
+        }
+
+        setGlobalMarkets(normalizeGlobalMarketsPayload(payload));
+        setGlobalMarketsRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setGlobalMarketsRequestState('error');
+        }
+      }
+    }
+
+    loadGlobalMarkets();
+    const intervalId = window.setInterval(() => loadGlobalMarkets({ keepReadyState: true }), 60000);
 
     return () => {
       cancelled = true;
@@ -6268,6 +6444,114 @@ function App() {
     );
   }
 
+  function renderGlobalMarketsView() {
+    const hasItems = globalMarkets.items.length > 0;
+    const isInitialLoading = globalMarketsRequestState === 'loading' && !hasItems;
+    const showEmptyState = globalMarketsRequestState === 'ready' && !hasItems;
+    const displayItems = buildGlobalMarketDisplayItems(globalMarkets.items);
+    const sourceLabel = formatGlobalMarketSourceLabel(globalMarkets.source, hasItems ? 'unknown' : '--');
+    const delayLabel = globalMarkets.delayLabel || '公开延迟数据';
+
+    return (
+      <article className="panel wide global-markets-panel">
+        <div className="panel-heading global-markets-heading">
+          <div>
+            <h2>全球股市</h2>
+            <p className="panel-tip compact">公开延迟数据覆盖美股、港股与A股核心指数，上方以地球视图展示市场分布，下方保留指数卡片。</p>
+          </div>
+          <div className="overview-heading-meta">
+            <span className="symbol-count-badge">市场 {globalMarkets.items.length}</span>
+            <span className="symbol-count-badge">区域 {globalMarkets.regions.length}</span>
+            <span data-testid="global-markets-source-badge" className="symbol-count-badge">数据源 {sourceLabel}</span>
+            <span className="symbol-count-badge">更新时间 {globalMarkets.updatedAt ? formatRelativeDateTime(globalMarkets.updatedAt) : '--'}</span>
+            {globalMarkets.stale ? <span data-testid="global-markets-stale-badge" className="symbol-count-badge warning">可能延迟</span> : null}
+          </div>
+        </div>
+
+        <div className="global-markets-content">
+          <section className="global-markets-summary-card" aria-label="全球股市摘要">
+            <div className="global-markets-summary-toolbar">
+              <div>
+                <p className="eyebrow">World Snapshot</p>
+                <h3>全球市场地球视图</h3>
+              </div>
+              <div className="global-markets-legend" aria-label="全球股市图例">
+                <span><i className="legend-dot positive" />上涨 / 红</span>
+                <span><i className="legend-dot negative" />下跌 / 绿</span>
+                <span><i className="legend-dot neutral" />持平 / 蓝灰</span>
+              </div>
+            </div>
+
+            <Suspense fallback={<div className="panel-tip compact">地球视图加载中…</div>}>
+              <GlobalMarketsGlobe
+                displayItems={displayItems}
+                regions={globalMarkets.regions}
+                sourceLabel={sourceLabel}
+                delayLabel={delayLabel}
+                updatedAt={globalMarkets.updatedAt}
+                stale={globalMarkets.stale}
+                requestState={globalMarketsRequestState}
+                forceFallback={false}
+              />
+            </Suspense>
+
+            <div className="global-markets-status-row" aria-live="polite">
+              {isInitialLoading ? <p className="status-line">全球市场数据加载中…</p> : null}
+              {globalMarketsRequestState === 'error' ? <p className="status-line negative">全球市场数据加载失败，请稍后重试。</p> : null}
+              {showEmptyState ? <p className="panel-tip compact">暂无全球股市快照</p> : null}
+            </div>
+
+            <div className="global-markets-summary-footer">
+              <span>数据源 {sourceLabel}</span>
+              <span>更新时间 {globalMarkets.updatedAt ? formatDateTime(globalMarkets.updatedAt) : '--'}</span>
+              <span>{delayLabel}</span>
+              {globalMarkets.stale ? <span>可能延迟</span> : null}
+              {globalMarkets.errors.length ? <span>提示 {globalMarkets.errors.length} 条</span> : null}
+            </div>
+          </section>
+
+          <section className="global-markets-card-grid" aria-label="全球指数列表">
+            {displayItems.map((item) => (
+              <article
+                key={item.id}
+                data-testid={item.cardTestId}
+                className={`global-market-index-card ${item.tone}${item.hasSnapshot ? '' : ' muted'}`}
+              >
+                <div className="global-market-card-header">
+                  <div>
+                    <h3>{item.name}</h3>
+                    <p className="snapshot-subtitle">{globalMarketRegionLabels[item.region] || item.region || '--'} · {item.exchange || '--'}</p>
+                  </div>
+                  <span className={item.tone}>{formatSignedPercent(item.changePercent)}</span>
+                </div>
+                <div className="global-market-card-price">{formatPrice(item.price)}</div>
+                <dl className="global-market-card-meta">
+                  <div>
+                    <dt>涨跌额</dt>
+                    <dd className={item.tone}>{formatSignedNumber(item.change)}</dd>
+                  </div>
+                  <div>
+                    <dt>币种</dt>
+                    <dd>{item.currency || '--'}</dd>
+                  </div>
+                  <div>
+                    <dt>状态</dt>
+                    <dd>{item.marketStatus || (item.hasSnapshot ? '快照' : '等待')}</dd>
+                  </div>
+                  <div>
+                    <dt>更新</dt>
+                    <dd>{item.updatedAt ? formatRelativeDateTime(item.updatedAt) : '--'}</dd>
+                  </div>
+                </dl>
+                <p className="panel-tip compact">{formatGlobalMarketSourceLabel(item.source, sourceLabel)} · {item.delayLabel || delayLabel}</p>
+              </article>
+            ))}
+          </section>
+        </div>
+      </article>
+    );
+  }
+
   return (
     <main className="layout">
       <section className="panel hero">
@@ -6318,6 +6602,14 @@ function App() {
             onClick={() => setActiveView('gold')}
           >
             黄金
+          </button>
+          <button
+            className={activeView === 'globalMarkets' ? 'view-tab active' : 'view-tab'}
+            type="button"
+            data-testid="nav-global-markets"
+            onClick={() => setActiveView('globalMarkets')}
+          >
+            全球股市
           </button>
           {macroCapabilities.enabled ? (
             <button
@@ -6428,6 +6720,8 @@ function App() {
           renderContentView()
         ) : activeView === 'gold' ? (
           renderGoldView()
+        ) : activeView === 'globalMarkets' ? (
+          renderGlobalMarketsView()
         ) : activeView === 'funds' ? (
           renderFundsView()
         ) : activeView === 'dragonTiger' ? (
