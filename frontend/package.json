@@ -10,7 +10,11 @@
   },
   "dependencies": {
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "react-globe.gl": "^2.38.0",
+    "three": "^0.184.0",
+    "topojson-client": "^3.1.0",
+    "world-atlas": "^2.0.2"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.4.1",
