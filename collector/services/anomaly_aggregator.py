@@ -45,6 +45,29 @@ def _decode_jsonish(value: object) -> dict[str, object] | None:
     return None
 
 
+def _parse_iso_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _is_market_session_ts(value: object) -> bool:
+    if not isinstance(value, datetime):
+        return False
+    local_ts = value.astimezone(CHINA_MARKET_TZ) if value.tzinfo else value.replace(tzinfo=UTC).astimezone(CHINA_MARKET_TZ)
+    minutes = local_ts.hour * 60 + local_ts.minute
+    return 9 * 60 + 30 <= minutes <= 15 * 60
+
+
+def _snapshot_matches_trade_day(snapshot: dict[str, object], target_day: date) -> bool:
+    updated_at = _parse_iso_timestamp(snapshot.get("updatedAt"))
+    return updated_at is not None and updated_at.astimezone(CHINA_MARKET_TZ).date() == target_day
+
+
 def _severity_from_percent(value: float | None) -> str:
     absolute_value = abs(value) if isinstance(value, float) else None
     if absolute_value is not None and absolute_value > 5:
@@ -193,9 +216,10 @@ class AnomalyAggregator:
         for symbol in symbols:
             symbol_rows = grouped_rows.get(symbol, [])
             snapshot = snapshots.get(symbol, {})
-            snapshot_price = _to_float(snapshot.get("lastPrice"))
+            snapshot_is_current = _snapshot_matches_trade_day(snapshot, target_day)
+            snapshot_price = _to_float(snapshot.get("lastPrice")) if snapshot_is_current else None
             latest_price = snapshot_price
-            change_pct = _to_float(snapshot.get("changePct"))
+            change_pct = _to_float(snapshot.get("changePct")) if snapshot_is_current else None
             latest_volume = latest_volumes.get(symbol)
             previous_price: float | None = None
             current_event_price: float | None = None
@@ -204,10 +228,15 @@ class AnomalyAggregator:
             reference_price: float | None = None
             first_trigger_ts: datetime | None = None
             last_trigger_ts: datetime | None = None
+            latest_event_ts: datetime | None = None
             event_count = 0
             previous_identity: tuple[object, ...] | None = None
 
             for row in symbol_rows:
+                row_ts = row["ts"]
+                if not _is_market_session_ts(row_ts):
+                    continue
+                latest_event_ts = row_ts
                 payload = _decode_jsonish(row["payload"]) or {}
                 tick = payload.get("tick") if isinstance(payload.get("tick"), dict) else {}
                 price = _to_float(tick.get("price")) if isinstance(tick, dict) else None
@@ -234,6 +263,9 @@ class AnomalyAggregator:
                 if volume is not None:
                     latest_volume = volume
 
+            if latest_event_ts is None:
+                continue
+
             average_volume = average_volumes.get(symbol)
             volume_ratio = latest_volume / average_volume if average_volume and latest_volume is not None else None
             jump_severity = _severity_from_percent(strongest_jump_pct)
@@ -244,10 +276,10 @@ class AnomalyAggregator:
                 continue
 
             anomaly_type = "price_jump"
-            anomaly_change_pct = strongest_jump_pct if strongest_jump_pct is not None else change_pct
+            anomaly_change_pct = change_pct if change_pct is not None else strongest_jump_pct
             if volume_severity != "normal" and SEVERITY_PRIORITY[volume_severity] >= SEVERITY_PRIORITY[jump_severity]:
                 anomaly_type = "volume_spike"
-            trigger_ts = first_trigger_ts or last_trigger_ts or datetime.now(UTC)
+            trigger_ts = first_trigger_ts or last_trigger_ts or latest_event_ts
             last_ts = last_trigger_ts or trigger_ts
             duration_minutes = max(int((last_ts - trigger_ts).total_seconds() // 60), 0)
             first_trigger_bucket = trigger_ts.replace(minute=0, second=0, microsecond=0)

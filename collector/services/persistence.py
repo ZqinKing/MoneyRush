@@ -1344,6 +1344,7 @@ class PostgresStore:
                     change_pct = EXCLUDED.change_pct,
                     trigger_volume = EXCLUDED.trigger_volume,
                     volume_ratio = EXCLUDED.volume_ratio,
+                    first_trigger_ts = EXCLUDED.first_trigger_ts,
                     last_trigger_ts = EXCLUDED.last_trigger_ts,
                     duration_minutes = EXCLUDED.duration_minutes,
                     event_count = EXCLUDED.event_count,

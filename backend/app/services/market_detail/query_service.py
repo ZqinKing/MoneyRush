@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
 import asyncpg
@@ -59,10 +59,23 @@ def _parse_iso_timestamp(value: object) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:
-        parsed = datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _is_market_session_ts(value: object) -> bool:
+    if not isinstance(value, datetime):
+        return False
+    local_ts = value.astimezone(CHINA_MARKET_TZ) if value.tzinfo else value.replace(tzinfo=UTC).astimezone(CHINA_MARKET_TZ)
+    minutes = local_ts.hour * 60 + local_ts.minute
+    return 9 * 60 + 30 <= minutes <= 15 * 60
+
+
+def _snapshot_matches_trade_day(snapshot: dict[str, object], target_day: date) -> bool:
+    updated_at = _parse_iso_timestamp(snapshot.get("updatedAt"))
+    return updated_at is not None and updated_at.astimezone(CHINA_MARKET_TZ).date() == target_day
 
 
 def _decode_jsonish(value: object) -> dict[str, object] | None:
@@ -670,6 +683,7 @@ class MarketDetailQueryService:
             average_volumes=average_volumes,
             latest_volumes=latest_volumes,
             related_funds=related_funds,
+            target_day=day_start_utc.astimezone(CHINA_MARKET_TZ).date(),
         )
         filtered_candidates = [
             item for item in anomaly_candidates
@@ -723,6 +737,12 @@ class MarketDetailQueryService:
                 WHERE sa.symbol = ANY($1::text[])
                   AND sa.anomaly_date = $2::date
                   AND sa.severity = ANY($3::text[])
+                  AND (sa.first_trigger_ts AT TIME ZONE 'Asia/Shanghai')::time >= TIME '09:30'
+                  AND (sa.first_trigger_ts AT TIME ZONE 'Asia/Shanghai')::time <= TIME '15:00'
+                  AND (
+                      sa.payload #>> '{snapshot,updatedAt}' IS NULL
+                      OR LEFT(sa.payload #>> '{snapshot,updatedAt}', 10) = sa.anomaly_date::text
+                  )
                 ORDER BY sa.first_trigger_ts DESC
                 """,
                 symbols,
@@ -776,7 +796,11 @@ class MarketDetailQueryService:
         for row in anomaly_rows:
             symbol = str(row["symbol"])
             snapshot = _decode_jsonish(row["snapshot_payload"]) or {}
-            change_pct = _to_float(row["change_pct"])
+            anomaly_payload = _decode_jsonish(row["payload"]) or {}
+            change_pct = _to_float(anomaly_payload.get("changePct"))
+            if change_pct is None:
+                change_pct = _to_float(row["change_pct"])
+            latest_price_jump_pct = _to_float(anomaly_payload.get("strongestPriceJumpPct"))
             symbol_funds = self._funds_with_estimated_impact(related_funds.get(symbol, []), change_pct)
             if portfolio_only and not symbol_funds:
                 continue
@@ -810,7 +834,7 @@ class MarketDetailQueryService:
                     "anomalyType": row["anomaly_type"],
                     "severity": row["severity"],
                     "changePct": change_pct,
-                    "latestPriceJumpPct": change_pct if row["anomaly_type"] == "price_jump" else None,
+                    "latestPriceJumpPct": latest_price_jump_pct if row["anomaly_type"] == "price_jump" else None,
                     "triggerPrice": _to_float(row["trigger_price"]),
                     "triggerTime": _to_iso(row["first_trigger_ts"]),
                     "firstTriggerBucket": _to_iso(row["first_trigger_bucket"]),
@@ -1401,6 +1425,7 @@ class MarketDetailQueryService:
         average_volumes: dict[str, float],
         latest_volumes: dict[str, int],
         related_funds: dict[str, list[dict[str, object]]],
+        target_day: date,
     ) -> list[dict[str, object]]:
         grouped_rows: dict[str, list[asyncpg.Record]] = {}
         for row in rows:
@@ -1420,12 +1445,16 @@ class MarketDetailQueryService:
             trigger_time: str | None = None
             stock_name: str | None = None
             snapshot_payload = snapshots.get(symbol, {})
-            snapshot_change_pct: float | None = _to_float(snapshot_payload.get("changePct"))
-            snapshot_latest_price = _to_float(snapshot_payload.get("lastPrice"))
+            snapshot_is_current = _snapshot_matches_trade_day(snapshot_payload, target_day)
+            snapshot_change_pct: float | None = _to_float(snapshot_payload.get("changePct")) if snapshot_is_current else None
+            snapshot_latest_price = _to_float(snapshot_payload.get("lastPrice")) if snapshot_is_current else None
             latest_volume = latest_volumes.get(symbol)
             stock_name = str(snapshot_payload.get("companyName") or symbol)
 
             for row in symbol_rows:
+                row_ts = row["ts"]
+                if not _is_market_session_ts(row_ts):
+                    continue
                 payload = _decode_jsonish(row["payload"]) or {}
                 event_snapshot_payload = _decode_jsonish(row["snapshot_payload"]) or {}
                 event_snapshot = payload.get("snapshot") if isinstance(payload.get("snapshot"), dict) else {}
@@ -1444,8 +1473,9 @@ class MarketDetailQueryService:
                     or event_snapshot_payload.get("companyName")
                     or symbol
                 )
-                snapshot_change_pct = snapshot_change_pct if snapshot_change_pct is not None else _to_float(event_snapshot_payload.get("changePct"))
-                if snapshot_change_pct is None and isinstance(event_snapshot, dict):
+                if snapshot_change_pct is None and _snapshot_matches_trade_day(event_snapshot_payload, target_day):
+                    snapshot_change_pct = _to_float(event_snapshot_payload.get("changePct"))
+                if snapshot_change_pct is None and isinstance(event_snapshot, dict) and _snapshot_matches_trade_day(event_snapshot, target_day):
                     snapshot_change_pct = _to_float(event_snapshot.get("changePct"))
 
                 if price is not None:
@@ -1464,6 +1494,9 @@ class MarketDetailQueryService:
                 if volume is not None:
                     latest_volume = volume
                 latest_event_ts = _to_iso(row["ts"])
+
+            if latest_event_ts is None:
+                continue
 
             average_volume = average_volumes.get(symbol)
             volume_ratio = latest_volume / average_volume if average_volume and latest_volume is not None else None

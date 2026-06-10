@@ -6085,6 +6085,7 @@ function App() {
     const funds = Array.isArray(item?.relatedFunds) ? item.relatedFunds : [];
     const timeline = Array.isArray(item?.intradayTimeline) ? item.intradayTimeline : [];
     const dragonTigerLabel = getDragonTigerEvidenceLabel(item);
+    const hasLatestPriceJumpPct = typeof item?.latestPriceJumpPct === 'number';
     const changeTone = getSnapshotCardTone(
       typeof item?.changePct === 'number' ? item.changePct : item?.latestPriceJumpPct,
     );
@@ -6104,7 +6105,7 @@ function App() {
           <span className={`event-jump-badge trend-${changeTone} ${getJumpSeverityClass(item?.severity)}`.trim()}>
             {typeof item?.changePct === 'number'
               ? `日内 ${formatSignedPercent(item.changePct)}`
-              : `当前涨跌幅 ${formatSignedPercent(item?.latestPriceJumpPct)}`}
+              : `触发跳变 ${formatSignedPercent(item?.latestPriceJumpPct)}`}
           </span>
         </div>
         <dl>
@@ -6113,8 +6114,8 @@ function App() {
             <dd>{formatPrice(item?.triggerPrice)}</dd>
           </div>
           <div>
-            <dt>当前涨跌幅</dt>
-            <dd>{formatSignedPercent(item?.latestPriceJumpPct)}</dd>
+            <dt>{hasLatestPriceJumpPct ? '触发跳变' : '当前涨跌幅'}</dt>
+            <dd>{formatSignedPercent(hasLatestPriceJumpPct ? item.latestPriceJumpPct : item?.changePct)}</dd>
           </div>
           <div>
             <dt title="相对20日均量">量比</dt>
