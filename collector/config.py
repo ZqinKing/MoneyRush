@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     collector_vendor_price_divergence_limit_pct: ClassVar[float] = 15.0
     anomaly_aggregation_enabled: bool = True
     anomaly_aggregation_interval_seconds: ClassVar[int] = 300
+    anomaly_intraday_reason_enabled: bool = True
+    anomaly_intraday_reason_windows_china: str = "11:35,14:50"
+    anomaly_intraday_reason_batch_size: int = 20
+    anomaly_intraday_reason_max_batches_per_window: int = 3
     anomaly_post_close_review_enabled: bool = True
     anomaly_post_close_review_start_hour_china: int = 15
     anomaly_post_close_review_start_minute_china: int = 15
