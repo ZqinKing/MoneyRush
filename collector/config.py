@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     anomaly_post_close_review_start_minute_china: int = 15
     anomaly_dragon_tiger_review_start_hour_china: int = 16
     anomaly_dragon_tiger_review_start_minute_china: int = 40
+    anomaly_post_close_dragon_tiger_only: bool = True
     anomaly_post_close_batch_size: int = 20
     anomaly_reason_max_attempts: int = 3
     anomaly_reason_retry_cooldown_minutes: ClassVar[int] = 15

@@ -312,6 +312,7 @@ class CollectorWorker:
                 trade_date=trade_date,
                 limit=batch_limit,
                 max_attempts=int(self._settings.anomaly_reason_max_attempts),
+                dragon_tiger_only=bool(self._settings.anomaly_post_close_dragon_tiger_only),
             )
             if not rows:
                 logger.info("collector analyzed post-close anomaly reasons", extra={"anomaly_count": 0})
@@ -330,6 +331,18 @@ class CollectorWorker:
                 has_dragon_tiger = bool(context.get("dragon_tiger_daily") or context.get("dragon_tiger_institution"))
                 dragon_tiger_published_for_date = bool(context.get("dragon_tiger_published_for_date"))
                 checkpoint_attempt_count = int(_record_get(row, "post_close_checkpoint_attempt_count") or 0)
+                if self._settings.anomaly_post_close_dragon_tiger_only and not has_dragon_tiger and dragon_tiger_published_for_date:
+                    await self._postgres.upsert_post_close_review_checkpoint(
+                        {
+                            "trade_date": row["anomaly_date"],
+                            "symbol": str(row["symbol"]),
+                            "representative_anomaly_id": row["id"],
+                            "status": "unavailable",
+                            "attempt_count": checkpoint_attempt_count,
+                            "last_error": "no_dragon_tiger_evidence",
+                        }
+                    )
+                    continue
                 if not has_dragon_tiger and not dragon_tiger_published_for_date:
                     unavailable_after = _dragon_tiger_evidence_deadline(self._settings, row["anomaly_date"])
                     if datetime.now(UTC) < unavailable_after:

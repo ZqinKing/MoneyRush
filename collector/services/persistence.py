@@ -1471,7 +1471,14 @@ class PostgresStore:
                 max(int(limit), 1),
             )
 
-    async def fetch_post_close_review_candidates(self, *, trade_date: date, limit: int = 20, max_attempts: int = 3) -> list[asyncpg.Record]:
+    async def fetch_post_close_review_candidates(
+        self,
+        *,
+        trade_date: date,
+        limit: int = 20,
+        max_attempts: int = 3,
+        dragon_tiger_only: bool = False,
+    ) -> list[asyncpg.Record]:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")
 
@@ -1503,6 +1510,21 @@ class PostgresStore:
                           ai_reason_post_close_required = TRUE
                           OR ai_reason_status IS NULL
                           OR ai_reason_status = 'pending'
+                      )
+                      AND (
+                          NOT $5::boolean
+                          OR EXISTS (
+                              SELECT 1
+                              FROM dragon_tiger_daily_item AS daily
+                              WHERE daily.trade_date = significant_anomaly.anomaly_date
+                                AND daily.symbol = significant_anomaly.symbol
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM dragon_tiger_institution_item AS institution
+                              WHERE institution.trade_date = significant_anomaly.anomaly_date
+                                AND institution.symbol = significant_anomaly.symbol
+                          )
                       )
                 ), ranked AS (
                     SELECT *,
@@ -1558,6 +1580,7 @@ class PostgresStore:
                 ["critical", "high"],
                 max(int(max_attempts), 1),
                 max(int(limit), 1),
+                bool(dragon_tiger_only),
             )
 
     async def upsert_post_close_review_checkpoint(self, item: dict[str, object]) -> None:
