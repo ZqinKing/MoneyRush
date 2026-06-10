@@ -5328,6 +5328,9 @@ function App() {
     const showIntradayLunchBreak = typeof intradayLineChart?.lunchBreakStartX === 'number' && typeof intradayLineChart?.lunchBreakEndX === 'number';
     const dailyAxisLabels = buildAxisLabels(candleChart?.candles || [], 6, (item) => item?.label || '');
     const recentTicks = sortItemsAscendingByTime(ticks, 'ts').slice(-12).reverse();
+    const compactTicks = recentTicks.slice(0, 3);
+    const latestTick = compactTicks[0] || null;
+    const compactEvents = readableEvents.slice(0, 3);
     const intradayTone = getLineChartTone(intradayLineChart, snapshot?.lastPrice ?? previousClose ?? null);
     const intradayDataDate = getLatestChinaTradeDayValue(intradayChartPoints, 'bucketTs') || latestTickTradeDay;
     const intradayDateLabel = intradayDataDate ? formatDate(intradayDataDate) : null;
@@ -6004,74 +6007,74 @@ function App() {
             )}
           </section>
 
-          <section className="detail-card wide-card">
+          <section className="detail-card wide-card detail-activity-card">
             <div className="detail-card-header compact-card-header">
               <div>
-                <h3>最近 Tick</h3>
-                <p className="panel-tip compact">默认只展示最新 12 条；成交量按股展示，成交额按元展示，避免单位误读。</p>
+                <h3>实时成交与事件</h3>
+                <p className="panel-tip compact">压缩展示最新 Tick 与事件摘要；盘后不再用大表格占据页面空间。</p>
               </div>
-              {ticks.length > recentTicks.length ? <span className="table-meta-badge">共 {ticks.length} 条</span> : null}
+              <div className="detail-activity-badges">
+                <span className="table-meta-badge">Tick {ticks.length} 条</span>
+                <span className="table-meta-badge">事件 {readableEvents.length} 条</span>
+              </div>
             </div>
-            {recentTicks.length ? (
-              <div className="detail-table-wrap detail-table-wrap-scrollable">
-                <table className="detail-table">
-                  <thead>
-                    <tr>
-                      <th>日期</th>
-                      <th>时间</th>
-                      <th>价格</th>
-                      <th>成交量</th>
-                      <th>成交额</th>
-                      <th>相对昨收</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recentTicks.map((tick, index) => (
-                      <tr key={`${tick.ts}-${tick.price}-${index}`}>
-                        <td>{formatDate(tick.ts)}</td>
-                        <td>{formatTime(tick.ts)}</td>
-                        <td>{formatPrice(tick.price)}</td>
-                        <td>{formatTickVolume(tick.volume)}</td>
-                        <td>{formatTurnoverAmount(tick.amount)}</td>
-                        <td>{tick.sideLabel || (tick.side === 'buy' ? '高于/持平昨收' : tick.side === 'sell' ? '低于昨收' : '--')}</td>
-                      </tr>
+            <div className="detail-activity-grid">
+              <article className="detail-activity-summary">
+                <span>最近成交</span>
+                <strong>{latestTick ? formatPrice(latestTick.price) : '--'}</strong>
+                <em>{latestTick ? `${formatDate(latestTick.ts)} ${formatTime(latestTick.ts)}` : '交易时段外暂无实时 Tick'}</em>
+                <dl>
+                  <div><dt>成交量</dt><dd>{latestTick ? formatTickVolume(latestTick.volume) : '--'}</dd></div>
+                  <div><dt>成交额</dt><dd>{latestTick ? formatTurnoverAmount(latestTick.amount) : '--'}</dd></div>
+                  <div><dt>相对昨收</dt><dd>{latestTick?.sideLabel || (latestTick?.side === 'buy' ? '高于/持平昨收' : latestTick?.side === 'sell' ? '低于昨收' : '--')}</dd></div>
+                </dl>
+              </article>
+              <div className="detail-activity-column">
+                <div className="detail-activity-column-heading">
+                  <h4>最新 Tick</h4>
+                  {ticks.length > compactTicks.length ? <span>展示 {compactTicks.length}/{ticks.length}</span> : null}
+                </div>
+                {compactTicks.length ? (
+                  <div className="detail-compact-tick-list">
+                    {compactTicks.map((tick, index) => (
+                      <div className="detail-compact-tick-row" key={`${tick.ts}-${tick.price}-${index}`}>
+                        <span>{formatTime(tick.ts)}</span>
+                        <strong>{formatPrice(tick.price)}</strong>
+                        <em>{formatTickVolume(tick.volume)}</em>
+                        <small>{tick.sideLabel || (tick.side === 'buy' ? '高于昨收' : tick.side === 'sell' ? '低于昨收' : '--')}</small>
+                      </div>
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                ) : (
+                  <p className="panel-tip compact detail-activity-empty">交易时段外实时 Tick 暂停更新。</p>
+                )}
               </div>
-            ) : (
-              <p className="panel-tip compact">暂无 tick 数据。</p>
-            )}
-          </section>
-
-          <section className="detail-card wide-card">
-            <h3>最近事件</h3>
-            {readableEvents.length ? (
-              <ul className="detail-event-list">
-                {readableEvents.map((event, index) => (
-                  <li key={`${event.time}-${event.identity}-${index}`}>
-                    <div className="detail-event-main">
-                      <strong>{event.eventType}</strong>
-                      <span>{formatDateTime(event.time)}</span>
-                    </div>
-                    <div className="detail-event-meta">
-                      <span>{typeof event.price === 'number' ? `价格 ${formatPrice(event.price)}` : '价格 --'}</span>
-                      <span>{event.sideLabel || (event.side === 'buy' ? '高于/持平昨收' : event.side === 'sell' ? '低于昨收' : '方向 --')}</span>
-                       <span>{typeof event.volume === 'number' ? `量 ${formatTickVolume(event.volume)}` : '量 --'}</span>
-                      <span>
-                        {typeof event.low === 'number' && typeof event.high === 'number'
-                          ? `区间 ${formatPrice(event.low)} ~ ${formatPrice(event.high)}`
-                          : '区间 --'}
-                      </span>
-                      <span>{typeof event.close === 'number' ? `收 ${formatPrice(event.close)}` : '收 --'}</span>
-                      <span>{typeof event.changePct === 'number' ? `涨跌 ${formatSignedPercent(event.changePct)}` : '涨跌 --'}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="panel-tip compact">暂无事件数据。</p>
-            )}
+              <div className="detail-activity-column">
+                <div className="detail-activity-column-heading">
+                  <h4>最近事件</h4>
+                  {readableEvents.length > compactEvents.length ? <span>展示 {compactEvents.length}/{readableEvents.length}</span> : null}
+                </div>
+                {compactEvents.length ? (
+                  <ul className="detail-event-list compact">
+                    {compactEvents.map((event, index) => (
+                      <li key={`${event.time}-${event.identity}-${index}`}>
+                        <div className="detail-event-main">
+                          <strong>{event.eventType}</strong>
+                          <span>{formatDateTime(event.time)}</span>
+                        </div>
+                        <div className="detail-event-meta">
+                          <span>{typeof event.price === 'number' ? `价 ${formatPrice(event.price)}` : '价 --'}</span>
+                          <span>{event.sideLabel || (event.side === 'buy' ? '高于昨收' : event.side === 'sell' ? '低于昨收' : '方向 --')}</span>
+                          <span>{typeof event.volume === 'number' ? `量 ${formatTickVolume(event.volume)}` : '量 --'}</span>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="panel-tip compact detail-activity-empty">暂无需要单独提示的 Tick 事件。</p>
+                )}
+              </div>
+            </div>
           </section>
         </div>
       </div>
