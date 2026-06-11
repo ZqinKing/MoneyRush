@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 function getBrowserHostname() {
   if (typeof window === 'undefined') {
@@ -46,6 +46,26 @@ function normalizeConfiguredUrl(configuredUrl) {
   }
 }
 
+const allowedExternalUrlProtocols = new Set(['https:', 'http:']);
+
+function sanitizeExternalUrl(rawUrl) {
+  if (typeof rawUrl !== 'string') {
+    return '';
+  }
+
+  const trimmedUrl = rawUrl.trim();
+  if (!trimmedUrl) {
+    return '';
+  }
+
+  try {
+    const parsedUrl = new URL(trimmedUrl);
+    return allowedExternalUrlProtocols.has(parsedUrl.protocol) ? parsedUrl.toString() : '';
+  } catch {
+    return '';
+  }
+}
+
 function getDefaultWebSocketBaseUrl() {
   const browserOrigin = getBrowserOrigin();
   if (!browserOrigin) {
@@ -81,6 +101,20 @@ const connectionStateLabels = {
   disconnected: '连接已断开',
   error: '连接异常',
 };
+
+const baseWorkbenchNavItems = [
+  { key: 'overview', label: '总览', shortLabel: '总览', description: '行情总览' },
+  { key: 'events', label: '异动日报', shortLabel: '异动', description: '显著变化' },
+  { key: 'content', label: '资讯', shortLabel: '资讯', description: '信息流' },
+  { key: 'dragonTiger', label: '龙虎榜', shortLabel: '龙虎', description: '盘后资金' },
+  { key: 'funds', label: '基金', shortLabel: '基金', description: '组合观察' },
+  { key: 'gold', label: '黄金', shortLabel: '黄金', description: '跨市场' },
+  { key: 'timeline', label: '时间轴', shortLabel: '时间轴', description: '未来风险' },
+  { key: 'management', label: '管理', shortLabel: '管理', description: '监控维护' },
+];
+
+const macroWorkbenchNavItem = { key: 'macro', label: '宏观', shortLabel: '宏观', description: '美债环境' };
+const llmAuditWorkbenchNavItem = { key: 'llmAudit', label: 'AI审计', shortLabel: 'AI审计', description: '调用记录' };
 
 const marketStatusLabels = {
   trading: '交易中',
@@ -150,6 +184,28 @@ const llmAuditStatusLabels = {
   skipped: '跳过',
 };
 
+const timelineCategoryLabels = {
+  fomc: 'Fed/FOMC',
+  macro: '宏观数据',
+  options: '期权/ETF',
+  crypto: '加密',
+  meeting: '后续会议',
+};
+
+const timelineLevelLabels = {
+  high: '高影响',
+  medium: '中影响',
+  low: '常规',
+};
+
+const timelineStatusLabels = {
+  upcoming: '未开始',
+  active: '进行中',
+  passed: '已结束',
+};
+
+const timelineLaneOrder = ['fomc', 'macro', 'options', 'crypto', 'meeting'];
+
 const dragonTigerSortOptions = {
   daily: [
     { value: 'netBuyAmount', label: '按净买额' },
@@ -199,6 +255,18 @@ function buildDailyAnomalyReportUrl({ portfolioOnly = false, sortBy = 'relevance
     params.set('portfolio_only', 'true');
   }
   return `${apiBaseUrl}/api/v1/anomaly/daily?${params.toString()}`;
+}
+
+function buildTimelineEventsUrl({ category = '', level = '' } = {}) {
+  const params = new URLSearchParams();
+  if (category) {
+    params.set('category', category);
+  }
+  if (level) {
+    params.set('level', level);
+  }
+  const query = params.toString();
+  return `${apiBaseUrl}/api/v1/timeline/events${query ? `?${query}` : ''}`;
 }
 
 function buildMarketOverviewUrl() {
@@ -622,6 +690,52 @@ function formatDate(value) {
   }
 
   return new Date(value).toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai' });
+}
+
+function formatBeijingDateLabel(value) {
+  if (!value) {
+    return '--';
+  }
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return value;
+  }
+  return formatDate(value);
+}
+
+function formatTimelineDateRange(item) {
+  if (item?.dateLabel) {
+    return item.dateLabel;
+  }
+  const start = formatBeijingDateLabel(item?.eventDate);
+  const end = formatBeijingDateLabel(item?.endDate);
+  return end && end !== '--' && end !== start ? `${start} 至 ${end}` : start;
+}
+
+function getTimelineCategoryLabel(value) {
+  return timelineCategoryLabels[value] || value || '未分类';
+}
+
+function getTimelineLevelLabel(value) {
+  return timelineLevelLabels[value] || value || '待分级';
+}
+
+function getTimelineStatusLabel(value) {
+  return timelineStatusLabels[value] || value || '状态待补充';
+}
+
+function getTimelineLevelTone(value) {
+  if (value === 'high') return 'red';
+  if (value === 'medium') return 'amber';
+  return 'blue';
+}
+
+function getTimelineTodayLabel() {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date()).replace(/\//g, '-');
 }
 
 function formatReportQuarter(value) {
@@ -2014,11 +2128,13 @@ function App() {
   const [goldRequestState, setGoldRequestState] = useState('idle');
   const [activeView, setActiveView] = useState('overview');
   const [managementAssetView, setManagementAssetView] = useState('stock');
-  const [managementActionView, setManagementActionView] = useState('activate');
   const [selectedSnapshotSymbol, setSelectedSnapshotSymbol] = useState(null);
   const [snapshotDetails, setSnapshotDetails] = useState({});
+  const [overviewPreviewDetails, setOverviewPreviewDetails] = useState({});
   const [detailRequestState, setDetailRequestState] = useState('idle');
   const [detailChartView, setDetailChartView] = useState('intraday');
+  const [overviewViewMode, setOverviewViewMode] = useState('dense');
+  const [overviewPreviewSymbol, setOverviewPreviewSymbol] = useState('');
   const [intradayHoverPoint, setIntradayHoverPoint] = useState(null);
   const [overviewSearchQuery, setOverviewSearchQuery] = useState('');
   const [overviewSortKey, setOverviewSortKey] = useState('marketCap');
@@ -2089,6 +2205,12 @@ function App() {
   const [llmAuditRequestState, setLlmAuditRequestState] = useState('idle');
   const [llmAuditReloadNonce, setLlmAuditReloadNonce] = useState(0);
   const [llmAuditPageOffset, setLlmAuditPageOffset] = useState(0);
+  const [timelineEvents, setTimelineEvents] = useState([]);
+  const [timelineRequestState, setTimelineRequestState] = useState('idle');
+  const [timelineCategoryFilter, setTimelineCategoryFilter] = useState('');
+  const [timelineLevelFilter, setTimelineLevelFilter] = useState('');
+  const [selectedTimelineEventId, setSelectedTimelineEventId] = useState('');
+  const contentFeedScrollRef = useRef(null);
   const activeSymbolsKey = useMemo(() => activeSymbols.join(','), [activeSymbols]);
   const activeFundsKey = useMemo(() => [...activeFunds].sort().join(','), [activeFunds]);
   const activeStockSymbolSet = useMemo(() => {
@@ -2115,6 +2237,52 @@ function App() {
       : [];
     return { portfolioItems, otherItems };
   }, [dailyAnomalyChangeThreshold, dailyAnomalyReport, dailyAnomalyVolumeThreshold]);
+
+  const orderedTimelineEvents = useMemo(() => {
+    return [...timelineEvents].sort((left, right) => {
+      const leftDate = String(left?.eventDate || '');
+      const rightDate = String(right?.eventDate || '');
+      if (leftDate === rightDate) {
+        return String(left?.title || '').localeCompare(String(right?.title || ''), 'zh-Hans-CN');
+      }
+      return leftDate.localeCompare(rightDate);
+    });
+  }, [timelineEvents]);
+
+  const selectedTimelineEvent = useMemo(() => {
+    return orderedTimelineEvents.find((item) => item?.id === selectedTimelineEventId) || orderedTimelineEvents[0] || null;
+  }, [orderedTimelineEvents, selectedTimelineEventId]);
+
+  const timelineSummary = useMemo(() => {
+    return orderedTimelineEvents.reduce(
+      (summary, item) => {
+        const status = item?.status || 'unknown';
+        const level = item?.level || 'unknown';
+        const category = item?.category || 'unknown';
+        summary.statusCounts[status] = (summary.statusCounts[status] || 0) + 1;
+        summary.levelCounts[level] = (summary.levelCounts[level] || 0) + 1;
+        summary.categoryCounts[category] = (summary.categoryCounts[category] || 0) + 1;
+        return summary;
+      },
+      { statusCounts: {}, levelCounts: {}, categoryCounts: {} },
+    );
+  }, [orderedTimelineEvents]);
+
+  const timelineLanes = useMemo(() => {
+    const grouped = orderedTimelineEvents.reduce((accumulator, item) => {
+      const category = item?.category || 'unknown';
+      if (!accumulator[category]) {
+        accumulator[category] = [];
+      }
+      accumulator[category].push(item);
+      return accumulator;
+    }, {});
+    const orderedCategories = [
+      ...timelineLaneOrder.filter((category) => grouped[category]),
+      ...Object.keys(grouped).filter((category) => !timelineLaneOrder.includes(category)).sort(),
+    ];
+    return orderedCategories.map((category) => ({ category, events: grouped[category] }));
+  }, [orderedTimelineEvents]);
 
   const dragonTigerRangeLabels = {
     '1month': '近一月',
@@ -2733,32 +2901,32 @@ function App() {
         }
 
         let nextFeed = Array.isArray(firstFeedPayload.items) ? firstFeedPayload.items : [];
-        if (contentTimeRange === 'today') {
-          const seenBefore = new Set();
-          let cursor = nextFeed.length ? (nextFeed[nextFeed.length - 1]?.publishedAt || nextFeed[nextFeed.length - 1]?.firstSeenAt || '') : '';
+        const seenBefore = new Set();
+        let cursor = nextFeed.length ? (nextFeed[nextFeed.length - 1]?.publishedAt || nextFeed[nextFeed.length - 1]?.firstSeenAt || '') : '';
+        let lastPageItemCount = nextFeed.length;
 
-          while (!cancelled && cursor && nextFeed.length % pageSize === 0 && !seenBefore.has(cursor)) {
-            seenBefore.add(cursor);
-            const pageResponse = await fetch(
-              buildContentFeedUrl({
-                symbol: contentSymbolFilter,
-                type: contentType,
-                timeRange: contentTimeRange,
-                limit: pageSize,
-                before: cursor,
-              }),
-            );
-            const pagePayload = await parseJsonOrThrow(pageResponse, 'content feed fetch failed');
-            const pageItems = Array.isArray(pagePayload.items) ? pagePayload.items : [];
-            if (!pageItems.length) {
-              break;
-            }
-            nextFeed = dedupeContentItems([...nextFeed, ...pageItems]);
-            if (pageItems.length < pageSize) {
-              break;
-            }
-            cursor = pageItems[pageItems.length - 1]?.publishedAt || pageItems[pageItems.length - 1]?.firstSeenAt || '';
+        while (!cancelled && cursor && lastPageItemCount === pageSize && !seenBefore.has(cursor)) {
+          seenBefore.add(cursor);
+          const pageResponse = await fetch(
+            buildContentFeedUrl({
+              symbol: contentSymbolFilter,
+              type: contentType,
+              timeRange: contentTimeRange,
+              limit: pageSize,
+              before: cursor,
+            }),
+          );
+          const pagePayload = await parseJsonOrThrow(pageResponse, 'content feed fetch failed');
+          const pageItems = Array.isArray(pagePayload.items) ? pagePayload.items : [];
+          lastPageItemCount = pageItems.length;
+          if (!pageItems.length) {
+            break;
           }
+          nextFeed = dedupeContentItems([...nextFeed, ...pageItems]);
+          if (lastPageItemCount < pageSize) {
+            break;
+          }
+          cursor = pageItems[pageItems.length - 1]?.publishedAt || pageItems[pageItems.length - 1]?.firstSeenAt || '';
         }
 
         setContentFeed(nextFeed);
@@ -2781,7 +2949,16 @@ function App() {
   }, [activeView, contentSymbolFilter, contentTimeRange, contentType]);
 
   useEffect(() => {
-    if (activeView !== 'events') {
+    if (activeView !== 'content') {
+      return;
+    }
+    if (contentFeedScrollRef.current) {
+      contentFeedScrollRef.current.scrollTop = 0;
+    }
+  }, [activeView, contentSymbolFilter, contentTimeRange, contentType]);
+
+  useEffect(() => {
+    if (activeView !== 'events' && activeView !== 'overview') {
       return undefined;
     }
 
@@ -2820,6 +2997,44 @@ function App() {
       window.clearInterval(intervalId);
     };
   }, [activeSymbolsKey, activeView, dailyAnomalyPortfolioOnly, dailyAnomalySortBy]);
+
+  useEffect(() => {
+    const timelineConsumerViews = new Set(['timeline', 'overview', 'funds', 'gold', 'macro']);
+    if (!timelineConsumerViews.has(activeView) && !selectedSnapshotSymbol) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadTimelineEvents() {
+      setTimelineRequestState('loading');
+      try {
+        const response = await fetch(buildTimelineEventsUrl(activeView === 'timeline' ? {
+          category: timelineCategoryFilter,
+          level: timelineLevelFilter,
+        } : {}));
+        const payload = await parseJsonOrThrow(response, 'timeline events fetch failed');
+        if (cancelled) {
+          return;
+        }
+        const nextEvents = Array.isArray(payload?.events) ? payload.events : [];
+        setTimelineEvents(nextEvents);
+        setSelectedTimelineEventId((current) => (
+          nextEvents.some((item) => item?.id === current) ? current : (nextEvents[0]?.id || '')
+        ));
+        setTimelineRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setTimelineRequestState('error');
+        }
+      }
+    }
+
+    loadTimelineEvents();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, selectedSnapshotSymbol, timelineCategoryFilter, timelineLevelFilter]);
 
   const selectedSnapshot = selectedSnapshotSymbol ? snapshots[selectedSnapshotSymbol] : null;
   const selectedDetail = selectedSnapshotSymbol ? snapshotDetails[selectedSnapshotSymbol] : null;
@@ -2878,6 +3093,101 @@ function App() {
 
     return timestamps.sort().at(-1) || null;
   }, [activeSymbols, snapshots]);
+
+  const overviewAnomalyBySymbol = useMemo(() => {
+    const grouped = new Map();
+    [...dailyAnomalyItems.portfolioItems, ...dailyAnomalyItems.otherItems].forEach((item) => {
+      const normalizedSymbol = normalizeStockSymbolCandidate(item?.symbol);
+      if (!normalizedSymbol) {
+        return;
+      }
+      const current = grouped.get(normalizedSymbol);
+      const itemCount = typeof item?.eventCountToday === 'number' ? item.eventCountToday : 1;
+      if (!current) {
+        grouped.set(normalizedSymbol, { ...item, overviewEventCount: itemCount });
+        return;
+      }
+      const nextCount = (current.overviewEventCount || 0) + itemCount;
+      grouped.set(
+        normalizedSymbol,
+        isHigherDailyAnomalyRank(item, current)
+          ? { ...item, overviewEventCount: nextCount }
+          : { ...current, overviewEventCount: nextCount },
+      );
+    });
+    return grouped;
+  }, [dailyAnomalyItems]);
+
+  const overviewFundExposureBySymbol = useMemo(() => {
+    const grouped = new Map();
+    activeFunds.forEach((fundCodeValue) => {
+      const fundDetail = fundDetails[fundCodeValue];
+      const holdings = Array.isArray(fundDetail?.topHoldings) ? fundDetail.topHoldings : [];
+      holdings.forEach((holding) => {
+        const normalizedSymbol = normalizeStockSymbolCandidate(holding?.stockSymbol);
+        if (!normalizedSymbol) {
+          return;
+        }
+        const current = grouped.get(normalizedSymbol) || { count: 0, maxWeight: null };
+        const weight = typeof holding?.weightPercent === 'number' ? holding.weightPercent : null;
+        grouped.set(normalizedSymbol, {
+          count: current.count + 1,
+          maxWeight: weight === null ? current.maxWeight : Math.max(current.maxWeight ?? weight, weight),
+        });
+      });
+    });
+    return grouped;
+  }, [activeFunds, fundDetails]);
+
+  const overviewUpcomingRiskEvents = useMemo(() => {
+    return orderedTimelineEvents
+      .filter((item) => item?.level === 'high' && item?.status !== 'passed')
+      .slice(0, 4);
+  }, [orderedTimelineEvents]);
+
+  const activeOverviewPreviewSymbol = useMemo(() => {
+    return overviewItems.includes(overviewPreviewSymbol) ? overviewPreviewSymbol : (overviewItems[0] || '');
+  }, [overviewItems, overviewPreviewSymbol]);
+
+  const overviewPreviewSnapshot = activeOverviewPreviewSymbol ? snapshots[activeOverviewPreviewSymbol] : null;
+  const overviewPreviewDetail = activeOverviewPreviewSymbol ? overviewPreviewDetails[activeOverviewPreviewSymbol] : null;
+  const overviewPreviewAnomaly = activeOverviewPreviewSymbol ? overviewAnomalyBySymbol.get(activeOverviewPreviewSymbol) : null;
+  const overviewPreviewFundExposure = activeOverviewPreviewSymbol ? overviewFundExposureBySymbol.get(activeOverviewPreviewSymbol) : null;
+
+  useEffect(() => {
+    if (!activeOverviewPreviewSymbol || Object.prototype.hasOwnProperty.call(overviewPreviewDetails, activeOverviewPreviewSymbol)) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadOverviewPreviewDetail() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/v1/symbols/${encodeURIComponent(activeOverviewPreviewSymbol)}/detail`);
+        const payload = await parseJsonOrThrow(response, 'overview preview detail fetch failed');
+        if (cancelled) {
+          return;
+        }
+        setOverviewPreviewDetails((current) => ({
+          ...current,
+          [activeOverviewPreviewSymbol]: payload,
+        }));
+      } catch {
+        if (!cancelled) {
+          setOverviewPreviewDetails((current) => ({
+            ...current,
+            [activeOverviewPreviewSymbol]: null,
+          }));
+        }
+      }
+    }
+
+    loadOverviewPreviewDetail();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeOverviewPreviewSymbol, apiBaseUrl, overviewPreviewDetails]);
 
   useEffect(() => {
     if (contentSymbolFilter && !activeSymbols.includes(contentSymbolFilter)) {
@@ -3134,6 +3444,11 @@ function App() {
       delete next[symbolToRemove];
       return next;
     });
+    setOverviewPreviewDetails((current) => {
+      const next = { ...current };
+      delete next[symbolToRemove];
+      return next;
+    });
     setSelectedSnapshotSymbol((current) => (current === symbolToRemove ? null : current));
   }
 
@@ -3291,6 +3606,61 @@ function App() {
           </article>
         ))}
       </div>
+    );
+  }
+
+  function getRelevantTimelineEvents({ terms = [], categories = [], limit = 3 } = {}) {
+    const normalizedTerms = terms
+      .flatMap((term) => (Array.isArray(term) ? term : [term]))
+      .filter(Boolean)
+      .map((term) => String(term).trim().toLowerCase())
+      .filter(Boolean);
+    const categorySet = new Set(categories.filter(Boolean));
+
+    return orderedTimelineEvents
+      .filter((event) => event?.status !== 'passed')
+      .filter((event) => {
+        const assets = Array.isArray(event?.impactAssets) ? event.impactAssets : [];
+        const assetText = assets.join(' ').toLowerCase();
+        const titleText = String(event?.title || '').toLowerCase();
+        const categoryMatches = categorySet.has(event?.category);
+        const termMatches = normalizedTerms.some((term) => assetText.includes(term) || titleText.includes(term));
+        return categoryMatches || termMatches;
+      })
+      .slice(0, limit);
+  }
+
+  function renderTimelineRiskPanel(events, title, emptyMessage = '当前暂无匹配的未来风险事件。') {
+    const items = Array.isArray(events) ? events : [];
+    return (
+      <section className="timeline-risk-card">
+        <div className="detail-card-header compact-card-header">
+          <div>
+            <h3>{title}</h3>
+            <p className="panel-tip compact">按北京时间事件日历匹配；缺失外部数据源时保留占位。</p>
+          </div>
+          <span className="table-meta-badge">{items.length ? `${items.length} 项` : '待补充'}</span>
+        </div>
+        {items.length ? (
+          <div className="timeline-risk-list">
+            {items.map((event) => (
+              <button
+                type="button"
+                className="timeline-risk-item"
+                key={event?.id || `${event?.eventDate}-${event?.title}`}
+                onClick={() => {
+                  setSelectedTimelineEventId(event?.id || '');
+                  setActiveView('timeline');
+                }}
+              >
+                <span className="timeline-risk-date">{formatTimelineDateRange(event)}</span>
+                <strong>{event?.title || '事件待补充'}</strong>
+                <span className={`timeline-level-badge level-${getTimelineLevelTone(event?.level)}`}>{getTimelineLevelLabel(event?.level)}</span>
+              </button>
+            ))}
+          </div>
+        ) : <p className="panel-tip compact">{emptyMessage}</p>}
+      </section>
     );
   }
 
@@ -3535,6 +3905,214 @@ function App() {
     );
   }
 
+  function renderOverviewPreviewPanel() {
+    if (!activeOverviewPreviewSymbol) {
+      return (
+        <section className="overview-preview-panel">
+          <h3>标的上下文</h3>
+          <p className="panel-tip compact">选择高密度列表中的一行后，在这里查看价格、风险和可用事件片段。</p>
+        </section>
+      );
+    }
+
+    const snapshot = overviewPreviewSnapshot || {};
+    const previewCapitalFlow = overviewPreviewDetail?.capitalFlow || null;
+    const mainNetInflow = typeof snapshot?.capitalFlowMainNetInflow === 'number'
+      ? snapshot.capitalFlowMainNetInflow
+      : previewCapitalFlow?.mainNetInflow;
+    const mainNetRatio = typeof snapshot?.capitalFlowMainNetRatio === 'number'
+      ? snapshot.capitalFlowMainNetRatio
+      : previewCapitalFlow?.mainNetRatio;
+    const anomaly = overviewPreviewAnomaly;
+    const fundExposure = overviewPreviewFundExposure;
+    const changeTone = getSnapshotCardTone(snapshot?.changePct);
+    const anomalyCount = anomaly?.overviewEventCount ?? 0;
+    const fundExposureLabel = fundExposure?.count
+      ? `${fundExposure.count} 只${typeof fundExposure.maxWeight === 'number' ? ` · 最高 ${formatPercentValue(fundExposure.maxWeight)}` : ''}`
+      : '待补充';
+
+    return (
+      <section className="overview-preview-panel" aria-label="选中标的预览">
+        <div className="overview-preview-header">
+          <div>
+            <span className="table-meta-badge">当前选中</span>
+            <h3>{snapshot?.companyName || '待识别公司'}</h3>
+            <p className="snapshot-subtitle">{activeOverviewPreviewSymbol} · {snapshot?.exchange || '--'}</p>
+          </div>
+          <button type="button" className="view-tab overview-preview-action" onClick={() => handleOpenSnapshotDetail(activeOverviewPreviewSymbol)}>
+            打开完整详情
+          </button>
+        </div>
+        <div className="overview-preview-price-row">
+          <strong>{formatPrice(snapshot?.lastPrice)}</strong>
+          <span className={changeTone === 'positive' ? 'positive' : changeTone === 'negative' ? 'negative' : ''}>{formatSignedPercent(snapshot?.changePct)}</span>
+        </div>
+        <SectorTagRow sector={snapshot?.sector || snapshot?.sectorInfo} includeRegion maxConcepts={2} />
+        <dl className="overview-preview-metrics">
+          <div><dt>主力净流</dt><dd className={mainNetInflow > 0 ? 'positive' : mainNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(mainNetInflow)}</dd></div>
+          <div><dt>换手率</dt><dd>{typeof snapshot?.turnoverRate === 'number' ? formatPercentValue(snapshot.turnoverRate) : '--'}</dd></div>
+          <div><dt>基金暴露</dt><dd>{fundExposureLabel}</dd></div>
+          <div><dt>异动事件</dt><dd>{anomalyCount ? `${anomalyCount} 条` : '暂无'}</dd></div>
+          <div><dt>资金占比</dt><dd className={mainNetRatio > 0 ? 'positive' : mainNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(mainNetRatio)}</dd></div>
+          <div><dt>新鲜度</dt><dd>{formatAgeLabel(snapshot?.updatedAt)}</dd></div>
+        </dl>
+        <div className="overview-preview-risk-box">
+          <span className={`market-breadth-chip ${anomaly?.severity === 'critical' || anomaly?.severity === 'high' ? 'warning' : 'muted'}`}>
+            {anomaly ? `${getAnomalySeverityLabel(anomaly.severity)}异动` : '暂无异动片段'}
+          </span>
+          <p>{anomaly?.aiReason || anomaly?.reason || anomaly?.summary || (anomaly ? `${formatSignedPercent(anomaly.changePct)} · ${formatRatioMultiple(anomaly.volumeRatio)}` : '当前仅展示已有快照与已加载异动数据。')}</p>
+        </div>
+      </section>
+    );
+  }
+
+  function renderOverviewRiskSpeedPanel() {
+    return (
+      <section className="overview-risk-panel" aria-label="未来风险速览">
+        <div className="overview-side-panel-heading">
+          <div>
+            <h3>未来风险速览</h3>
+            <p className="panel-tip compact">来自 #85 时间轴，高影响事件按北京时间展示。</p>
+          </div>
+          <span className="table-meta-badge">{overviewUpcomingRiskEvents.length} 条</span>
+        </div>
+        {timelineRequestState === 'loading' && !overviewUpcomingRiskEvents.length ? <p className="status-line pending">风险事件加载中...</p> : null}
+        {overviewUpcomingRiskEvents.length ? (
+          <div className="overview-risk-list">
+            {overviewUpcomingRiskEvents.map((item) => (
+              <button
+                type="button"
+                className={`overview-risk-item level-${getTimelineLevelTone(item?.level)}`}
+                key={item?.id || `${item?.eventDate}-${item?.title}`}
+                onClick={() => {
+                  setSelectedTimelineEventId(item?.id || '');
+                  setActiveView('timeline');
+                }}
+              >
+                <span>{formatTimelineDateRange(item)}</span>
+                <strong>{item?.title || '未命名事件'}</strong>
+                <small>{getTimelineCategoryLabel(item?.category)} · {getTimelineStatusLabel(item?.status)}</small>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="panel-tip compact overview-empty-note">暂无未来高影响事件；外部日历源接入后会继续补充。</p>
+        )}
+      </section>
+    );
+  }
+
+  function renderOverviewDenseTable() {
+    return (
+      <div className="overview-density-layout">
+        <section className="overview-table-panel" aria-label="高密度快照列表">
+          <div className="detail-table-wrap overview-table-wrap">
+            {overviewItems.length ? (
+              <table className="detail-table overview-table">
+                <thead>
+                  <tr>
+                    <th>标的</th>
+                    <th>最新</th>
+                    <th>涨跌</th>
+                    <th>主力净流</th>
+                    <th>换手/量能</th>
+                    <th>基金/异动</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {overviewItems.map((item) => {
+                    const snapshot = snapshots[item] || {};
+                    const previewCapitalFlow = overviewPreviewDetails[item]?.capitalFlow || null;
+                    const mainNetInflow = typeof snapshot?.capitalFlowMainNetInflow === 'number'
+                      ? snapshot.capitalFlowMainNetInflow
+                      : previewCapitalFlow?.mainNetInflow;
+                    const mainNetRatio = typeof snapshot?.capitalFlowMainNetRatio === 'number'
+                      ? snapshot.capitalFlowMainNetRatio
+                      : previewCapitalFlow?.mainNetRatio;
+                    const anomaly = overviewAnomalyBySymbol.get(item);
+                    const fundExposure = overviewFundExposureBySymbol.get(item);
+                    const rowTone = getSnapshotCardTone(snapshot?.changePct);
+                    const isSelected = activeOverviewPreviewSymbol === item;
+                    return (
+                      <tr
+                        className={isSelected ? 'overview-table-row active' : 'overview-table-row'}
+                        key={item}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={isSelected}
+                        onClick={() => setOverviewPreviewSymbol(item)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            setOverviewPreviewSymbol(item);
+                          }
+                        }}
+                      >
+                        <td>
+                          <strong>{snapshot?.companyName || '待识别公司'}</strong>
+                          <span className="table-subtext">{item} · {snapshot?.exchange || '--'}</span>
+                        </td>
+                        <td>
+                          <strong>{formatPrice(snapshot?.lastPrice)}</strong>
+                          <span className="table-subtext">{formatCompactNumber(snapshot?.marketCap)}</span>
+                        </td>
+                        <td>
+                          <strong className={rowTone === 'positive' ? 'positive' : rowTone === 'negative' ? 'negative' : ''}>{formatSignedPercent(snapshot?.changePct)}</strong>
+                          <span className="table-subtext">PE/PB {snapshot?.pe ?? '--'} / {snapshot?.pb ?? '--'}</span>
+                        </td>
+                        <td>
+                          <strong className={mainNetInflow > 0 ? 'positive' : mainNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(mainNetInflow)}</strong>
+                          <span className="table-subtext">{formatSignedPercent(mainNetRatio)}</span>
+                        </td>
+                        <td>
+                          <strong>{typeof snapshot?.turnoverRate === 'number' ? formatPercentValue(snapshot.turnoverRate) : '--'}</strong>
+                          <span className="table-subtext">{anomaly?.volumeRatio ? formatRatioMultiple(anomaly.volumeRatio) : '量能待补充'}</span>
+                        </td>
+                        <td>
+                          <strong>{fundExposure?.count ? `${fundExposure.count} 只基金` : '基金待补充'}</strong>
+                          <span className="table-subtext">异动 {anomaly?.overviewEventCount ?? 0} 条</span>
+                        </td>
+                        <td>
+                          <span className="overview-status-stack">
+                            <span className="table-meta-badge" title={getSourceTitle(snapshot?.source)}>{getReadableSourceLabel(snapshot?.source)}</span>
+                            <span className="table-subtext">{formatAgeLabel(snapshot?.updatedAt)}</span>
+                          </span>
+                        </td>
+                        <td>
+                          <button
+                            type="button"
+                            className="inline-action-button overview-detail-button"
+                            onKeyDown={(event) => {
+                              event.stopPropagation();
+                              if (event.key === 'Enter' || event.key === ' ') {
+                                event.preventDefault();
+                                handleOpenSnapshotDetail(item);
+                              }
+                            }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              handleOpenSnapshotDetail(item);
+                            }}
+                          >
+                            详情
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            ) : (
+              <p className="panel-tip compact overview-empty-note">{activeSymbols.length ? '当前筛选条件下没有匹配标的。' : '尚未生成快照数据。'}</p>
+            )}
+          </div>
+        </section>
+      </div>
+    );
+  }
+
   async function handleSubmitFund(event) {
     event.preventDefault();
     const normalizedFundCode = fundCode.trim();
@@ -3627,6 +4205,7 @@ function App() {
 
   function renderMacroYieldCard(label, metric) {
     const change = metric?.changeD5Bp;
+    const getYieldChangeTone = (value) => (value > 0 ? 'positive' : value < 0 ? 'negative' : '');
     return (
       <article className="macro-metric-card" key={label}>
         <div>
@@ -3634,10 +4213,10 @@ function App() {
           <p className="snapshot-subtitle">数据日期 {metric?.date || '--'}</p>
         </div>
         <div className="snapshot-metric">{formatMacroYield(metric?.value)}</div>
-        <dl className="watchlist-meta-grid">
-          <div><dt>1日</dt><dd className={metric?.changeD1Bp > 0 ? 'negative' : metric?.changeD1Bp < 0 ? 'positive' : ''}>{formatSignedBasisPoints(metric?.changeD1Bp)}</dd></div>
-          <div><dt>5日</dt><dd className={change > 0 ? 'negative' : change < 0 ? 'positive' : ''}>{formatSignedBasisPoints(change)}</dd></div>
-          <div><dt>20日</dt><dd className={metric?.changeD20Bp > 0 ? 'negative' : metric?.changeD20Bp < 0 ? 'positive' : ''}>{formatSignedBasisPoints(metric?.changeD20Bp)}</dd></div>
+        <dl className="watchlist-meta-grid macro-yield-change-grid">
+          <div><dt>1日</dt><dd className={getYieldChangeTone(metric?.changeD1Bp)}>{formatSignedBasisPoints(metric?.changeD1Bp)}</dd></div>
+          <div><dt>5日</dt><dd className={getYieldChangeTone(change)}>{formatSignedBasisPoints(change)}</dd></div>
+          <div><dt>20日</dt><dd className={getYieldChangeTone(metric?.changeD20Bp)}>{formatSignedBasisPoints(metric?.changeD20Bp)}</dd></div>
         </dl>
       </article>
     );
@@ -3659,6 +4238,17 @@ function App() {
     const context = macroSnapshot?.context || {};
     const alerts = Array.isArray(macroSnapshot?.alerts) ? macroSnapshot.alerts : [];
     const analysisPayload = macroAnalysis?.analysis || macroAnalysis;
+    const macroKeyMetrics = [
+      ['2Y', formatMacroYield(yields.y2?.value)],
+      ['10Y', formatMacroYield(yields.y10?.value)],
+      ['利差', formatSignedBasisPoints(yields.spread10Y2YBp)],
+      ['预警', String(alerts.length)],
+    ];
+    const macroTimelineEvents = getRelevantTimelineEvents({
+      terms: ['ust', 'yield', 'usd', '美元', '美债', 'cpi', 'fomc'],
+      categories: ['fomc', 'macro'],
+      limit: 3,
+    });
     return (
       <article className="panel wide macro-panel">
         <div className="panel-heading">
@@ -3673,6 +4263,14 @@ function App() {
         </div>
         {macroRequestState === 'loading' ? <p className="status-line pending">宏观数据加载中...</p> : null}
         {macroRequestState === 'error' ? <p className="status-line error">宏观数据加载失败，请稍后重试。</p> : null}
+        <div className="module-metric-strip macro-metric-strip" aria-label="宏观关键指标">
+          {macroKeyMetrics.map(([label, value]) => (
+            <span className="module-metric-chip" key={label}>
+              <small>{label}</small>
+              <strong>{value}</strong>
+            </span>
+          ))}
+        </div>
         <div className="macro-grid">
           {renderMacroYieldCard('2Y 美债', yields.y2)}
           {renderMacroYieldCard('10Y 美债', yields.y10)}
@@ -3688,6 +4286,7 @@ function App() {
           {renderMacroContextCard('美元指数', context.dxy)}
           {renderMacroContextCard('S&P 500', context.sp500, 'changeD1Pct')}
         </div>
+        {renderTimelineRiskPanel(macroTimelineEvents, '宏观风险日历', '当前暂无宏观或 FOMC 相关未来事件。')}
         {alerts.length ? (
           <div className="macro-alert-list">
             {alerts.map((alert) => <span className="market-breadth-chip warning" key={`${alert.series}-${alert.message}`}>{alert.message}</span>)}
@@ -3800,6 +4399,12 @@ function App() {
         </div>
         {llmAuditRequestState === 'loading' ? <p className="status-line pending">审计数据加载中...</p> : null}
         {llmAuditRequestState === 'error' ? <p className="status-line error">审计数据加载失败，请稍后重试。</p> : null}
+        <div className="module-metric-strip llm-audit-metric-strip" aria-label="AI 审计概览">
+          <span className="module-metric-chip"><small>调用</small><strong>{totalCount}</strong></span>
+          <span className="module-metric-chip"><small>完成</small><strong>{completedCount}</strong></span>
+          <span className="module-metric-chip"><small>失败</small><strong>{failedCount}</strong></span>
+          <span className="module-metric-chip"><small>能力</small><strong>{availableFeatureCount}</strong></span>
+        </div>
         <div className="llm-audit-summary-grid">
           <article className="llm-audit-summary-card">
             <strong>当日真实调用</strong>
@@ -4020,6 +4625,13 @@ function App() {
       : [];
     const goldSources = Object.values(goldDashboard?.sources || {});
     const degradedSources = goldSources.filter((item) => item?.status && item.status !== 'ok');
+    const goldFundCount = Array.isArray(goldDashboard.funds) ? goldDashboard.funds.length : 0;
+    const goldNewsCount = Array.isArray(goldDashboard.news) ? goldDashboard.news.length : 0;
+    const goldTimelineEvents = getRelevantTimelineEvents({
+      terms: ['gold', '黄金', 'usd', '美元', 'cpi', 'fomc'],
+      categories: ['fomc', 'macro'],
+      limit: 3,
+    });
 
     return (
       <article className="panel wide gold-panel">
@@ -4038,6 +4650,13 @@ function App() {
         {goldRequestState === 'loading' ? <p className="status-line pending">黄金看板加载中...</p> : null}
         {goldRequestState === 'error' ? <p className="status-line error">黄金看板加载失败，请稍后重试。</p> : null}
 
+        <div className="module-metric-strip gold-metric-strip" aria-label="黄金看板概览">
+          <span className="module-metric-chip"><small>报价</small><strong>{goldQuotes.length}</strong></span>
+          <span className="module-metric-chip"><small>基金</small><strong>{goldFundCount}</strong></span>
+          <span className="module-metric-chip"><small>资讯</small><strong>{goldNewsCount}</strong></span>
+          <span className="module-metric-chip"><small>异常源</small><strong>{degradedSources.length}</strong></span>
+        </div>
+
         <div className="gold-source-row">
           {goldSources.map((item) => (
             <span className={`market-breadth-chip ${item?.status === 'ok' ? 'positive' : item?.status === 'stale' ? 'warning' : item?.status === 'disabled' ? 'muted' : 'negative'}`} title={getSourceTitle(item?.source)} key={`${item?.id || 'gold-source'}-${item?.status || 'unknown'}`}>
@@ -4045,6 +4664,8 @@ function App() {
             </span>
           ))}
         </div>
+
+        {renderTimelineRiskPanel(goldTimelineEvents, '黄金风险日历', '当前暂无黄金、FOMC 或宏观相关未来事件。')}
 
         <div className="snapshot-grid gold-quote-grid">
           {goldQuotes.map((item) => renderGoldQuoteCard(item))}
@@ -4221,12 +4842,13 @@ function App() {
 
   function renderContentCard(item) {
     const meta = getContentItemMeta(item, snapshots);
-    const isClickable = Boolean(item.url);
+    const safeContentUrl = sanitizeExternalUrl(item.url);
+    const isClickable = Boolean(safeContentUrl);
     const openContent = () => {
-      if (!item.url) {
+      if (!safeContentUrl) {
         return;
       }
-      window.open(item.url, '_blank', 'noopener,noreferrer');
+      window.open(safeContentUrl, '_blank', 'noopener,noreferrer');
     };
 
     return (
@@ -4262,8 +4884,8 @@ function App() {
         <p className="content-card-summary">{item.aiSummary || item.summary || '当前仅同步到标题与基础元信息。'}</p>
         <div className="content-card-footer">
           <span className="content-source" title={getSourceTitle(item.provider, item.source)}>{getReadableSourceLabel(item.provider, item.source)}</span>
-          {item.url ? (
-            <a className="content-link" href={item.url} target="_blank" rel="noreferrer" onClick={(event) => event.stopPropagation()}>
+          {safeContentUrl ? (
+            <a className="content-link" href={safeContentUrl} target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>
               查看原文
             </a>
           ) : null}
@@ -4340,13 +4962,14 @@ function App() {
     const dragonTigerStocksPaged = dragonTigerStocksExpanded
       ? dragonTigerStocksVisible
       : dragonTigerStocksVisible.slice((dragonTigerStocksPage - 1) * dragonTigerDefaultPageSize, dragonTigerStocksPage * dragonTigerDefaultPageSize);
+    const dragonTigerDailyVisibleCount = dragonTigerDailyVisible.length;
 
     return (
       <article className="panel wide dragon-tiger-panel">
         <div className="panel-heading">
           <div>
             <h2>龙虎榜</h2>
-              <p className="panel-tip compact">默认先看当日上榜个股与上榜原因，近月统计和席位明细按需展开。</p>
+            <p className="panel-tip compact">默认先看当日上榜个股与上榜原因，近月统计和席位明细按需展开。</p>
           </div>
           <div className="content-status-summary">
             <span className="symbol-count-badge">日榜日期 {dragonTigerDate}</span>
@@ -4354,7 +4977,7 @@ function App() {
           </div>
         </div>
 
-        <div className="submenu-row content-toolbar-row dragon-tiger-toolbar-row">
+        <div className="submenu-row content-toolbar-row dragon-tiger-toolbar-row dragon-tiger-command-bar">
           <div className="content-toolbar-groups dragon-tiger-toolbar-groups">
             <div className="content-filter-row dragon-tiger-filter-row">
               <label className="content-symbol-select-label" htmlFor="dragon-tiger-date">日期</label>
@@ -4395,6 +5018,7 @@ function App() {
                 <button
                   type="button"
                   className="content-switch-option overview-sort-toggle"
+                  aria-label="切换日榜排序方向"
                   onClick={() => setDragonTigerDailySortDirection((current) => (current === 'desc' ? 'asc' : 'desc'))}
                 >
                   {dragonTigerDailySortDirection === 'desc' ? '降序' : '升序'}
@@ -4420,7 +5044,7 @@ function App() {
           <div className="dragon-tiger-toolbar-meta">
             {dragonTigerRequestState === 'loading' ? <span className="status-line pending">龙虎榜数据加载中...</span> : null}
             {dragonTigerRequestState === 'error' ? <span className="status-line error">龙虎榜数据加载失败，请稍后重试。</span> : null}
-            <button type="button" className="content-switch-option" onClick={() => setDragonTigerReloadNonce((current) => current + 1)}>
+            <button type="button" className="content-switch-option" aria-label="重新加载龙虎榜日榜数据" onClick={() => setDragonTigerReloadNonce((current) => current + 1)}>
               重新加载
             </button>
           </div>
@@ -4430,7 +5054,30 @@ function App() {
         {dragonTigerRequestState === 'error' && dragonTigerErrorMessage ? <p className="panel-tip compact">{dragonTigerErrorMessage}</p> : null}
         {dragonTigerActivationMessage ? <p className={`status-line ${dragonTigerActivationTone}`}>{dragonTigerActivationMessage}</p> : null}
 
-        <div className="dragon-tiger-section">
+        <div className="dragon-tiger-metric-strip" aria-label="龙虎榜数据概览">
+          <div className="dragon-tiger-metric-card">
+            <span>日榜命中</span>
+            <strong>{dragonTigerDailyVisibleCount}</strong>
+            <small>筛选后 / 总 {dragonTigerDailySorted.length}</small>
+          </div>
+          <div className="dragon-tiger-metric-card">
+            <span>个股统计</span>
+            <strong>{dragonTigerStocksSorted.length}</strong>
+            <small>{dragonTigerStatsExpanded ? '统计已展开' : '按需展开'}</small>
+          </div>
+          <div className="dragon-tiger-metric-card">
+            <span>机构记录</span>
+            <strong>{dragonTigerInstitutionSorted.length}</strong>
+            <small>{dragonTigerRangeLabels[dragonTigerRange] || dragonTigerRange}</small>
+          </div>
+          <div className="dragon-tiger-metric-card">
+            <span>席位明细</span>
+            <strong>{dragonTigerSeatDetailSorted.length}</strong>
+            <small>{dragonTigerSeatSymbol ? '已选个股' : '待选择'}</small>
+          </div>
+        </div>
+
+        <div className="dragon-tiger-section dragon-tiger-daily-section">
           <div className="section-heading">
             <div>
               <h3>日榜总览</h3>
@@ -4471,6 +5118,7 @@ function App() {
             <button
               type="button"
               className="content-switch-option"
+              aria-expanded={dragonTigerStatsExpanded}
               onClick={() => setDragonTigerStatsExpanded((current) => !current)}
             >
               {dragonTigerStatsExpanded ? '收起统计' : '展开统计'}
@@ -4508,13 +5156,14 @@ function App() {
                     <button
                       type="button"
                       className="content-switch-option overview-sort-toggle"
+                      aria-label="切换个股统计排序方向"
                       onClick={() => setDragonTigerStocksSortDirection((current) => (current === 'desc' ? 'asc' : 'desc'))}
                     >
                       {dragonTigerStocksSortDirection === 'desc' ? '降序' : '升序'}
                     </button>
                   </div>
                 </div>
-                <button type="button" className="content-switch-option" onClick={() => setDragonTigerStatsReloadNonce((current) => current + 1)}>
+                <button type="button" className="content-switch-option" aria-label="重新加载龙虎榜统计数据" onClick={() => setDragonTigerStatsReloadNonce((current) => current + 1)}>
                   重新加载统计
                 </button>
               </div>
@@ -4757,6 +5406,10 @@ function App() {
   function renderContentView() {
     const hasCooldown = Array.isArray(contentStatus.jobs) && contentStatus.jobs.some((job) => job?.isCoolingDown);
     const degradedJobs = Array.isArray(contentStatus.jobs) ? contentStatus.jobs.filter((job) => !job?.isHealthy) : [];
+    const contentAiSummaryCount = contentFeed.filter((item) => item?.aiSummary).length;
+    const contentMarketCount = contentFeed.filter((item) => item?.scope === 'market').length;
+    const contentStaleCount = contentFeed.filter((item) => item?.stale).length;
+    const hasContentHealthNotice = (contentRequestState === 'loading' && !contentFeed.length) || contentRequestState === 'error' || hasCooldown || degradedJobs.length > 0;
     return (
       <article className="panel wide content-panel">
         <div className="panel-heading">
@@ -4778,6 +5431,7 @@ function App() {
                   key={value}
                   className={contentTimeRange === value ? 'content-switch-option active' : 'content-switch-option'}
                   type="button"
+                  aria-pressed={contentTimeRange === value}
                   onClick={() => setContentTimeRange(value)}
                 >
                   {label}
@@ -4818,40 +5472,57 @@ function App() {
                 ))}
               </select>
             </div>
+            <div className="content-insight-card content-insight-inline" aria-label="当前筛选概览">
+              <h3>当前筛选</h3>
+              <div className="content-insight-metrics">
+                <span>条目 <strong>{contentFeed.length}</strong></span>
+                <span>AI摘要 <strong>{contentAiSummaryCount}</strong></span>
+                <span>市场 <strong>{contentMarketCount}</strong></span>
+                <span>待刷新 <strong>{contentStaleCount}</strong></span>
+              </div>
+            </div>
           </div>
         </div>
 
-        {hasCooldown ? <p className="panel-tip compact">当前部分内容通道处于冷却期，页面继续使用已同步数据并稍后自动刷新。</p> : null}
-        {degradedJobs.length ? (
-          <div className="content-health-grid">
-            {degradedJobs.map((job) => (
-              <article className={`content-health-card ${getLaneStatusTone(job)}`} key={`${job.lane}-${job.symbol || 'market'}`}>
-                <div className="content-health-card-header">
-                  <strong>{contentLaneLabels[job.lane] || job.lane}</strong>
-                  <span>{job.symbol || '全市场'}</span>
-                </div>
-                <p>
-                  {job.lastError
-                    ? `最近同步失败：${job.lastError}`
-                    : job.isStale
-                      ? '当前数据通道已超过健康刷新窗口，页面继续显示已同步数据。'
-                      : '当前数据通道状态异常。'}
-                </p>
-                <div className="content-health-meta">
-                  <span>上次成功 {formatRelativeDateTime(job.lastSuccessAt)}</span>
-                  <span>失败次数 {job.failureCount || 0}</span>
-                </div>
-              </article>
-            ))}
+        {hasContentHealthNotice ? (
+          <div className="content-health-strip active" aria-live="polite">
+            {contentRequestState === 'loading' ? <p className="status-line pending content-health-message">资讯数据加载中...</p> : null}
+            {contentRequestState === 'error' ? <p className="status-line error content-health-message">资讯数据加载失败，请稍后重试。</p> : null}
+            {hasCooldown ? <p className="panel-tip compact content-rail-note content-health-message">当前部分内容通道处于冷却期，页面继续使用已同步数据并稍后自动刷新。</p> : null}
+            {degradedJobs.length ? (
+              <div className="content-health-grid content-health-rail">
+                {degradedJobs.map((job) => (
+                  <article className={`content-health-card ${getLaneStatusTone(job)}`} key={`${job.lane}-${job.symbol || 'market'}`}>
+                    <div className="content-health-card-header">
+                      <strong>{contentLaneLabels[job.lane] || job.lane}</strong>
+                      <span>{job.symbol || '全市场'}</span>
+                    </div>
+                    <p>
+                      {job.lastError
+                        ? `最近同步失败：${job.lastError}`
+                        : job.isStale
+                          ? '当前数据通道已超过健康刷新窗口，页面继续显示已同步数据。'
+                          : '当前数据通道状态异常。'}
+                    </p>
+                    <div className="content-health-meta">
+                      <span>上次成功 {formatRelativeDateTime(job.lastSuccessAt)}</span>
+                      <span>失败次数 {job.failureCount || 0}</span>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : null}
           </div>
         ) : null}
-        {contentRequestState === 'loading' ? <p className="status-line">资讯数据加载中...</p> : null}
-        {contentRequestState === 'error' ? <p className="status-line">资讯数据加载失败，请稍后重试。</p> : null}
 
-        <div className="content-feed-scroll-area">
-          <div className="content-grid">
-            {contentFeed.length ? contentFeed.map((item) => renderContentCard(item)) : <p className="content-empty-state">当前筛选条件下暂无内容情报。</p>}
-          </div>
+        <div className="content-workbench">
+          <section className="content-feed-column" aria-label="资讯信息流">
+            <div className="content-feed-scroll-area" ref={contentFeedScrollRef}>
+              <div className="content-grid">
+                {contentFeed.length ? contentFeed.map((item) => renderContentCard(item)) : <p className="content-empty-state">当前筛选条件下暂无内容情报。</p>}
+              </div>
+            </div>
+          </section>
         </div>
       </article>
     );
@@ -4966,6 +5637,19 @@ function App() {
     const topHoldings = Array.isArray(detail?.topHoldings) ? detail.topHoldings : [];
     const performance = Array.isArray(detail?.holdingStocksPerformance) ? detail.holdingStocksPerformance : [];
     const riskSignals = Array.isArray(detail?.riskSignals) ? detail.riskSignals : Array.isArray(snapshot?.riskSignals) ? snapshot.riskSignals : [];
+    const fundTimelineTerms = [
+      profile.fundType,
+      snapshot.fundType,
+      profile.benchmarkIndex,
+      profile.fundName,
+      snapshot.fundName,
+      topHoldings.slice(0, 5).map((holding) => [holding.stockName, holding.stockSymbol]),
+    ];
+    const fundTimelineEvents = getRelevantTimelineEvents({
+      terms: fundTimelineTerms,
+      categories: ['fomc', 'macro', 'options'],
+      limit: 3,
+    });
 
     return (
       <div className="detail-view fund-detail-view">
@@ -5024,6 +5708,7 @@ function App() {
             <h3>风险提示</h3>
             {renderRiskSignalList(riskSignals, '当前暂无足够披露持仓用于生成更多风险提示。')}
           </section>
+          {renderTimelineRiskPanel(fundTimelineEvents, '未来风险日历', '当前基金缺少可匹配的未来风险事件，后续数据源补充后会自动显示。')}
           <section className="detail-card wide-card">
             <h3>十大重仓与实时联动估算</h3>
             <div className="detail-table-wrap detail-table-wrap-scrollable">
@@ -5057,6 +5742,8 @@ function App() {
   }
 
   function renderFundsView() {
+    const monitoredFundCount = activeFunds.length;
+    const fundSnapshotCount = activeFunds.filter((item) => fundSnapshots[item]).length;
     return (
       <article className="panel wide fund-panel">
         {selectedFundCode ? (
@@ -5070,10 +5757,16 @@ function App() {
               </div>
               <div className="management-meta"><span className="symbol-count-badge">监控中 {activeFunds.length}</span></div>
             </div>
+            <div className="module-metric-strip fund-metric-strip" aria-label="基金监控概览">
+              <span className="module-metric-chip"><small>监控基金</small><strong>{monitoredFundCount}</strong></span>
+              <span className="module-metric-chip"><small>已同步</small><strong>{fundSnapshotCount}</strong></span>
+              <span className="module-metric-chip"><small>视图</small><strong>{fundsSubView === 'list' ? '列表' : '组合'}</strong></span>
+              <span className="module-metric-chip"><small>状态</small><strong>{getRequestStatusLabel(fundRequestState)}</strong></span>
+            </div>
             <div className="submenu-row">
-              <div className="submenu-tabs">
-                <button type="button" className={fundsSubView === 'list' ? 'view-tab active' : 'view-tab'} onClick={() => setFundsSubView('list')}>基金列表</button>
-                <button type="button" className={fundsSubView === 'portfolio' ? 'view-tab active' : 'view-tab'} onClick={() => setFundsSubView('portfolio')}>监控组合视角</button>
+              <div className="submenu-tabs" role="tablist" aria-label="基金视图切换">
+                <button type="button" className={fundsSubView === 'list' ? 'view-tab active' : 'view-tab'} aria-pressed={fundsSubView === 'list'} onClick={() => setFundsSubView('list')}>基金列表</button>
+                <button type="button" className={fundsSubView === 'portfolio' ? 'view-tab active' : 'view-tab'} aria-pressed={fundsSubView === 'portfolio'} onClick={() => setFundsSubView('portfolio')}>监控组合视角</button>
               </div>
             </div>
             {fundsSubView === 'list' ? (
@@ -5096,9 +5789,7 @@ function App() {
     const showingStockView = managementAssetView === 'stock';
     const requestStateValue = showingStockView ? requestState : fundRequestState;
     const assetPanelId = showingStockView ? 'management-panel-stock' : 'management-panel-fund';
-    const actionPanelId = showingStockView
-      ? `management-stock-${managementActionView}`
-      : `management-fund-${managementActionView}`;
+    const activeWatchlistCount = showingStockView ? activeSymbols.length : activeFunds.length;
 
     return (
       <article className="panel wide management-panel">
@@ -5142,44 +5833,17 @@ function App() {
           </div>
 
           <section id={assetPanelId} role="tabpanel" aria-labelledby={showingStockView ? 'management-tab-stock' : 'management-tab-fund'} className="management-panel-section">
-            <div className="submenu-row">
-              <div className="submenu-tabs" role="tablist" aria-label={showingStockView ? '股票管理视图' : '基金管理视图'}>
-                <button
-                  id={showingStockView ? 'management-stock-activate-tab' : 'management-fund-activate-tab'}
-                  className={managementActionView === 'activate' ? 'view-tab active' : 'view-tab'}
-                  type="button"
-                  role="tab"
-                  aria-selected={managementActionView === 'activate'}
-                  aria-controls={showingStockView ? 'management-stock-activate' : 'management-fund-activate'}
-                  onClick={() => setManagementActionView('activate')}
-                >
-                  {showingStockView ? '添加标的' : '添加基金'}
-                </button>
-                <button
-                  id={showingStockView ? 'management-stock-watchlist-tab' : 'management-fund-watchlist-tab'}
-                  className={managementActionView === 'watchlist' ? 'view-tab active' : 'view-tab'}
-                  type="button"
-                  role="tab"
-                  aria-selected={managementActionView === 'watchlist'}
-                  aria-controls={showingStockView ? 'management-stock-watchlist' : 'management-fund-watchlist'}
-                  onClick={() => setManagementActionView('watchlist')}
-                >
-                  {showingStockView ? '监控列表' : '基金列表'}
-                </button>
-              </div>
-            </div>
-
-            <section
-              id={actionPanelId}
-              role="tabpanel"
-              aria-labelledby={showingStockView
-                ? (managementActionView === 'activate' ? 'management-stock-activate-tab' : 'management-stock-watchlist-tab')
-                : (managementActionView === 'activate' ? 'management-fund-activate-tab' : 'management-fund-watchlist-tab')}
-              className="management-panel-section"
-            >
-              {showingStockView ? (
-                managementActionView === 'activate' ? (
-                  <form className="symbol-form compact-form" onSubmit={handleSubmit}>
+            <div className="management-workbench">
+              <section className="management-command-panel" aria-label={showingStockView ? '添加股票监控' : '添加基金监控'}>
+                <div className="management-section-heading">
+                  <div>
+                    <h3>{showingStockView ? '添加标的' : '添加基金'}</h3>
+                    <p className="panel-tip compact">{showingStockView ? '输入股票代码后进入实时采集队列。' : '输入基金代码后同步净值、持仓与关联股票。'}</p>
+                  </div>
+                  <span className="table-meta-badge">当前 {activeWatchlistCount}</span>
+                </div>
+                {showingStockView ? (
+                  <form className="symbol-form compact-form management-command-form" onSubmit={handleSubmit}>
                     <label htmlFor="symbol">股票代码</label>
                     <div className="inline-form-row">
                       <input id="symbol" value={symbol} onChange={(event) => setSymbol(event.target.value)} placeholder="例如 000001" />
@@ -5188,41 +5852,41 @@ function App() {
                     <p className="panel-tip compact">请输入 6 位股票代码，如 000001。</p>
                   </form>
                 ) : (
-                  <div className="watchlist-panel">
-                    <div className="watchlist-grid">
-                      {activeSymbols.length ? (
-                        activeSymbols.map((item) => renderWatchlistCard(item))
-                      ) : (
-                        <p className="panel-tip compact">尚无激活标的。</p>
-                      )}
+                  <form className="symbol-form compact-form fund-form management-command-form" onSubmit={handleSubmitFund}>
+                    <label htmlFor="management-fund-code">基金代码</label>
+                    <div className="inline-form-row">
+                      <input id="management-fund-code" value={fundCode} onChange={(event) => setFundCode(event.target.value)} placeholder="例如 007329" />
+                      <button type="submit" disabled={fundRequestState === 'submitting'}>{fundRequestState === 'submitting' ? '提交中…' : '激活基金'}</button>
                     </div>
+                    <label className="inline-checkbox">
+                      <input type="checkbox" checked={autoLinkStocks} onChange={(event) => setAutoLinkStocks(event.target.checked)} />
+                      自动关联重仓股到股票监控
+                    </label>
+                    <p className="panel-tip compact">支持 6 位基金代码；collector 会按基金节奏异步补全净值与持仓。</p>
+                  </form>
+                )}
+              </section>
+
+              <section className="management-watchlist-panel" aria-label={showingStockView ? '股票监控列表' : '基金监控列表'}>
+                <div className="management-section-heading">
+                  <div>
+                    <h3>{showingStockView ? '监控列表' : '基金列表'}</h3>
+                    <p className="panel-tip compact">{showingStockView ? '查看当前股票快照并移除不再跟踪的标的。' : '查看基金净值联动、打开详情或停止监控。'}</p>
                   </div>
-                )
-              ) : managementActionView === 'activate' ? (
-                <form className="symbol-form compact-form fund-form" onSubmit={handleSubmitFund}>
-                  <label htmlFor="management-fund-code">基金代码</label>
-                  <div className="inline-form-row">
-                    <input id="management-fund-code" value={fundCode} onChange={(event) => setFundCode(event.target.value)} placeholder="例如 007329" />
-                    <button type="submit" disabled={fundRequestState === 'submitting'}>{fundRequestState === 'submitting' ? '提交中…' : '激活基金'}</button>
-                  </div>
-                  <label className="inline-checkbox">
-                    <input type="checkbox" checked={autoLinkStocks} onChange={(event) => setAutoLinkStocks(event.target.checked)} />
-                    自动关联重仓股到股票监控
-                  </label>
-                  <p className="panel-tip compact">支持 6 位基金代码；collector 会按基金节奏异步补全净值与持仓。</p>
-                </form>
-              ) : (
-                <div className="watchlist-panel">
-                  <div className="watchlist-grid">
-                    {activeFunds.length ? (
+                </div>
+                <div className="watchlist-panel management-watchlist-scroll">
+                  <div className="watchlist-grid management-watchlist-grid">
+                    {showingStockView ? (
+                      activeSymbols.length ? activeSymbols.map((item) => renderWatchlistCard(item)) : <p className="panel-tip compact">尚无激活标的。</p>
+                    ) : activeFunds.length ? (
                       activeFunds.map((item) => renderFundManagementCard(item))
                     ) : (
                       <p className="panel-tip compact">尚无激活基金。</p>
                     )}
                   </div>
                 </div>
-              )}
-            </section>
+              </section>
+            </div>
           </section>
         </div>
 
@@ -5316,6 +5980,11 @@ function App() {
     const readableEvents = buildReadableEventItems(events);
     const snapshot = selectedSnapshot || detailPayload?.snapshot || null;
     const detailSector = snapshot?.sector || snapshot?.sectorInfo;
+    const stockTimelineEvents = getRelevantTimelineEvents({
+      terms: [selectedSnapshotSymbol, snapshot?.companyName, snapshot?.name, detailSector],
+      categories: ['fomc', 'macro', 'options'],
+      limit: 3,
+    });
     const previousClose = estimatePreviousClose(snapshot, latestKline, intradayChartPoints);
     const candleChart = dailyBars.length ? buildCandlestickChartGeometry(dailyBars, 860, 248) : null;
     const movingAverageOverlays = candleChart ? buildMovingAverageOverlays(dailyBars, candleChart.candles, candleChart.scaleY) : [];
@@ -5440,6 +6109,8 @@ function App() {
 
         {detailRequestState === 'loading' ? <p className="status-line">详情数据加载中...</p> : null}
         {detailRequestState === 'error' ? <p className="status-line">详情数据加载失败，请稍后重试。</p> : null}
+
+        {renderTimelineRiskPanel(stockTimelineEvents, '相关未来风险', '当前个股缺少可匹配的未来风险事件。')}
 
         <div className="detail-hero-grid">
           <section className="detail-card chart-card">
@@ -6190,6 +6861,159 @@ function App() {
     );
   }
 
+  function renderTimelineEventButton(item) {
+    const isSelected = selectedTimelineEvent?.id === item?.id;
+    const levelTone = getTimelineLevelTone(item?.level);
+    const assets = Array.isArray(item?.impactAssets) ? item.impactAssets : [];
+    return (
+      <button
+        className={`calendar-timeline-card level-${levelTone} status-${item?.status || 'unknown'}${isSelected ? ' active' : ''}`}
+        type="button"
+        key={item?.id || `${item?.eventDate}-${item?.title}`}
+        onClick={() => setSelectedTimelineEventId(item?.id || '')}
+        aria-pressed={isSelected}
+      >
+        <span className="calendar-timeline-date">{formatTimelineDateRange(item)}</span>
+        <span className="calendar-timeline-main">
+          <strong>{item?.title || '未命名事件'}</strong>
+          <small>{getTimelineCategoryLabel(item?.category)} · {getTimelineLevelLabel(item?.level)} · {getTimelineStatusLabel(item?.status)}</small>
+        </span>
+        <span className="calendar-timeline-assets">
+          {assets.slice(0, 3).map((asset) => <em key={`${item?.id}-${asset}`}>{asset}</em>)}
+          {assets.length > 3 ? <em>+{assets.length - 3}</em> : null}
+        </span>
+      </button>
+    );
+  }
+
+  function renderTimelineView() {
+    const selectedAssets = Array.isArray(selectedTimelineEvent?.impactAssets) ? selectedTimelineEvent.impactAssets : [];
+    const categoryOptions = Object.keys(timelineCategoryLabels);
+    const safeTimelineSourceUrl = sanitizeExternalUrl(selectedTimelineEvent?.sourceUrl);
+    const sourceLabel = selectedTimelineEvent?.source === 'seed'
+      ? 'MVP 种子'
+      : selectedTimelineEvent?.source || '待补充';
+
+    return (
+      <article className="panel wide timeline-panel">
+        <div className="panel-heading">
+          <div>
+            <p className="eyebrow">Risk Calendar · Asia/Shanghai</p>
+            <h2>事件时间轴</h2>
+            <p className="panel-tip compact">先以可用种子事件完成 #85 占位，所有日期按北京时间展示；缺失前值、预期和来源时明确标记为待补充。</p>
+          </div>
+          <div className="management-meta timeline-meta-row">
+            <span className="symbol-count-badge">北京时间 {getTimelineTodayLabel()}</span>
+            <span className="symbol-count-badge">事件 {orderedTimelineEvents.length}</span>
+            <span className="symbol-count-badge">高影响 {timelineSummary.levelCounts.high || 0}</span>
+          </div>
+        </div>
+
+        <div className="timeline-filter-bar" aria-label="时间轴筛选">
+          <fieldset className="anomaly-filter-card timeline-filter-card">
+            <legend>事件类别</legend>
+            <div className="anomaly-filter-options timeline-filter-options">
+              <button className={!timelineCategoryFilter ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setTimelineCategoryFilter('')}>全部</button>
+              {categoryOptions.map((category) => (
+                <button
+                  className={timelineCategoryFilter === category ? 'anomaly-filter-option active' : 'anomaly-filter-option'}
+                  type="button"
+                  key={category}
+                  onClick={() => setTimelineCategoryFilter(category)}
+                >
+                  {getTimelineCategoryLabel(category)} {timelineSummary.categoryCounts[category] || 0}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          <fieldset className="anomaly-filter-card timeline-filter-card compact">
+            <legend>影响级别</legend>
+            <div className="anomaly-filter-options timeline-filter-options compact">
+              <button className={!timelineLevelFilter ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setTimelineLevelFilter('')}>全部</button>
+              {['high', 'medium', 'low'].map((level) => (
+                <button
+                  className={timelineLevelFilter === level ? 'anomaly-filter-option active' : 'anomaly-filter-option'}
+                  type="button"
+                  key={level}
+                  onClick={() => setTimelineLevelFilter(level)}
+                >
+                  {getTimelineLevelLabel(level)} {timelineSummary.levelCounts[level] || 0}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+        </div>
+
+        {timelineRequestState === 'loading' ? <p className="status-line pending">时间轴加载中...</p> : null}
+        {timelineRequestState === 'error' ? <p className="status-line error">时间轴加载失败，请稍后重试。</p> : null}
+
+        <div className="timeline-workbench">
+          <section className="timeline-lane-stack panel-scroll-area" aria-label="事件列表">
+            {timelineLanes.length ? timelineLanes.map((lane) => (
+              <div className="timeline-lane" key={lane.category}>
+                <div className="timeline-lane-header">
+                  <h3>{getTimelineCategoryLabel(lane.category)}</h3>
+                  <span className="table-meta-badge">{lane.events.length} 条</span>
+                </div>
+                <div className="calendar-timeline-list">
+                  {lane.events.map((item) => renderTimelineEventButton(item))}
+                </div>
+              </div>
+            )) : (
+              <p className="panel-tip compact timeline-empty-state">当前筛选条件下暂无时间轴事件；后续接入外部日历源后会补齐更多类别。</p>
+            )}
+          </section>
+
+          <aside className="timeline-detail-card" aria-label="事件详情">
+            {selectedTimelineEvent ? (
+              <>
+                <span className={`timeline-level-badge level-${getTimelineLevelTone(selectedTimelineEvent.level)}`}>{getTimelineLevelLabel(selectedTimelineEvent.level)}</span>
+                <h3>{selectedTimelineEvent.title || '未命名事件'}</h3>
+                <p className="timeline-detail-description">{selectedTimelineEvent.description || '事件描述待补充。'}</p>
+                <div className="timeline-impact-chip-row">
+                  {selectedAssets.length ? selectedAssets.map((asset) => <span className="market-breadth-chip" key={`${selectedTimelineEvent.id}-${asset}`}>{asset}</span>) : <span className="market-breadth-chip muted">影响资产待补充</span>}
+                </div>
+                <dl className="timeline-detail-list">
+                  <div>
+                    <dt>北京时间</dt>
+                    <dd>{formatTimelineDateRange(selectedTimelineEvent)}</dd>
+                  </div>
+                  <div>
+                    <dt>状态</dt>
+                    <dd>{getTimelineStatusLabel(selectedTimelineEvent.status)}</dd>
+                  </div>
+                  <div>
+                    <dt>类别</dt>
+                    <dd>{getTimelineCategoryLabel(selectedTimelineEvent.category)}</dd>
+                  </div>
+                  <div>
+                    <dt>来源</dt>
+                    <dd>{sourceLabel}</dd>
+                  </div>
+                  <div>
+                    <dt>前值</dt>
+                    <dd>{selectedTimelineEvent.previousValue || '待补充'}</dd>
+                  </div>
+                  <div>
+                    <dt>市场预期</dt>
+                    <dd>{selectedTimelineEvent.marketExpectation || '待补充'}</dd>
+                  </div>
+                </dl>
+                {safeTimelineSourceUrl ? (
+                  <a className="timeline-source-link" href={safeTimelineSourceUrl} target="_blank" rel="noopener noreferrer">查看原始来源</a>
+                ) : (
+                  <p className="panel-tip compact">原始来源链接待补充。</p>
+                )}
+              </>
+            ) : (
+              <p className="panel-tip compact">选择左侧事件后查看详情。</p>
+            )}
+          </aside>
+        </div>
+      </article>
+    );
+  }
+
   function renderDailyAnomalyView() {
     const summary = dailyAnomalyReport?.summary || {};
     const { portfolioItems, otherItems } = dailyAnomalyItems;
@@ -6216,27 +7040,27 @@ function App() {
           <span className="symbol-count-badge">持仓相关 {portfolioItems.length}</span>
           <span className="symbol-count-badge">监控标的 {summary.activeSymbolCount ?? activeSymbols.length}</span>
         </div>
-        <div className="anomaly-filter-grid" aria-label="异动日报筛选条件">
+        <div className="anomaly-filter-grid anomaly-filter-toolbar" aria-label="异动日报筛选条件">
           <fieldset className="anomaly-filter-card">
             <legend>筛选</legend>
             <div className="anomaly-filter-options">
-              <button className={!dailyAnomalyPortfolioOnly ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalyPortfolioOnly(false)}>全部</button>
-              <button className={dailyAnomalyPortfolioOnly ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalyPortfolioOnly(true)}>持仓</button>
+              <button className={!dailyAnomalyPortfolioOnly ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" aria-pressed={!dailyAnomalyPortfolioOnly} onClick={() => setDailyAnomalyPortfolioOnly(false)}>全部</button>
+              <button className={dailyAnomalyPortfolioOnly ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" aria-pressed={dailyAnomalyPortfolioOnly} onClick={() => setDailyAnomalyPortfolioOnly(true)}>持仓</button>
             </div>
           </fieldset>
           <fieldset className="anomaly-filter-card">
             <legend>排序</legend>
             <div className="anomaly-filter-options three-options">
-              <button className={dailyAnomalySortBy === 'relevance' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalySortBy('relevance')}>关联</button>
-              <button className={dailyAnomalySortBy === 'magnitude' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalySortBy('magnitude')}>幅度</button>
-              <button className={dailyAnomalySortBy === 'time' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalySortBy('time')}>时间</button>
+              <button className={dailyAnomalySortBy === 'relevance' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" aria-pressed={dailyAnomalySortBy === 'relevance'} onClick={() => setDailyAnomalySortBy('relevance')}>关联</button>
+              <button className={dailyAnomalySortBy === 'magnitude' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" aria-pressed={dailyAnomalySortBy === 'magnitude'} onClick={() => setDailyAnomalySortBy('magnitude')}>幅度</button>
+              <button className={dailyAnomalySortBy === 'time' ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" aria-pressed={dailyAnomalySortBy === 'time'} onClick={() => setDailyAnomalySortBy('time')}>时间</button>
             </div>
           </fieldset>
           <fieldset className="anomaly-filter-card">
             <legend>涨跌阈值</legend>
             <div className="anomaly-filter-options four-options">
               {['0', '2', '3', '5'].map((value) => (
-                <button key={value} className={dailyAnomalyChangeThreshold === value ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalyChangeThreshold(value)}>
+                <button key={value} className={dailyAnomalyChangeThreshold === value ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" aria-pressed={dailyAnomalyChangeThreshold === value} onClick={() => setDailyAnomalyChangeThreshold(value)}>
                   {value === '0' ? '不限' : `≥${value}%`}
                 </button>
               ))}
@@ -6246,7 +7070,7 @@ function App() {
             <legend>量比阈值</legend>
             <div className="anomaly-filter-options four-options">
               {['0', '1.5', '3', '5'].map((value) => (
-                <button key={value} className={dailyAnomalyVolumeThreshold === value ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" onClick={() => setDailyAnomalyVolumeThreshold(value)}>
+                <button key={value} className={dailyAnomalyVolumeThreshold === value ? 'anomaly-filter-option active' : 'anomaly-filter-option'} type="button" aria-pressed={dailyAnomalyVolumeThreshold === value} onClick={() => setDailyAnomalyVolumeThreshold(value)}>
                   {value === '0' ? '不限' : `≥${value}×`}
                 </button>
               ))}
@@ -6258,8 +7082,10 @@ function App() {
             <p className="panel-tip compact">正在生成今日异动日报…</p>
           ) : (
             <>
-              {renderAnomalySection('重点监控：持仓相关异动', portfolioItems, '暂无满足阈值的持仓相关显著异动。')}
-              {renderAnomalySection('其他监控标的异动', otherItems, '暂无满足阈值的其他监控标的异动。')}
+              <div className="anomaly-section-layout">
+                {renderAnomalySection('重点监控：持仓相关异动', portfolioItems, '暂无满足阈值的持仓相关显著异动。')}
+                {renderAnomalySection('其他监控标的异动', otherItems, '暂无满足阈值的其他监控标的异动。')}
+              </div>
               {!portfolioItems.length && !otherItems.length ? (
                 <p className="panel-tip compact anomaly-disclaimer">当前仅表示没有满足阈值的显著异动，不代表所有持仓均无风险。</p>
               ) : (
@@ -6272,86 +7098,69 @@ function App() {
     );
   }
 
-  return (
-    <main className="layout">
-      <section className="panel hero">
-        <p className="eyebrow">项目 · MoneyRush</p>
-        <h1>实时行情看板</h1>
-        <p className="lede">
-          用总览看全局，用事件看异动，用龙虎榜看盘后资金，用管理页维护监控标的。
-        </p>
-        <div className="hero-toolbar">
-          <button
-            className={activeView === 'overview' ? 'view-tab active' : 'view-tab'}
-            type="button"
-            onClick={() => setActiveView('overview')}
-          >
-            总览
-          </button>
-          <button
-            className={activeView === 'events' ? 'view-tab active' : 'view-tab'}
-            type="button"
-            onClick={() => setActiveView('events')}
-          >
-            异动日报
-          </button>
-          <button
-            className={activeView === 'content' ? 'view-tab active' : 'view-tab'}
-            type="button"
-            onClick={() => setActiveView('content')}
-          >
-            资讯
-          </button>
-          <button
-            className={activeView === 'dragonTiger' ? 'view-tab active' : 'view-tab'}
-            type="button"
-            onClick={() => setActiveView('dragonTiger')}
-          >
-            龙虎榜
-          </button>
-          <button
-            className={activeView === 'funds' ? 'view-tab active' : 'view-tab'}
-            type="button"
-            onClick={() => setActiveView('funds')}
-          >
-            基金
-          </button>
-          <button
-            className={activeView === 'gold' ? 'view-tab active' : 'view-tab'}
-            type="button"
-            onClick={() => setActiveView('gold')}
-          >
-            黄金
-          </button>
-          {macroCapabilities.enabled ? (
-            <button
-              className={activeView === 'macro' ? 'view-tab active' : 'view-tab'}
-              type="button"
-              onClick={() => setActiveView('macro')}
-            >
-              美债宏观
-            </button>
-          ) : null}
-          {llmAuditCapabilities.enabled ? (
-            <button
-              className={activeView === 'llmAudit' ? 'view-tab active' : 'view-tab'}
-              type="button"
-              onClick={() => setActiveView('llmAudit')}
-            >
-              AI服务审计
-            </button>
-          ) : null}
-          <button
-            className={activeView === 'management' ? 'view-tab active' : 'view-tab'}
-            type="button"
-            onClick={() => setActiveView('management')}
-          >
-            管理
-          </button>
-        </div>
-      </section>
+  const workbenchNavItems = [
+    ...baseWorkbenchNavItems.slice(0, 6),
+    ...(macroCapabilities.enabled ? [macroWorkbenchNavItem] : []),
+    baseWorkbenchNavItems[6],
+    ...(llmAuditCapabilities.enabled ? [llmAuditWorkbenchNavItem] : []),
+    baseWorkbenchNavItems[7],
+  ];
+  const currentWorkbenchItem = workbenchNavItems.find((item) => item.key === activeView) || workbenchNavItems[0];
+  const shellMarketState = connectionState === 'connected' ? marketStatus : 'disconnected';
 
-      <section className="grid single-column">
+  function renderShellNavButton(item) {
+    const isActive = activeView === item.key;
+    return (
+      <button
+        className={isActive ? 'workbench-nav-button active' : 'workbench-nav-button'}
+        type="button"
+        key={item.key}
+        onClick={() => setActiveView(item.key)}
+        aria-current={isActive ? 'page' : undefined}
+      >
+        <span>{item.label}</span>
+        <small>{item.description}</small>
+      </button>
+    );
+  }
+
+  return (
+    <main className="layout workbench-layout">
+      <aside className="workbench-sidebar" aria-label="MoneyRush 工作台导航">
+        <div className="workbench-brand">
+          <p className="eyebrow">MoneyRush</p>
+          <strong>实时工作台</strong>
+          <span>高密度行情与风险导航</span>
+        </div>
+        <nav className="workbench-nav" aria-label="主导航">
+          {workbenchNavItems.map((item) => renderShellNavButton(item))}
+        </nav>
+        <div className="workbench-sidebar-status" aria-label="实时状态">
+          <span className={`workbench-status-dot ${getMarketStatusTone(shellMarketState)}`} aria-hidden="true" />
+          <div>
+            <strong>{getMarketStatusLabel(shellMarketState)}</strong>
+            <small>{getConnectionStatusLabel(connectionState)} · {marketStatusUpdatedAt ? formatTime(marketStatusUpdatedAt) : '--:--:--'}</small>
+          </div>
+        </div>
+      </aside>
+
+      <section className="workbench-main">
+        <section className="panel hero workbench-hero">
+          <div>
+            <p className="eyebrow">项目 · MoneyRush</p>
+            <h1>{currentWorkbenchItem.label}</h1>
+            <p className="lede">
+              {currentWorkbenchItem.description} · 用总览看全局，用事件看异动，用时间轴看未来风险，用管理页维护监控标的。
+            </p>
+          </div>
+          <div className="workbench-topbar-meta">
+            <span className={`status-line ${getMarketStatusTone(shellMarketState)}`}>市场状态：{getMarketStatusLabel(shellMarketState)}</span>
+            <span className="symbol-count-badge">实时连接：{getConnectionStatusLabel(connectionState)}</span>
+            <span className="symbol-count-badge">监控 {activeSymbols.length}</span>
+          </div>
+        </section>
+
+        <section className="grid single-column workbench-content">
         {activeView === 'overview' ? (
           <article className="panel wide">
             {selectedSnapshotSymbol ? (
@@ -6362,7 +7171,7 @@ function App() {
                 <div className="section-heading overview-heading">
                   <div>
                     <h2>快照总览</h2>
-                    <p className="panel-tip compact">按标的汇总最新价格、涨跌幅和关键估值指标，点击卡片可查看详情。</p>
+                    <p className="panel-tip compact">默认用高密度列表扫描价格、资金、基金和异动；卡片模式保留原详情入口。</p>
                   </div>
                   <div className="overview-heading-meta">
                     <span className="symbol-count-badge">监控中 {activeSymbols.length}</span>
@@ -6412,24 +7221,51 @@ function App() {
                       </button>
                     </div>
                   </div>
-                </div>
-                <div className="panel-scroll-area">
-                  <div className="snapshot-grid">
-                    {overviewItems.length ? (
-                      overviewItems.map((item) => {
-                        const snapshot = snapshots[item];
-                        return renderOverviewCard(item, snapshot);
-                      })
-                    ) : (
-                      <p>{activeSymbols.length ? '当前筛选条件下没有匹配标的。' : '尚未生成快照数据。'}</p>
-                    )}
+                  <div className="content-filter-row overview-mode-row">
+                    <span className="content-symbol-select-label">展示模式</span>
+                    <div className="content-switch-group overview-mode-switch" role="group" aria-label="总览展示模式">
+                      <button
+                        type="button"
+                        className={overviewViewMode === 'dense' ? 'content-switch-option active' : 'content-switch-option'}
+                        aria-pressed={overviewViewMode === 'dense'}
+                        onClick={() => setOverviewViewMode('dense')}
+                      >
+                        列表
+                      </button>
+                      <button
+                        type="button"
+                        className={overviewViewMode === 'card' ? 'content-switch-option active' : 'content-switch-option'}
+                        aria-pressed={overviewViewMode === 'card'}
+                        onClick={() => setOverviewViewMode('card')}
+                      >
+                        卡片
+                      </button>
+                    </div>
                   </div>
                 </div>
+                {overviewViewMode === 'dense' ? (
+                  renderOverviewDenseTable()
+                ) : (
+                  <div className="panel-scroll-area">
+                    <div className="snapshot-grid">
+                      {overviewItems.length ? (
+                        overviewItems.map((item) => {
+                          const snapshot = snapshots[item];
+                          return renderOverviewCard(item, snapshot);
+                        })
+                      ) : (
+                        <p>{activeSymbols.length ? '当前筛选条件下没有匹配标的。' : '尚未生成快照数据。'}</p>
+                      )}
+                    </div>
+                  </div>
+                )}
               </>
             )}
           </article>
         ) : activeView === 'content' ? (
           renderContentView()
+        ) : activeView === 'timeline' ? (
+          renderTimelineView()
         ) : activeView === 'gold' ? (
           renderGoldView()
         ) : activeView === 'funds' ? (
@@ -6445,6 +7281,7 @@ function App() {
         ) : (
           renderDailyAnomalyView()
         )}
+        </section>
       </section>
     </main>
   );

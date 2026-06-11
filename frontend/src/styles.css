@@ -9,6 +9,26 @@
   font-weight: 400;
   background: #09111f;
   color: #eff4ff;
+  --workbench-bg: #07101d;
+  --workbench-rail: rgba(7, 14, 28, 0.94);
+  --workbench-panel: #f7f9fc;
+  --workbench-panel-2: #eef3f8;
+  --workbench-surface: #ffffff;
+  --workbench-ink: #18202d;
+  --workbench-muted: #697383;
+  --workbench-line: #d8e0ea;
+  --workbench-blue: #5a87ff;
+  --workbench-green: #6fe5b3;
+  --workbench-red: #ff8a8a;
+  --workbench-amber: #ffd166;
+  --workbench-radius: 8px;
+  --surface-dark: rgba(6, 12, 24, 0.9);
+  --surface-dark-soft: rgba(12, 21, 39, 0.78);
+  --surface-dark-ink: #eef5ff;
+  --surface-dark-muted: #a9badc;
+  --surface-dark-subtle: #7f94bf;
+  --surface-dark-line: rgba(157, 180, 255, 0.16);
+  --workbench-shell-gap: 24px;
 }
 
 * {
@@ -42,6 +62,191 @@ textarea {
   padding: 40px 0 64px;
 }
 
+.layout.workbench-layout {
+  width: min(1520px, calc(100% - 32px));
+  position: relative;
+  display: block;
+  padding-left: 256px;
+  padding-top: var(--workbench-shell-gap);
+  padding-bottom: var(--workbench-shell-gap);
+  color: #e7eefc;
+  --panel-background: rgba(9, 16, 30, 0.88);
+  --panel-border: rgba(129, 164, 255, 0.18);
+  --panel-ink: #e7eefc;
+  --panel-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+}
+
+.workbench-sidebar {
+  position: fixed;
+  top: var(--workbench-shell-gap);
+  bottom: var(--workbench-shell-gap);
+  left: max(16px, calc((100vw - 1520px) / 2));
+  display: grid;
+  gap: 16px;
+  width: 236px;
+  min-height: calc(100vh - (var(--workbench-shell-gap) * 2));
+  overflow-y: auto;
+  border: 1px solid rgba(157, 180, 255, 0.18);
+  border-radius: 24px;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 30% 0%, rgba(90, 135, 255, 0.24), transparent 30%),
+    linear-gradient(180deg, var(--workbench-rail), rgba(5, 10, 20, 0.96));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.32);
+}
+
+.workbench-brand {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(157, 180, 255, 0.12);
+}
+
+.workbench-brand .eyebrow {
+  margin-bottom: 0;
+}
+
+.workbench-brand strong {
+  color: #f6f9ff;
+  font-size: 1.2rem;
+  letter-spacing: -0.02em;
+}
+
+.workbench-brand span {
+  color: #8fa6d8;
+  font-size: 0.84rem;
+}
+
+.workbench-nav {
+  display: grid;
+  gap: 8px;
+}
+
+.workbench-nav-button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+  width: 100%;
+  min-height: 52px;
+  border: 1px solid rgba(129, 164, 255, 0.14);
+  border-radius: var(--workbench-radius);
+  padding: 9px 11px;
+  background: rgba(6, 11, 22, 0.62);
+  color: #d9e6ff;
+  text-align: left;
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.workbench-nav-button span,
+.workbench-nav-button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workbench-nav-button span {
+  font-weight: 700;
+}
+
+.workbench-nav-button small {
+  color: #7f94c5;
+  font-size: 0.76rem;
+}
+
+.workbench-nav-button:hover,
+.workbench-nav-button:focus-visible {
+  border-color: rgba(129, 164, 255, 0.38);
+  background: rgba(43, 96, 255, 0.12);
+  transform: translateX(2px);
+  outline: none;
+}
+
+.workbench-nav-button.active {
+  border-color: rgba(90, 135, 255, 0.58);
+  background:
+    linear-gradient(135deg, rgba(44, 107, 255, 0.92), rgba(90, 135, 255, 0.72));
+  color: #f7fbff;
+  box-shadow: 0 12px 26px rgba(35, 81, 201, 0.24);
+}
+
+.workbench-nav-button.active small {
+  color: rgba(247, 251, 255, 0.78);
+}
+
+.workbench-sidebar-status {
+  align-self: end;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(129, 164, 255, 0.14);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(6, 11, 22, 0.58);
+}
+
+.workbench-sidebar-status strong,
+.workbench-sidebar-status small {
+  display: block;
+}
+
+.workbench-sidebar-status strong {
+  color: #f2f6ff;
+  font-size: 0.9rem;
+}
+
+.workbench-sidebar-status small {
+  color: #8fa6d8;
+  font-size: 0.78rem;
+}
+
+.workbench-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #8fa6d8;
+  box-shadow: 0 0 0 5px rgba(143, 166, 216, 0.08);
+}
+
+.workbench-status-dot.success {
+  background: var(--workbench-green);
+  box-shadow: 0 0 0 5px rgba(111, 229, 179, 0.12);
+}
+
+.workbench-status-dot.pending {
+  background: var(--workbench-amber);
+  box-shadow: 0 0 0 5px rgba(255, 209, 102, 0.12);
+}
+
+.workbench-status-dot.error {
+  background: var(--workbench-red);
+  box-shadow: 0 0 0 5px rgba(255, 138, 138, 0.12);
+}
+
+.workbench-main {
+  min-width: 0;
+}
+
+.workbench-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.workbench-topbar-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: min(100%, 360px);
+}
+
+.workbench-content {
+  min-width: 0;
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -53,12 +258,191 @@ textarea {
 }
 
 .panel {
-  border: 1px solid rgba(157, 180, 255, 0.18);
+  border: 1px solid var(--panel-border, rgba(157, 180, 255, 0.18));
   border-radius: 20px;
-  background: rgba(10, 17, 31, 0.82);
+  background: var(--panel-background, rgba(10, 17, 31, 0.82));
+  color: var(--panel-ink, inherit);
   backdrop-filter: blur(12px);
   padding: 24px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+  box-shadow: var(--panel-shadow, 0 20px 60px rgba(0, 0, 0, 0.25));
+}
+
+.workbench-main .eyebrow {
+  color: #8fb2ff;
+}
+
+.workbench-main .lede,
+.workbench-main .panel-tip,
+.workbench-main .status-line {
+  color: #aebcda;
+}
+
+.workbench-main .status-line.success {
+  color: #8df0c2;
+}
+
+.workbench-main .status-line.pending,
+.workbench-main .status-line.warning {
+  color: #ffd58c;
+}
+
+.workbench-main .status-line.error {
+  color: #ffb8bf;
+}
+
+.workbench-main .symbol-count-badge,
+.workbench-main .table-meta-badge {
+  background: rgba(43, 96, 255, 0.16);
+  border-color: rgba(129, 164, 255, 0.26);
+  color: #dce8ff;
+}
+
+.workbench-main .content-switch-group,
+.workbench-main .content-symbol-select,
+.workbench-main .overview-search-input {
+  background: rgba(6, 11, 22, 0.84);
+  border-color: rgba(129, 164, 255, 0.26);
+  color: #e7eefc;
+}
+
+.workbench-main .content-switch-option {
+  color: #b8c7e6;
+}
+
+.workbench-main .content-switch-option:hover,
+.workbench-main .content-switch-option:focus-visible {
+  color: #f7fbff;
+}
+
+.workbench-main .content-switch-option.active {
+  color: #f7fbff;
+}
+
+.workbench-main .workbench-sidebar,
+.workbench-main .snapshot-card,
+.workbench-main .event-card,
+.workbench-main .content-card,
+.workbench-main .watchlist-card,
+.workbench-main .detail-card,
+.workbench-main .summary-metric,
+.workbench-main .macro-metric-card,
+.workbench-main .macro-analysis-card,
+.workbench-main .llm-audit-summary-card,
+.workbench-main .llm-audit-chart-card,
+.workbench-main .management-command-panel,
+.workbench-main .management-watchlist-panel,
+.workbench-main .fund-portfolio-hero,
+.workbench-main .portfolio-overlap-card,
+.workbench-main .fund-risk-card,
+.workbench-main .gold-note-card,
+.workbench-main .timeline-risk-card,
+.workbench-main .timeline-detail-card,
+.workbench-main .timeline-lane,
+.workbench-main .calendar-timeline-card,
+.workbench-main .content-insight-card,
+.workbench-main .content-rail-note,
+.workbench-main .content-health-card,
+.workbench-main .dragon-tiger-command-bar,
+.workbench-main .dragon-tiger-card,
+.workbench-main .dragon-tiger-section,
+.workbench-main .module-metric-chip,
+.workbench-main .dragon-tiger-metric-card,
+.workbench-main .anomaly-filter-card,
+.workbench-main .anomaly-card,
+.workbench-main .detail-activity-summary,
+.workbench-main .detail-activity-column,
+.workbench-main .stock-fund-holding-section,
+.workbench-main .monitored-fund-holding-card,
+.workbench-main .stock-fund-holding-empty {
+  color: var(--surface-dark-ink);
+}
+
+.workbench-main .snapshot-card .snapshot-subtitle,
+.workbench-main .event-card .snapshot-subtitle,
+.workbench-main .content-card .snapshot-subtitle,
+.workbench-main .detail-card .snapshot-subtitle,
+.workbench-main .watchlist-card .snapshot-subtitle,
+.workbench-main .panel-tip,
+.workbench-main .snapshot-card dt,
+.workbench-main .event-card dt,
+.workbench-main .detail-card dt,
+.workbench-main .watchlist-meta-grid dt,
+.workbench-main .table-subtext,
+.workbench-main .content-source,
+.workbench-main .content-card-time,
+.workbench-main .module-metric-chip small,
+.workbench-main .dragon-tiger-metric-card span,
+.workbench-main .dragon-tiger-metric-card small,
+.workbench-main .timeline-detail-description,
+.workbench-main .timeline-detail-list dt,
+.workbench-main .calendar-timeline-main small,
+.workbench-main .detail-event-main span,
+.workbench-main .detail-event-meta,
+.workbench-main .chart-section-heading,
+.workbench-main .chart-section-heading span,
+.workbench-main .content-health-card-header span,
+.workbench-main .content-health-meta {
+  color: var(--surface-dark-muted);
+}
+
+.workbench-main .snapshot-card strong,
+.workbench-main .event-card strong,
+.workbench-main .content-card h3,
+.workbench-main .detail-card h3,
+.workbench-main .summary-metric strong,
+.workbench-main .module-metric-chip strong,
+.workbench-main .dragon-tiger-metric-card strong,
+.workbench-main .timeline-risk-item strong,
+.workbench-main .calendar-timeline-main strong,
+.workbench-main .macro-analysis-summary,
+.workbench-main .fund-analysis-list,
+.workbench-main .detail-table td,
+.workbench-main .detail-card dd,
+.workbench-main .watchlist-meta-grid dd {
+  color: var(--surface-dark-ink);
+}
+
+.workbench-main .snapshot-card .content-switch-option,
+.workbench-main .event-card .content-switch-option,
+.workbench-main .content-card .content-switch-option,
+.workbench-main .detail-card .content-switch-option,
+.workbench-main .dragon-tiger-command-bar .content-switch-option,
+.workbench-main .timeline-risk-card .content-switch-option,
+.workbench-main .management-command-panel .content-switch-option,
+.workbench-main .management-watchlist-panel .content-switch-option {
+  border-color: rgba(129, 164, 255, 0.22);
+  background: rgba(8, 16, 31, 0.72);
+  color: #dce8ff;
+}
+
+.workbench-main .snapshot-card .content-symbol-select,
+.workbench-main .detail-card .content-symbol-select,
+.workbench-main .dragon-tiger-command-bar .content-symbol-select,
+.workbench-main .dragon-tiger-command-bar .overview-search-input,
+.workbench-main .management-command-panel input,
+.workbench-main .management-command-panel select,
+.workbench-main .anomaly-filter-card input,
+.workbench-main .anomaly-filter-card select {
+  border-color: rgba(129, 164, 255, 0.22);
+  background: rgba(8, 16, 31, 0.88);
+  color: var(--surface-dark-ink);
+}
+
+.workbench-main .snapshot-card .symbol-count-badge,
+.workbench-main .event-card .symbol-count-badge,
+.workbench-main .content-card .symbol-count-badge,
+.workbench-main .detail-card .symbol-count-badge,
+.workbench-main .snapshot-card .table-meta-badge,
+.workbench-main .event-card .table-meta-badge,
+.workbench-main .content-card .table-meta-badge,
+.workbench-main .detail-card .table-meta-badge,
+.workbench-main .timeline-risk-card .table-meta-badge,
+.workbench-main .dragon-tiger-command-bar .table-meta-badge,
+.workbench-main .management-command-panel .table-meta-badge,
+.workbench-main .management-watchlist-panel .table-meta-badge {
+  background: rgba(43, 96, 255, 0.16);
+  border-color: rgba(129, 164, 255, 0.24);
+  color: #dbe8ff;
 }
 
 .hero {
@@ -327,6 +711,256 @@ textarea {
   min-height: 44px;
 }
 
+.overview-mode-row {
+  flex: 0 0 auto;
+}
+
+.overview-density-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  min-width: 0;
+}
+
+.overview-table-panel,
+.overview-preview-panel,
+.overview-risk-panel {
+  min-width: 0;
+  border: 1px solid rgba(129, 164, 255, 0.18);
+  border-radius: var(--workbench-radius);
+  background:
+    radial-gradient(circle at 12% 0%, rgba(43, 96, 255, 0.12), transparent 30%),
+    rgba(7, 13, 25, 0.86);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+}
+
+.overview-table-panel {
+  overflow: hidden;
+  display: grid;
+  align-self: stretch;
+  min-height: min(760px, calc(100vh - 240px));
+}
+
+.overview-table-wrap {
+  height: 100%;
+  min-height: min(760px, calc(100vh - 240px));
+  max-height: min(900px, calc(100vh - 240px));
+  overflow: auto;
+  scrollbar-gutter: stable;
+}
+
+.overview-table {
+  min-width: 980px;
+}
+
+.overview-table th,
+.overview-table td {
+  padding: 10px 12px;
+  color: var(--surface-dark-ink);
+  vertical-align: top;
+}
+
+.overview-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: rgba(13, 24, 44, 0.96);
+  color: #b7c8eb;
+  font-size: 0.76rem;
+  text-transform: none;
+}
+
+.overview-table tbody tr {
+  cursor: pointer;
+  transition: background 120ms ease, box-shadow 120ms ease;
+}
+
+.overview-table-row:hover,
+.overview-table-row:focus-visible,
+.overview-table-row.active {
+  background: rgba(43, 96, 255, 0.16);
+  outline: none;
+}
+
+.overview-table-row.active {
+  box-shadow: inset 3px 0 0 #2f6df6;
+}
+
+.overview-table .table-subtext,
+.overview-preview-panel .table-subtext {
+  color: var(--surface-dark-muted);
+}
+
+.overview-status-stack {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+}
+
+.overview-detail-button {
+  margin-left: 0;
+  border-radius: 999px;
+  padding: 7px 10px;
+  border-color: rgba(129, 164, 255, 0.24);
+  background: rgba(43, 96, 255, 0.16);
+  color: #dbe8ff;
+  font-weight: 700;
+}
+
+.overview-detail-button:hover,
+.overview-detail-button:focus-visible {
+  background: rgba(43, 96, 255, 0.24);
+  outline: none;
+}
+
+.overview-side-stack {
+  display: grid;
+  gap: 14px;
+  position: sticky;
+  top: 20px;
+  align-content: start;
+}
+
+.overview-preview-panel,
+.overview-risk-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.overview-preview-panel {
+  align-content: start;
+}
+
+.overview-risk-panel {
+  align-content: start;
+  min-height: 0;
+}
+
+.overview-preview-header,
+.overview-side-panel-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.overview-preview-header h3,
+.overview-side-panel-heading h3 {
+  margin: 6px 0 0;
+  color: var(--surface-dark-ink);
+}
+
+.overview-preview-action {
+  flex: 0 0 auto;
+  min-height: 38px;
+  color: #dbe8ff;
+}
+
+.overview-preview-price-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-top: 1px solid var(--surface-dark-line);
+  border-bottom: 1px solid var(--surface-dark-line);
+}
+
+.overview-preview-price-row strong {
+  color: var(--surface-dark-ink);
+  font-size: 1.55rem;
+}
+
+.overview-preview-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.overview-preview-metrics div {
+  min-width: 0;
+  border: 1px solid rgba(129, 164, 255, 0.16);
+  border-radius: var(--workbench-radius);
+  padding: 10px;
+  background: rgba(6, 11, 22, 0.56);
+}
+
+.overview-preview-metrics dt {
+  color: var(--surface-dark-muted);
+  font-size: 0.78rem;
+}
+
+.overview-preview-metrics dd {
+  margin: 2px 0 0;
+  color: var(--surface-dark-ink);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.overview-preview-risk-box {
+  display: grid;
+  gap: 8px;
+  border-radius: var(--workbench-radius);
+  padding: 12px;
+  background: rgba(6, 11, 22, 0.56);
+  border: 1px solid rgba(129, 164, 255, 0.16);
+}
+
+.overview-preview-risk-box p {
+  margin: 0;
+  color: var(--surface-dark-muted);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.overview-risk-list {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.overview-risk-item {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  border: 1px solid rgba(129, 164, 255, 0.16);
+  border-left: 4px solid #8da3c2;
+  border-radius: var(--workbench-radius);
+  padding: 10px 12px;
+  background: rgba(6, 11, 22, 0.56);
+  color: var(--surface-dark-ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.overview-risk-item:hover,
+.overview-risk-item:focus-visible {
+  background: rgba(43, 96, 255, 0.16);
+  outline: none;
+}
+
+.overview-risk-item.level-critical,
+.overview-risk-item.level-high {
+  border-left-color: #c2410c;
+}
+
+.overview-risk-item.level-medium {
+  border-left-color: #b7791f;
+}
+
+.overview-risk-item span,
+.overview-risk-item small {
+  color: var(--surface-dark-muted);
+  font-size: 0.78rem;
+}
+
+.overview-empty-note {
+  padding: 12px;
+}
+
 .market-overview-bar {
   display: grid;
   gap: 14px;
@@ -493,6 +1127,38 @@ textarea {
   color: #ffd58c;
   background: rgba(255, 190, 90, 0.14);
   border-color: rgba(255, 190, 90, 0.28);
+}
+
+.module-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.module-metric-chip {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(157, 180, 255, 0.12);
+  background: rgba(4, 8, 16, 0.68);
+}
+
+.module-metric-chip small {
+  color: #9fb0d5;
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.module-metric-chip strong {
+  min-width: 0;
+  color: #f7fbff;
+  font-size: 1.08rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .macro-panel {
@@ -724,6 +1390,62 @@ textarea {
 .management-panel-section {
   display: grid;
   gap: 14px;
+}
+
+.management-workbench {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+.management-command-panel,
+.management-watchlist-panel {
+  display: grid;
+  gap: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(157, 180, 255, 0.14);
+  background: rgba(4, 8, 16, 0.62);
+  padding: 16px;
+  min-width: 0;
+}
+
+.management-command-panel {
+  position: static;
+  grid-template-columns: minmax(180px, 0.42fr) minmax(0, 1fr);
+  align-items: end;
+}
+
+.management-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.management-section-heading h3 {
+  margin: 0 0 6px;
+}
+
+.management-command-form {
+  display: grid;
+  gap: 10px;
+  padding-top: 0;
+}
+
+.management-command-form .panel-tip {
+  margin: 0;
+}
+
+.management-watchlist-scroll {
+  max-height: min(880px, calc(100vh - 260px));
+  overflow: auto;
+  padding-right: 2px;
+  scrollbar-gutter: stable;
+}
+
+.management-watchlist-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
 }
 
 .management-status-row {
@@ -1033,6 +1755,17 @@ textarea {
   gap: 10px;
 }
 
+.anomaly-filter-toolbar {
+  grid-template-columns: repeat(2, minmax(260px, 1fr));
+  align-items: stretch;
+}
+
+.anomaly-filter-toolbar .anomaly-filter-card {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
 .anomaly-filter-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1108,13 +1841,20 @@ textarea {
   gap: 18px;
 }
 
+.anomaly-section-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px;
+  align-items: start;
+}
+
 .anomaly-section {
   display: grid;
   gap: 12px;
 }
 
 .anomaly-grid {
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
 }
 
 .anomaly-card {
@@ -1256,6 +1996,311 @@ textarea {
   color: #f2f6ff;
 }
 
+.timeline-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.timeline-meta-row {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.timeline-filter-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid rgba(129, 164, 255, 0.16);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(255, 209, 102, 0.12), transparent 28%),
+    linear-gradient(135deg, rgba(43, 96, 255, 0.1), rgba(6, 11, 22, 0.42));
+}
+
+.timeline-filter-card {
+  min-width: 0;
+}
+
+.timeline-filter-card.compact {
+  align-self: stretch;
+}
+
+.timeline-filter-options {
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+}
+
+.timeline-filter-options.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.timeline-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.9fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.timeline-lane-stack {
+  display: grid;
+  gap: 14px;
+  max-height: min(920px, calc(100vh - 340px));
+}
+
+.timeline-lane {
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(157, 180, 255, 0.12);
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(4, 8, 16, 0.62);
+}
+
+.timeline-lane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.timeline-lane-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: #f2f6ff;
+}
+
+.calendar-timeline-list {
+  display: grid;
+  gap: 10px;
+}
+
+.calendar-timeline-card {
+  display: grid;
+  grid-template-columns: 122px minmax(0, 1fr);
+  gap: 8px 12px;
+  align-items: start;
+  width: 100%;
+  border: 1px solid rgba(157, 180, 255, 0.14);
+  border-left-width: 3px;
+  border-radius: 14px;
+  padding: 12px;
+  background: linear-gradient(135deg, rgba(8, 14, 26, 0.92), rgba(8, 18, 38, 0.72));
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.calendar-timeline-card:hover,
+.calendar-timeline-card:focus-visible {
+  transform: translateY(-1px);
+  border-color: rgba(129, 164, 255, 0.4);
+  outline: none;
+}
+
+.calendar-timeline-card.active {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(129, 164, 255, 0.2), transparent 32%),
+    linear-gradient(135deg, rgba(43, 96, 255, 0.18), rgba(8, 18, 38, 0.86));
+  box-shadow: 0 16px 34px rgba(23, 47, 99, 0.26);
+}
+
+.calendar-timeline-card.level-red {
+  border-left-color: rgba(255, 120, 120, 0.9);
+}
+
+.calendar-timeline-card.level-amber {
+  border-left-color: rgba(255, 209, 102, 0.92);
+}
+
+.calendar-timeline-card.level-blue {
+  border-left-color: rgba(129, 164, 255, 0.82);
+}
+
+.calendar-timeline-card.status-passed {
+  opacity: 0.72;
+}
+
+.calendar-timeline-card.status-active {
+  border-color: rgba(111, 229, 179, 0.34);
+}
+
+.calendar-timeline-date {
+  color: #ffd166;
+  font-size: 0.82rem;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.calendar-timeline-main {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.calendar-timeline-main strong {
+  color: #f6f9ff;
+  line-height: 1.35;
+}
+
+.calendar-timeline-main small {
+  color: #8fa6d8;
+}
+
+.calendar-timeline-assets {
+  grid-column: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.calendar-timeline-assets em,
+.timeline-level-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  border: 1px solid rgba(129, 164, 255, 0.18);
+  background: rgba(43, 96, 255, 0.12);
+  color: #dbe6ff;
+  font-size: 0.76rem;
+  font-style: normal;
+}
+
+.timeline-detail-card {
+  position: sticky;
+  top: 20px;
+  display: grid;
+  gap: 12px;
+  border: 1px solid rgba(157, 180, 255, 0.16);
+  border-radius: 18px;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(255, 209, 102, 0.12), transparent 34%),
+    rgba(4, 8, 16, 0.78);
+}
+
+.timeline-detail-card h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #f6f9ff;
+}
+
+.timeline-level-badge.level-red {
+  border-color: rgba(255, 120, 120, 0.32);
+  background: rgba(120, 22, 34, 0.42);
+  color: #ffdada;
+}
+
+.timeline-level-badge.level-amber {
+  border-color: rgba(255, 209, 102, 0.32);
+  background: rgba(117, 82, 14, 0.42);
+  color: #ffe8a8;
+}
+
+.timeline-level-badge.level-blue {
+  border-color: rgba(129, 164, 255, 0.26);
+}
+
+.timeline-detail-description {
+  margin: 0;
+  color: #bbcaea;
+  line-height: 1.7;
+}
+
+.timeline-risk-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(157, 180, 255, 0.14);
+  background: rgba(4, 8, 16, 0.72);
+}
+
+.timeline-risk-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.timeline-risk-item {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(129, 164, 255, 0.16);
+  background: rgba(8, 14, 26, 0.72);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.timeline-risk-item:hover,
+.timeline-risk-item:focus-visible {
+  border-color: rgba(129, 164, 255, 0.42);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.timeline-risk-item strong {
+  color: #f2f6ff;
+  line-height: 1.35;
+}
+
+.timeline-risk-date {
+  color: #ffd166;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.timeline-impact-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.timeline-detail-list {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0;
+}
+
+.timeline-detail-list div {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 10px;
+  border-bottom: 1px solid rgba(157, 180, 255, 0.1);
+  padding-bottom: 8px;
+}
+
+.timeline-detail-list dt {
+  color: #8fa6d8;
+}
+
+.timeline-detail-list dd {
+  margin: 0;
+  color: #f2f6ff;
+}
+
+.timeline-source-link {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 8px 12px;
+  border: 1px solid rgba(111, 229, 179, 0.28);
+  background: rgba(19, 78, 60, 0.5);
+  color: #d7ffef;
+  text-decoration: none;
+}
+
+.timeline-empty-state {
+  border-radius: 14px;
+  border: 1px dashed rgba(157, 180, 255, 0.2);
+  padding: 18px;
+  background: rgba(6, 11, 22, 0.38);
+}
+
 .anomaly-disclaimer {
   border-top: 1px solid rgba(157, 180, 255, 0.1);
   padding-top: 10px;
@@ -1295,26 +2340,38 @@ textarea {
   align-items: flex-start;
   justify-content: flex-start;
   min-width: 0;
+  margin-bottom: 0;
 }
 
 .dragon-tiger-panel {
   display: grid;
-  gap: 16px;
+  gap: 14px;
 }
 
 .dragon-tiger-toolbar-row {
   align-items: flex-end;
 }
 
+.dragon-tiger-command-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 12px;
+  border: 1px solid rgba(157, 180, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(4, 8, 16, 0.68);
+}
+
 .dragon-tiger-toolbar-groups {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(180px, 1fr));
   gap: 12px;
   align-items: flex-end;
+  min-width: 0;
 }
 
 .dragon-tiger-filter-row {
-  flex: 0 1 260px;
+  min-width: 0;
 }
 
 .dragon-tiger-date-input {
@@ -1326,6 +2383,36 @@ textarea {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.dragon-tiger-metric-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dragon-tiger-metric-card {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(157, 180, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(8, 14, 28, 0.74);
+}
+
+.dragon-tiger-metric-card span,
+.dragon-tiger-metric-card small {
+  color: #96a5c7;
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+.dragon-tiger-metric-card strong {
+  color: #f7fbff;
+  font-size: 1.22rem;
+  line-height: 1.05;
 }
 
 .dragon-tiger-controls-row,
@@ -1595,12 +2682,16 @@ textarea {
 }
 
 .content-toolbar-groups {
-  display: flex;
-  flex-wrap: nowrap;
+  display: grid;
+  grid-template-columns: auto minmax(180px, 220px) minmax(180px, 220px) minmax(320px, 1fr);
   gap: 12px;
-  align-items: flex-end;
+  align-items: end;
   min-width: 0;
   width: 100%;
+  border: 1px solid rgba(157, 180, 255, 0.14);
+  border-radius: 16px;
+  background: rgba(4, 8, 16, 0.64);
+  padding: 12px;
 }
 
 .content-switch-group {
@@ -1611,6 +2702,9 @@ textarea {
   border-radius: 999px;
   background: rgba(6, 11, 22, 0.78);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  align-self: end;
+  height: 44px;
+  min-height: 44px;
 }
 
 .content-switch-option {
@@ -1643,7 +2737,6 @@ textarea {
   flex-direction: column;
   align-items: flex-start;
   gap: 8px;
-  flex: 0 1 280px;
   min-width: 0;
 }
 
@@ -1684,6 +2777,114 @@ textarea {
   align-content: start;
   gap: 10px;
   min-width: 0;
+}
+
+.content-workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+  min-width: 0;
+}
+
+.content-feed-column,
+.content-insight-rail,
+.content-insight-card {
+  min-width: 0;
+}
+
+.content-insight-rail {
+  position: sticky;
+  top: 20px;
+  display: grid;
+  gap: 12px;
+}
+
+.content-rail-note {
+  border: 1px solid rgba(157, 180, 255, 0.14);
+  border-radius: 16px;
+  background: rgba(4, 8, 16, 0.64);
+  padding: 14px;
+}
+
+.content-insight-card {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.content-insight-card h3 {
+  margin: 0;
+  color: #f2f6ff;
+  font-size: 0.98rem;
+}
+
+.content-insight-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.content-insight-metrics span {
+  display: grid;
+  gap: 2px;
+  border-radius: 12px;
+  border: 1px solid rgba(129, 164, 255, 0.14);
+  background: rgba(6, 11, 22, 0.42);
+  padding: 9px 10px;
+  color: #8fa6d8;
+  font-size: 0.78rem;
+}
+
+.content-insight-metrics strong {
+  color: #f2f6ff;
+  font-size: 1rem;
+}
+
+.content-health-rail {
+  grid-template-columns: 1fr;
+}
+
+.content-insight-inline {
+  align-self: stretch;
+  display: grid;
+  align-content: end;
+  border: 0;
+  border-left: 1px solid rgba(157, 180, 255, 0.12);
+  border-radius: 0;
+  background: transparent;
+  padding: 0 0 0 12px;
+}
+
+.content-health-strip {
+  display: grid;
+  gap: 10px;
+  min-height: 38px;
+  border: 1px solid rgba(157, 180, 255, 0.1);
+  border-radius: 14px;
+  background: rgba(4, 8, 16, 0.36);
+  padding: 8px 12px;
+}
+
+.content-health-message {
+  margin: 0;
+}
+
+.content-insight-inline .content-insight-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.content-insight-inline .content-insight-metrics span {
+  min-height: 42px;
+  padding: 7px 9px;
+}
+
+.macro-yield-change-grid dd.positive {
+  color: var(--workbench-red);
+}
+
+.macro-yield-change-grid dd.negative {
+  color: var(--workbench-green);
 }
 
 .panel-scroll-area,
@@ -3034,6 +4235,179 @@ textarea {
   border: 1px solid rgba(129, 164, 255, 0.12);
 }
 
+.workbench-main .snapshot-card,
+.workbench-main .event-card,
+.workbench-main .content-card,
+.workbench-main .watchlist-card,
+.workbench-main .detail-card,
+.workbench-main .macro-metric-card,
+.workbench-main .macro-analysis-card,
+.workbench-main .llm-audit-summary-card,
+.workbench-main .llm-audit-chart-card,
+.workbench-main .llm-audit-log-card,
+.workbench-main .management-command-panel,
+.workbench-main .management-watchlist-panel,
+.workbench-main .fund-portfolio-hero,
+.workbench-main .portfolio-overlap-card,
+.workbench-main .fund-risk-card,
+.workbench-main .gold-note-card,
+.workbench-main .timeline-risk-card,
+.workbench-main .timeline-detail-card,
+.workbench-main .timeline-lane,
+.workbench-main .calendar-timeline-card,
+.workbench-main .content-insight-card,
+.workbench-main .content-rail-note,
+.workbench-main .content-health-card,
+.workbench-main .dragon-tiger-command-bar,
+.workbench-main .dragon-tiger-card,
+.workbench-main .dragon-tiger-section,
+.workbench-main .module-metric-chip,
+.workbench-main .dragon-tiger-metric-card,
+.workbench-main .anomaly-filter-card,
+.workbench-main .anomaly-card,
+.workbench-main .detail-activity-summary,
+.workbench-main .detail-activity-column,
+.workbench-main .stock-fund-holding-section,
+.workbench-main .monitored-fund-holding-card,
+.workbench-main .stock-fund-holding-empty {
+  color: var(--surface-dark-ink);
+}
+
+.workbench-main .snapshot-card p,
+.workbench-main .event-card p,
+.workbench-main .content-card p,
+.workbench-main .watchlist-card p,
+.workbench-main .detail-card p,
+.workbench-main .macro-metric-card p,
+.workbench-main .macro-analysis-card p,
+.workbench-main .llm-audit-summary-card p,
+.workbench-main .llm-audit-chart-card p,
+.workbench-main .management-command-panel p,
+.workbench-main .management-watchlist-panel p,
+.workbench-main .fund-portfolio-hero p,
+.workbench-main .portfolio-overlap-card p,
+.workbench-main .fund-risk-card p,
+.workbench-main .timeline-risk-card p,
+.workbench-main .timeline-detail-card p,
+.workbench-main .content-insight-card p,
+.workbench-main .content-rail-note p,
+.workbench-main .dragon-tiger-command-bar p,
+.workbench-main .dragon-tiger-card p,
+.workbench-main .module-metric-chip p,
+.workbench-main .anomaly-filter-card p,
+.workbench-main .anomaly-card p,
+.workbench-main .stock-fund-holding-section p,
+.workbench-main .monitored-fund-holding-card p,
+.workbench-main .stock-fund-holding-empty p,
+.workbench-main .detail-card li,
+.workbench-main .detail-card td,
+.workbench-main .detail-table td,
+.workbench-main .llm-audit-table td,
+.workbench-main .stock-fund-holding-table td {
+  color: var(--surface-dark-ink);
+}
+
+.workbench-main .snapshot-card small,
+.workbench-main .event-card small,
+.workbench-main .content-card small,
+.workbench-main .watchlist-card small,
+.workbench-main .detail-card small,
+.workbench-main .macro-metric-card small,
+.workbench-main .macro-analysis-card small,
+.workbench-main .llm-audit-summary-card small,
+.workbench-main .llm-audit-chart-card small,
+.workbench-main .management-command-panel small,
+.workbench-main .management-watchlist-panel small,
+.workbench-main .fund-portfolio-hero small,
+.workbench-main .portfolio-overlap-card small,
+.workbench-main .fund-risk-card small,
+.workbench-main .timeline-risk-card small,
+.workbench-main .timeline-detail-card small,
+.workbench-main .content-insight-card small,
+.workbench-main .content-rail-note small,
+.workbench-main .dragon-tiger-command-bar small,
+.workbench-main .dragon-tiger-card small,
+.workbench-main .module-metric-chip small,
+.workbench-main .anomaly-filter-card small,
+.workbench-main .anomaly-card small,
+.workbench-main .detail-table th,
+.workbench-main .llm-audit-table th,
+.workbench-main .stock-fund-holding-table th,
+.workbench-main .detail-card dt,
+.workbench-main .detail-event-main span,
+.workbench-main .detail-event-meta,
+.workbench-main .detail-activity-summary > span,
+.workbench-main .detail-activity-column-heading span,
+.workbench-main .detail-activity-summary em,
+.workbench-main .detail-compact-tick-row span,
+.workbench-main .detail-compact-tick-row em,
+.workbench-main .detail-compact-tick-row small,
+.workbench-main .llm-audit-detail-cell,
+.workbench-main .content-source,
+.workbench-main .content-card-time,
+.workbench-main .content-empty-state,
+.workbench-main .content-health-meta,
+.workbench-main .chart-section-heading span,
+.workbench-main .chart-axis-row,
+.workbench-main .intraday-legend-row,
+.workbench-main .watchlist-meta-grid dt,
+.workbench-main .timeline-detail-list dt {
+  color: var(--surface-dark-muted);
+}
+
+.workbench-main .detail-card h3,
+.workbench-main .detail-card h4,
+.workbench-main .detail-card strong,
+.workbench-main .snapshot-card strong,
+.workbench-main .event-card strong,
+.workbench-main .content-card h3,
+.workbench-main .watchlist-card strong,
+.workbench-main .macro-metric-card strong,
+.workbench-main .macro-analysis-card strong,
+.workbench-main .llm-audit-summary-card strong,
+.workbench-main .llm-audit-chart-card strong,
+.workbench-main .management-command-panel strong,
+.workbench-main .management-watchlist-panel strong,
+.workbench-main .fund-portfolio-hero strong,
+.workbench-main .portfolio-overlap-card strong,
+.workbench-main .fund-risk-card strong,
+.workbench-main .timeline-risk-card strong,
+.workbench-main .timeline-detail-card h3,
+.workbench-main .calendar-timeline-main strong,
+.workbench-main .content-insight-card h3,
+.workbench-main .content-insight-metrics strong,
+.workbench-main .content-health-card-header strong,
+.workbench-main .dragon-tiger-command-bar strong,
+.workbench-main .dragon-tiger-card strong,
+.workbench-main .module-metric-chip strong,
+.workbench-main .dragon-tiger-metric-card strong,
+.workbench-main .anomaly-filter-card strong,
+.workbench-main .anomaly-card strong,
+.workbench-main .stock-fund-holding-section h4,
+.workbench-main .monitored-fund-holding-card strong,
+.workbench-main .stock-fund-holding-empty strong {
+  color: #f7fbff;
+}
+
+.workbench-main .detail-table th,
+.workbench-main .detail-table td,
+.workbench-main .llm-audit-table th,
+.workbench-main .llm-audit-table td,
+.workbench-main .stock-fund-holding-table th,
+.workbench-main .stock-fund-holding-table td {
+  border-bottom-color: var(--surface-dark-line);
+}
+
+.workbench-main .macro-yield-change-grid dd.positive,
+.workbench-layout .macro-yield-change-grid dd.positive {
+  color: var(--workbench-red);
+}
+
+.workbench-main .macro-yield-change-grid dd.negative,
+.workbench-layout .macro-yield-change-grid dd.negative {
+  color: var(--workbench-green);
+}
+
 .detail-activity-card {
   background:
     radial-gradient(circle at 12% 8%, rgba(61, 109, 255, 0.16), transparent 34%),
@@ -3167,14 +4541,441 @@ textarea {
   margin: 0;
 }
 
+.workbench-layout .panel,
+.workbench-layout .snapshot-card,
+.workbench-layout .event-card,
+.workbench-layout .content-card,
+.workbench-layout .watchlist-card,
+.workbench-layout .detail-card,
+.workbench-layout .summary-metric,
+.workbench-layout .macro-metric-card,
+.workbench-layout .macro-analysis-card,
+.workbench-layout .llm-audit-summary-card,
+.workbench-layout .llm-audit-chart-card,
+.workbench-layout .llm-audit-log-card,
+.workbench-layout .management-command-panel,
+.workbench-layout .management-watchlist-panel,
+.workbench-layout .fund-portfolio-hero,
+.workbench-layout .portfolio-overlap-card,
+.workbench-layout .fund-risk-card,
+.workbench-layout .gold-note-card,
+.workbench-layout .timeline-risk-card,
+.workbench-layout .timeline-detail-card,
+.workbench-layout .timeline-lane,
+.workbench-layout .calendar-timeline-card,
+.workbench-layout .content-insight-card,
+.workbench-layout .content-rail-note,
+.workbench-layout .content-health-card,
+.workbench-layout .dragon-tiger-command-bar,
+.workbench-layout .dragon-tiger-card,
+.workbench-layout .dragon-tiger-section,
+.workbench-layout .module-metric-chip,
+.workbench-layout .dragon-tiger-metric-card,
+.workbench-layout .anomaly-filter-card,
+.workbench-layout .anomaly-card,
+.workbench-layout .detail-activity-summary,
+.workbench-layout .detail-activity-column,
+.workbench-layout .stock-fund-holding-section,
+.workbench-layout .monitored-fund-holding-card,
+.workbench-layout .stock-fund-holding-empty {
+  color: var(--surface-dark-ink);
+}
+
+.workbench-layout .snapshot-card p,
+.workbench-layout .event-card p,
+.workbench-layout .content-card p,
+.workbench-layout .detail-card p,
+.workbench-layout .macro-analysis-card p,
+.workbench-layout .llm-audit-summary-card p,
+.workbench-layout .llm-audit-chart-card p,
+.workbench-layout .content-insight-card p,
+.workbench-layout .content-rail-note p,
+.workbench-layout .content-health-card p,
+.workbench-layout .timeline-risk-card p,
+.workbench-layout .management-command-panel p,
+.workbench-layout .management-watchlist-panel p,
+.workbench-layout .fund-portfolio-hero p,
+.workbench-layout .portfolio-overlap-card p,
+.workbench-layout .fund-risk-card p,
+.workbench-layout .stock-fund-holding-section p,
+.workbench-layout .stock-fund-holding-empty p {
+  color: #d8e4fb;
+}
+
+.workbench-layout .snapshot-card small,
+.workbench-layout .event-card small,
+.workbench-layout .content-card small,
+.workbench-layout .detail-card small,
+.workbench-layout .watchlist-card small,
+.workbench-layout .summary-metric span,
+.workbench-layout .summary-metric small,
+.workbench-layout .module-metric-chip small,
+.workbench-layout .dragon-tiger-metric-card span,
+.workbench-layout .dragon-tiger-metric-card small,
+.workbench-layout .llm-audit-detail-cell,
+.workbench-layout .llm-audit-token-cell,
+.workbench-layout .detail-card dt,
+.workbench-layout .watchlist-meta-grid dt,
+.workbench-layout .detail-event-main span,
+.workbench-layout .detail-event-meta,
+.workbench-layout .chart-section-heading,
+.workbench-layout .chart-section-heading span,
+.workbench-layout .content-source,
+.workbench-layout .content-card-time,
+.workbench-layout .content-health-card-header span,
+.workbench-layout .content-health-meta,
+.workbench-layout .timeline-detail-description,
+.workbench-layout .timeline-detail-list dt,
+.workbench-layout .calendar-timeline-main small,
+.workbench-layout .stock-fund-holding-section-heading span,
+.workbench-layout .monitored-fund-holding-meta,
+.workbench-layout .detail-compact-tick-row span,
+.workbench-layout .detail-compact-tick-row em,
+.workbench-layout .detail-compact-tick-row small,
+.workbench-layout .detail-activity-summary > span,
+.workbench-layout .detail-activity-column-heading span,
+.workbench-layout .detail-activity-summary em,
+.workbench-layout .detail-activity-summary dt {
+  color: var(--surface-dark-muted);
+}
+
+.workbench-layout .snapshot-card h3,
+.workbench-layout .snapshot-card strong,
+.workbench-layout .event-card h3,
+.workbench-layout .event-card strong,
+.workbench-layout .content-card h3,
+.workbench-layout .detail-card h3,
+.workbench-layout .detail-card h4,
+.workbench-layout .detail-card strong,
+.workbench-layout .summary-metric strong,
+.workbench-layout .module-metric-chip strong,
+.workbench-layout .dragon-tiger-metric-card strong,
+.workbench-layout .macro-analysis-summary,
+.workbench-layout .fund-analysis-list,
+.workbench-layout .detail-table td,
+.workbench-layout .detail-card dd,
+.workbench-layout .watchlist-meta-grid dd,
+.workbench-layout .timeline-risk-item strong,
+.workbench-layout .calendar-timeline-main strong,
+.workbench-layout .content-health-card-header strong,
+.workbench-layout .content-insight-card h3,
+.workbench-layout .stock-fund-holding-section-heading h4,
+.workbench-layout .detail-activity-summary strong,
+.workbench-layout .detail-activity-column-heading h4,
+.workbench-layout .detail-compact-tick-row strong {
+  color: var(--surface-dark-ink);
+}
+
+.workbench-layout .detail-table th,
+.workbench-layout .llm-audit-table th {
+  color: #b7c8eb;
+}
+
+.workbench-layout input::placeholder,
+.workbench-layout textarea::placeholder {
+  color: #7f94bf;
+}
+
+.workbench-layout .overview-table-panel,
+.workbench-layout .overview-preview-panel,
+.workbench-layout .overview-risk-panel,
+.workbench-layout .overview-table,
+.workbench-layout .overview-table th,
+.workbench-layout .overview-table td,
+.workbench-layout .overview-preview-panel h3,
+.workbench-layout .overview-preview-panel strong,
+.workbench-layout .overview-preview-panel dt,
+.workbench-layout .overview-preview-panel dd,
+.workbench-layout .overview-preview-panel p,
+.workbench-layout .overview-risk-panel h3,
+.workbench-layout .overview-risk-panel strong,
+.workbench-layout .overview-risk-panel span,
+.workbench-layout .overview-risk-panel small,
+.workbench-layout .overview-risk-item,
+.workbench-layout .overview-risk-item span,
+.workbench-layout .overview-risk-item small {
+  color: var(--surface-dark-ink);
+}
+
+.workbench-layout .overview-table .table-subtext,
+.workbench-layout .overview-preview-panel .table-subtext,
+.workbench-layout .overview-preview-metrics dt,
+.workbench-layout .overview-preview-risk-box p,
+.workbench-layout .overview-risk-item span,
+.workbench-layout .overview-risk-item small {
+  color: var(--surface-dark-muted);
+}
+
+.workbench-layout .overview-table-panel,
+.workbench-layout .overview-preview-panel,
+.workbench-layout .overview-risk-panel {
+  border-color: rgba(129, 164, 255, 0.18);
+  background: rgba(8, 14, 26, 0.82);
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
+}
+
+.workbench-layout .overview-table th {
+  background: rgba(10, 18, 34, 0.98);
+  color: #b7c8eb;
+}
+
+.workbench-layout .overview-preview-metrics div,
+.workbench-layout .overview-preview-risk-box,
+.workbench-layout .overview-risk-item {
+  border-color: rgba(129, 164, 255, 0.16);
+  background: rgba(6, 11, 22, 0.5);
+}
+
+.workbench-layout .overview-risk-item:hover,
+.workbench-layout .overview-risk-item:focus-visible,
+.workbench-layout .overview-table-row:hover,
+.workbench-layout .overview-table-row:focus-visible,
+.workbench-layout .overview-table-row.active {
+  background: rgba(43, 96, 255, 0.16);
+}
+
+.workbench-layout .overview-table .table-meta-badge,
+.workbench-layout .overview-preview-panel .table-meta-badge,
+.workbench-layout .overview-risk-panel .table-meta-badge {
+  background: rgba(43, 96, 255, 0.16);
+  border-color: rgba(129, 164, 255, 0.24);
+  color: #dbe8ff;
+}
+
+.workbench-layout .overview-table .symbol-count-badge,
+.workbench-layout .overview-preview-panel .symbol-count-badge,
+.workbench-layout .overview-risk-panel .symbol-count-badge {
+  background: rgba(43, 96, 255, 0.16);
+  border-color: rgba(129, 164, 255, 0.24);
+  color: #dbe8ff;
+}
+
+.workbench-layout .overview-table th {
+  color: #b7c8eb;
+}
+
+.workbench-layout .overview-detail-button,
+.workbench-layout .overview-preview-action {
+  background: rgba(43, 96, 255, 0.16);
+  border-color: rgba(129, 164, 255, 0.24);
+  color: #dbe8ff;
+}
+
+.workbench-layout .overview-preview-action:hover,
+.workbench-layout .overview-preview-action:focus-visible {
+  background: rgba(43, 96, 255, 0.24);
+  color: #f7fbff;
+}
+
+.workbench-layout .overview-risk-panel .panel-tip,
+.workbench-layout .overview-preview-panel .panel-tip {
+  color: var(--surface-dark-muted);
+}
+
+.workbench-layout .overview-risk-panel .market-breadth-chip,
+.workbench-layout .overview-preview-panel .market-breadth-chip {
+  background: rgba(43, 96, 255, 0.14);
+  border-color: rgba(129, 164, 255, 0.24);
+  color: #dbe8ff;
+}
+
+.workbench-layout .overview-risk-panel .market-breadth-chip.positive,
+.workbench-layout .overview-preview-panel .market-breadth-chip.positive,
+.workbench-layout .overview-risk-panel .market-breadth-chip.rise,
+.workbench-layout .overview-preview-panel .market-breadth-chip.rise {
+  background: rgba(120, 22, 34, 0.42);
+  border-color: rgba(255, 138, 138, 0.32);
+  color: #ffb8bf;
+}
+
+.workbench-layout .overview-risk-panel .market-breadth-chip.negative,
+.workbench-layout .overview-preview-panel .market-breadth-chip.negative,
+.workbench-layout .overview-risk-panel .market-breadth-chip.fall,
+.workbench-layout .overview-preview-panel .market-breadth-chip.fall {
+  background: rgba(19, 78, 60, 0.42);
+  border-color: rgba(111, 229, 179, 0.28);
+  color: #8df0c2;
+}
+
+.workbench-layout .overview-risk-panel .market-breadth-chip.flat,
+.workbench-layout .overview-preview-panel .market-breadth-chip.flat,
+.workbench-layout .overview-risk-panel .market-breadth-chip.muted,
+.workbench-layout .overview-preview-panel .market-breadth-chip.muted {
+  background: rgba(8, 16, 31, 0.72);
+  border-color: rgba(129, 164, 255, 0.18);
+  color: var(--surface-dark-muted);
+}
+
+.workbench-layout .overview-table .positive,
+.workbench-layout .overview-preview-panel .positive,
+.workbench-layout .overview-risk-panel .positive {
+  color: #b91c1c;
+}
+
+.workbench-layout .overview-table .negative,
+.workbench-layout .overview-preview-panel .negative,
+.workbench-layout .overview-risk-panel .negative {
+  color: #047857;
+}
+
+.workbench-layout .overview-table .sector-chip,
+.workbench-layout .overview-preview-panel .sector-chip {
+  border-color: rgba(129, 164, 255, 0.22);
+  background: rgba(43, 96, 255, 0.14);
+  color: #dbe8ff;
+}
+
+.workbench-layout .overview-table .sector-chip.industry,
+.workbench-layout .overview-preview-panel .sector-chip.industry {
+  border-color: rgba(111, 229, 179, 0.28);
+  background: rgba(19, 78, 60, 0.42);
+  color: #8df0c2;
+}
+
+.workbench-layout .overview-table .sector-chip.region,
+.workbench-layout .overview-preview-panel .sector-chip.region {
+  border-color: rgba(255, 209, 102, 0.3);
+  background: rgba(117, 82, 14, 0.42);
+  color: #ffe8a8;
+}
+
+.workbench-layout .overview-table .sector-chip.concept,
+.workbench-layout .overview-preview-panel .sector-chip.concept {
+  border-color: rgba(129, 164, 255, 0.24);
+  background: rgba(43, 96, 255, 0.14);
+  color: #dbe8ff;
+}
+
+.workbench-layout .overview-table .sector-chip.more,
+.workbench-layout .overview-preview-panel .sector-chip.more {
+  border-color: rgba(129, 164, 255, 0.18);
+  background: rgba(8, 16, 31, 0.72);
+  color: var(--surface-dark-muted);
+}
+
 @media (max-width: 1080px) {
   .layout {
     width: min(100% - 24px, 1120px);
     padding: 32px 0 52px;
   }
 
+  .layout.workbench-layout {
+    width: min(100% - 24px, 1120px);
+    display: grid;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 16px;
+    padding-left: 0;
+    padding-top: 24px;
+    padding-bottom: 24px;
+    min-height: 100vh;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  .workbench-sidebar {
+    position: relative;
+    top: 0;
+    bottom: auto;
+    left: auto;
+    z-index: 20;
+    width: auto;
+    min-height: auto;
+    overflow-y: visible;
+    padding: 14px;
+    border-radius: 18px;
+    background:
+      radial-gradient(circle at 30% 0%, rgba(90, 135, 255, 0.2), transparent 30%),
+      linear-gradient(180deg, rgba(7, 14, 28, 0.99), rgba(5, 10, 20, 0.98));
+    box-shadow:
+      0 16px 38px rgba(0, 0, 0, 0.34),
+      0 12px 0 #07101d;
+    display: grid;
+    grid-template-columns: minmax(180px, auto) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .workbench-brand {
+    min-width: 0;
+    padding-bottom: 10px;
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .workbench-nav {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 2px;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .workbench-nav-button {
+    flex: 0 0 132px;
+    min-height: 48px;
+  }
+
+  .workbench-nav-button:hover,
+  .workbench-nav-button:focus-visible {
+    transform: translateY(-1px);
+  }
+
+  .workbench-sidebar-status {
+    align-self: auto;
+    grid-template-columns: auto;
+    justify-items: center;
+    min-width: 112px;
+    padding: 9px 10px;
+    text-align: center;
+  }
+
+  .workbench-sidebar-status small {
+    display: none;
+  }
+
+  .workbench-hero {
+    flex-direction: column;
+  }
+
+  .workbench-topbar-meta {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .workbench-main {
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 2px;
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
+  }
+
   .overview-toolbar {
     align-items: flex-start;
+  }
+
+  .overview-density-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .overview-side-stack {
+    position: static;
+  }
+
+  .content-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .management-workbench {
+    grid-template-columns: 1fr;
+  }
+
+  .management-command-panel {
+    position: static;
+    grid-template-columns: 1fr;
   }
 
   .overview-heading-meta {
@@ -3226,14 +5027,32 @@ textarea {
   }
 
   .content-toolbar-groups {
-    flex-wrap: wrap;
+    grid-template-columns: 1fr;
   }
 
   .content-filter-row {
-    flex: 1 1 260px;
+    width: 100%;
+  }
+
+  .content-insight-inline {
+    border-left: 0;
+    border-top: 1px solid rgba(157, 180, 255, 0.12);
+    padding: 12px 0 0;
+  }
+
+  .content-insight-inline .content-insight-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .anomaly-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .anomaly-section-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .module-metric-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -3243,9 +5062,18 @@ textarea {
     align-items: flex-start;
   }
 
+  .dragon-tiger-command-bar {
+    grid-template-columns: 1fr;
+  }
+
   .dragon-tiger-toolbar-groups {
     width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     align-items: flex-start;
+  }
+
+  .dragon-tiger-metric-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .dragon-tiger-toolbar-meta {
@@ -3266,7 +5094,8 @@ textarea {
   }
 
   .overview-search-row,
-  .overview-sort-row {
+  .overview-sort-row,
+  .overview-mode-row {
     flex: 1 1 320px;
   }
 
@@ -3298,13 +5127,28 @@ textarea {
    }
 
    .capital-flow-header-meta,
-   .capital-flow-footnote-row {
-     width: 100%;
-   }
+    .capital-flow-footnote-row {
+      width: 100%;
+    }
+
+    .timeline-filter-bar,
+    .timeline-workbench {
+      grid-template-columns: 1fr;
+    }
+
+    .timeline-detail-card {
+      position: static;
+    }
 }
 
 @media (max-width: 800px) {
   .grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dragon-tiger-toolbar-groups,
+  .dragon-tiger-metric-strip,
+  .module-metric-strip {
     grid-template-columns: 1fr;
   }
 
@@ -3315,6 +5159,41 @@ textarea {
   .layout {
     width: min(100% - 20px, 1120px);
     padding: 24px 0 40px;
+  }
+
+  .layout.workbench-layout {
+    width: min(100% - 20px, 1120px);
+    gap: 12px;
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+
+  .workbench-sidebar {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 12px;
+    padding: 12px;
+  }
+
+  .workbench-brand span,
+  .workbench-nav-button small {
+    display: none;
+  }
+
+  .workbench-nav-button {
+    flex-basis: auto;
+    min-width: 84px;
+    min-height: 40px;
+    padding: 8px 10px;
+    text-align: center;
+  }
+
+  .workbench-sidebar-status {
+    display: flex;
+    justify-content: flex-start;
+    width: fit-content;
+    min-width: 0;
+    padding: 7px 10px;
   }
 
   .hero-toolbar {
@@ -3362,10 +5241,6 @@ textarea {
     flex-basis: 168px;
   }
 
-  .content-toolbar-groups {
-    flex-wrap: wrap;
-  }
-
   .dragon-tiger-toolbar-meta,
   .dragon-tiger-pagination-actions,
   .dragon-tiger-sort-controls {
@@ -3386,7 +5261,7 @@ textarea {
   }
 
   .anomaly-filter-card {
-    flex: 0 0 auto;
+    flex: 0 0 min(78vw, 320px);
     padding: 7px;
   }
 
@@ -3404,9 +5279,73 @@ textarea {
     font-size: 0.76rem;
   }
 
+  .timeline-filter-bar {
+    padding: 8px;
+  }
+
+  .timeline-filter-options,
+  .timeline-filter-options.compact {
+    display: flex;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+  }
+
+  .calendar-timeline-card {
+    grid-template-columns: 1fr;
+  }
+
+  .calendar-timeline-assets {
+    grid-column: 1;
+  }
+
+  .timeline-detail-list div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
   .overview-sort-controls,
   .snapshot-header-side {
     width: 100%;
+  }
+
+  .overview-mode-switch {
+    width: 100%;
+  }
+
+  .overview-mode-switch .content-switch-option {
+    flex: 1 1 0;
+  }
+
+  .overview-preview-header,
+  .overview-side-panel-heading,
+  .overview-preview-price-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .overview-preview-action {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .overview-preview-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .management-command-panel,
+  .management-watchlist-panel {
+    padding: 14px;
+  }
+
+  .management-section-heading {
+    flex-direction: column;
+  }
+
+  .management-watchlist-scroll {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+    scrollbar-gutter: auto;
   }
 
   .market-overview-header,
