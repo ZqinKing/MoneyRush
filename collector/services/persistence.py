@@ -438,6 +438,40 @@ class PostgresStore:
             await connection.execute(
                 "CREATE INDEX IF NOT EXISTS dragon_tiger_collection_log_job_started_idx ON dragon_tiger_collection_log (job_name, started_at DESC)"
             )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS capital_flow_collection_checkpoint (
+                    job_name TEXT PRIMARY KEY,
+                    next_due_at TIMESTAMPTZ NOT NULL,
+                    cooldown_until TIMESTAMPTZ,
+                    last_success_at TIMESTAMPTZ,
+                    last_attempt_at TIMESTAMPTZ,
+                    last_collected_trade_date DATE,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    last_error TEXT
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS capital_flow_collection_checkpoint_next_due_idx ON capital_flow_collection_checkpoint (next_due_at ASC)"
+            )
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS capital_flow_collection_log (
+                    id BIGSERIAL PRIMARY KEY,
+                    job_name TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    started_at TIMESTAMPTZ NOT NULL,
+                    finished_at TIMESTAMPTZ NOT NULL,
+                    trade_date DATE,
+                    error_message TEXT,
+                    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+                """
+            )
+            await connection.execute(
+                "CREATE INDEX IF NOT EXISTS capital_flow_collection_log_job_started_idx ON capital_flow_collection_log (job_name, started_at DESC)"
+            )
             await self._ensure_fund_schema(connection)
             await self._ensure_anomaly_schema(connection)
             await self._ensure_macro_schema(connection)
@@ -1310,6 +1344,7 @@ class PostgresStore:
                     change_pct = EXCLUDED.change_pct,
                     trigger_volume = EXCLUDED.trigger_volume,
                     volume_ratio = EXCLUDED.volume_ratio,
+                    first_trigger_ts = EXCLUDED.first_trigger_ts,
                     last_trigger_ts = EXCLUDED.last_trigger_ts,
                     duration_minutes = EXCLUDED.duration_minutes,
                     event_count = EXCLUDED.event_count,
@@ -1436,7 +1471,14 @@ class PostgresStore:
                 max(int(limit), 1),
             )
 
-    async def fetch_post_close_review_candidates(self, *, trade_date: date, limit: int = 20, max_attempts: int = 3) -> list[asyncpg.Record]:
+    async def fetch_post_close_review_candidates(
+        self,
+        *,
+        trade_date: date,
+        limit: int = 20,
+        max_attempts: int = 3,
+        dragon_tiger_only: bool = False,
+    ) -> list[asyncpg.Record]:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")
 
@@ -1468,6 +1510,21 @@ class PostgresStore:
                           ai_reason_post_close_required = TRUE
                           OR ai_reason_status IS NULL
                           OR ai_reason_status = 'pending'
+                      )
+                      AND (
+                          NOT $5::boolean
+                          OR EXISTS (
+                              SELECT 1
+                              FROM dragon_tiger_daily_item AS daily
+                              WHERE daily.trade_date = significant_anomaly.anomaly_date
+                                AND daily.symbol = significant_anomaly.symbol
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM dragon_tiger_institution_item AS institution
+                              WHERE institution.trade_date = significant_anomaly.anomaly_date
+                                AND institution.symbol = significant_anomaly.symbol
+                          )
                       )
                 ), ranked AS (
                     SELECT *,
@@ -1523,6 +1580,7 @@ class PostgresStore:
                 ["critical", "high"],
                 max(int(max_attempts), 1),
                 max(int(limit), 1),
+                bool(dragon_tiger_only),
             )
 
     async def upsert_post_close_review_checkpoint(self, item: dict[str, object]) -> None:
@@ -2457,6 +2515,124 @@ class PostgresStore:
                 _json_dumps(meta),
             )
 
+    async def ensure_capital_flow_checkpoint(self, *, job_name: str, next_due_at: datetime) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO capital_flow_collection_checkpoint (job_name, next_due_at, failure_count)
+                VALUES ($1, $2, 0)
+                ON CONFLICT (job_name) DO NOTHING
+                """,
+                job_name,
+                _coerce_utc_datetime(next_due_at, field_name="capital_flow_checkpoint.next_due_at"),
+            )
+
+    async def fetch_capital_flow_checkpoints(self) -> list[dict[str, object]]:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            rows = await connection.fetch(
+                """
+                SELECT job_name, next_due_at, cooldown_until, last_success_at, last_attempt_at, last_collected_trade_date, failure_count, last_error
+                FROM capital_flow_collection_checkpoint
+                ORDER BY next_due_at ASC, job_name ASC
+                """
+            )
+
+        return [
+            {
+                "job_name": row["job_name"],
+                "next_due_at": row["next_due_at"],
+                "cooldown_until": row["cooldown_until"],
+                "last_success_at": row["last_success_at"],
+                "last_attempt_at": row["last_attempt_at"],
+                "last_collected_trade_date": row["last_collected_trade_date"],
+                "failure_count": int(row["failure_count"] or 0),
+                "last_error": row["last_error"],
+            }
+            for row in rows
+        ]
+
+    async def upsert_capital_flow_checkpoint(
+        self,
+        *,
+        job_name: str,
+        next_due_at: datetime,
+        cooldown_until: datetime | None,
+        last_success_at: datetime | None,
+        last_attempt_at: datetime | None,
+        last_collected_trade_date,
+        failure_count: int,
+        last_error: str | None,
+    ) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO capital_flow_collection_checkpoint (
+                    job_name,
+                    next_due_at,
+                    cooldown_until,
+                    last_success_at,
+                    last_attempt_at,
+                    last_collected_trade_date,
+                    failure_count,
+                    last_error
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                ON CONFLICT (job_name) DO UPDATE SET
+                    next_due_at = EXCLUDED.next_due_at,
+                    cooldown_until = EXCLUDED.cooldown_until,
+                    last_success_at = EXCLUDED.last_success_at,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    last_collected_trade_date = EXCLUDED.last_collected_trade_date,
+                    failure_count = EXCLUDED.failure_count,
+                    last_error = EXCLUDED.last_error
+                """,
+                job_name,
+                _coerce_utc_datetime(next_due_at, field_name="capital_flow_checkpoint.next_due_at"),
+                _coerce_optional_utc_datetime(cooldown_until, field_name="capital_flow_checkpoint.cooldown_until"),
+                _coerce_optional_utc_datetime(last_success_at, field_name="capital_flow_checkpoint.last_success_at"),
+                _coerce_optional_utc_datetime(last_attempt_at, field_name="capital_flow_checkpoint.last_attempt_at"),
+                last_collected_trade_date,
+                failure_count,
+                last_error,
+            )
+
+    async def insert_capital_flow_collection_log(
+        self,
+        *,
+        job_name: str,
+        status: str,
+        started_at: datetime,
+        finished_at: datetime,
+        trade_date,
+        error_message: str | None,
+        meta: dict[str, object],
+    ) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO capital_flow_collection_log (job_name, status, started_at, finished_at, trade_date, error_message, meta)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                """,
+                job_name,
+                status,
+                _coerce_utc_datetime(started_at, field_name="capital_flow_log.started_at"),
+                _coerce_utc_datetime(finished_at, field_name="capital_flow_log.finished_at"),
+                trade_date,
+                error_message,
+                _json_dumps(meta),
+            )
+
     async def upsert_dragon_tiger_daily_items(self, items: list[dict[str, object]]) -> None:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")
@@ -2678,6 +2854,43 @@ class PostgresStore:
                     source = EXCLUDED.source,
                     source_status = EXCLUDED.source_status,
                     collected_at = EXCLUDED.collected_at,
+                    last_attempt_at = EXCLUDED.last_attempt_at,
+                    stale_reason = EXCLUDED.stale_reason
+                """,
+                trade_date,
+                symbol,
+                "capital-flow-unavailable",
+                normalized_attempted_at,
+                reason_message,
+            )
+
+    async def mark_stock_capital_flow_stale(
+        self,
+        *,
+        symbol: str,
+        trade_date,
+        attempted_at: datetime,
+        reason_message: str,
+    ) -> None:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        normalized_attempted_at = _coerce_utc_datetime(attempted_at, field_name="capital_flow.last_attempt_at")
+        async with self._pool.acquire() as connection:
+            await connection.execute(
+                """
+                INSERT INTO stock_capital_flow_daily (
+                    trade_date,
+                    symbol,
+                    source,
+                    source_status,
+                    collected_at,
+                    last_attempt_at,
+                    stale_reason,
+                    raw_payload
+                ) VALUES ($1, $2, $3, 'stale', $4, $4, $5, '{}'::jsonb)
+                ON CONFLICT (trade_date, symbol) DO UPDATE SET
+                    source_status = EXCLUDED.source_status,
                     last_attempt_at = EXCLUDED.last_attempt_at,
                     stale_reason = EXCLUDED.stale_reason
                 """,

@@ -301,6 +301,34 @@ CREATE TABLE IF NOT EXISTS dragon_tiger_collection_log (
 CREATE INDEX IF NOT EXISTS dragon_tiger_collection_log_job_started_idx
     ON dragon_tiger_collection_log (job_name, started_at DESC);
 
+CREATE TABLE IF NOT EXISTS capital_flow_collection_checkpoint (
+    job_name TEXT PRIMARY KEY,
+    next_due_at TIMESTAMPTZ NOT NULL,
+    cooldown_until TIMESTAMPTZ,
+    last_success_at TIMESTAMPTZ,
+    last_attempt_at TIMESTAMPTZ,
+    last_collected_trade_date DATE,
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS capital_flow_collection_checkpoint_next_due_idx
+    ON capital_flow_collection_checkpoint (next_due_at ASC);
+
+CREATE TABLE IF NOT EXISTS capital_flow_collection_log (
+    id BIGSERIAL PRIMARY KEY,
+    job_name TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TIMESTAMPTZ NOT NULL,
+    finished_at TIMESTAMPTZ NOT NULL,
+    trade_date DATE,
+    error_message TEXT,
+    meta JSONB NOT NULL DEFAULT '{}'::jsonb
+);
+
+CREATE INDEX IF NOT EXISTS capital_flow_collection_log_job_started_idx
+    ON capital_flow_collection_log (job_name, started_at DESC);
+
 CREATE TABLE IF NOT EXISTS fund_profile (
     fund_code TEXT PRIMARY KEY,
     fund_name TEXT NOT NULL,

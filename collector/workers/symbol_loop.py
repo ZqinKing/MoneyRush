@@ -12,7 +12,6 @@ from redis.asyncio import Redis
 from collector.services.anomaly_aggregator import AnomalyAggregator
 from collector.services.ai_summary_client import is_ai_configured
 from collector.services.anomaly_reason_analyzer import AnomalyReasonAnalyzer, compute_evidence_fingerprint
-from collector.services.market_overview_client import build_market_status
 from collector.services.persistence import PostgresStore
 from collector.services.tencent_quote_client import MarketQuoteClient
 
@@ -24,6 +23,38 @@ ANOMALY_REASON_INTERVAL_SECONDS = 300
 ANOMALY_REASON_BATCH_SIZE = 10
 POST_CLOSE_REASON_INTERVAL_SECONDS = 300
 REALTIME_AGGREGATED_SOURCE = "realtime-quote-aggregate"
+
+
+def _parse_china_windows(value: object) -> tuple[tuple[int, int], ...]:
+    windows: list[tuple[int, int]] = []
+    for raw_item in str(value or "").split(","):
+        item = raw_item.strip()
+        if not item:
+            continue
+        hour_text, separator, minute_text = item.partition(":")
+        if not separator:
+            logger.warning("collector ignored invalid anomaly reason window", extra={"window": item})
+            continue
+        try:
+            hour = int(hour_text)
+            minute = int(minute_text)
+        except ValueError:
+            logger.warning("collector ignored invalid anomaly reason window", extra={"window": item})
+            continue
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            windows.append((hour, minute))
+            continue
+        logger.warning("collector ignored out-of-range anomaly reason window", extra={"window": item})
+    return tuple(sorted(set(windows)))
+
+
+def _intraday_reason_window_key(settings) -> str | None:
+    now_china = datetime.now(CHINA_MARKET_TZ)
+    for hour, minute in reversed(_parse_china_windows(getattr(settings, "anomaly_intraday_reason_windows_china", ""))):
+        due = now_china.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if now_china >= due:
+            return f"{now_china.date().isoformat()}T{hour:02d}:{minute:02d}"
+    return None
 
 
 def _derive_llm_audit_status(*, attempted: bool, llm_succeeded: bool) -> str:
@@ -111,6 +142,8 @@ class CollectorWorker:
         self._latest_daily_trade_day_by_symbol: dict[str, date] = {}
         self._last_anomaly_aggregation_at = 0.0
         self._last_anomaly_reason_analysis_at = 0.0
+        self._completed_anomaly_reason_windows: set[str] = set()
+        self._anomaly_reason_window_batch_counts: dict[str, int] = {}
         self._last_post_close_reason_analysis_at = 0.0
         self._postgres_ready = False
 
@@ -165,21 +198,29 @@ class CollectorWorker:
         logger.info("collector aggregated significant anomalies", extra={"active_symbol_count": len(active_symbols), "anomaly_count": anomaly_count})
 
     async def _analyze_pending_anomaly_reasons(self, *, force: bool = False) -> None:
-        if not is_ai_configured(self._settings):
+        if not self._settings.anomaly_intraday_reason_enabled or not is_ai_configured(self._settings):
             return
-        market_status, is_trading_session = build_market_status()
-        if not is_trading_session:
+        window_key = _intraday_reason_window_key(self._settings)
+        if not force and window_key is None:
             logger.info(
-                "collector skipped anomaly reason analysis outside trading session",
-                extra={"market_status": market_status, "force": force},
+                "collector skipped anomaly reason analysis before scheduled window",
+                extra={"windows": self._settings.anomaly_intraday_reason_windows_china, "force": force},
             )
+            return
+        if not force and window_key in self._completed_anomaly_reason_windows:
+            return
+        completed_batch_count = self._anomaly_reason_window_batch_counts.get(window_key or "force", 0)
+        max_batches = max(int(getattr(self._settings, "anomaly_intraday_reason_max_batches_per_window", 1)), 1)
+        if not force and completed_batch_count >= max_batches:
+            if window_key is not None:
+                self._completed_anomaly_reason_windows.add(window_key)
             return
         now = monotonic()
         interval_seconds = ANOMALY_REASON_INTERVAL_SECONDS
         if not force and now - self._last_anomaly_reason_analysis_at < interval_seconds:
             return
         self._last_anomaly_reason_analysis_at = now
-        batch_limit = ANOMALY_REASON_BATCH_SIZE
+        batch_limit = max(int(getattr(self._settings, "anomaly_intraday_reason_batch_size", ANOMALY_REASON_BATCH_SIZE)), 1)
         trade_date = datetime.now(CHINA_MARKET_TZ).date()
         analyzed_count = 0
         try:
@@ -190,6 +231,8 @@ class CollectorWorker:
             )
             if not rows:
                 logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": 0})
+                if window_key is not None:
+                    self._completed_anomaly_reason_windows.add(window_key)
                 return
 
             for row in rows:
@@ -241,6 +284,11 @@ class CollectorWorker:
         except Exception:
             logger.exception("collector anomaly reason analysis failed")
             return
+        if window_key is not None:
+            completed_batch_count += 1
+            self._anomaly_reason_window_batch_counts[window_key] = completed_batch_count
+            if analyzed_count < batch_limit or completed_batch_count >= max_batches:
+                self._completed_anomaly_reason_windows.add(window_key)
         logger.info("collector analyzed anomaly reasons", extra={"anomaly_count": analyzed_count})
 
     async def _analyze_post_close_anomaly_reasons(self, *, force: bool = False) -> None:
@@ -264,6 +312,7 @@ class CollectorWorker:
                 trade_date=trade_date,
                 limit=batch_limit,
                 max_attempts=int(self._settings.anomaly_reason_max_attempts),
+                dragon_tiger_only=bool(self._settings.anomaly_post_close_dragon_tiger_only),
             )
             if not rows:
                 logger.info("collector analyzed post-close anomaly reasons", extra={"anomaly_count": 0})
@@ -282,6 +331,18 @@ class CollectorWorker:
                 has_dragon_tiger = bool(context.get("dragon_tiger_daily") or context.get("dragon_tiger_institution"))
                 dragon_tiger_published_for_date = bool(context.get("dragon_tiger_published_for_date"))
                 checkpoint_attempt_count = int(_record_get(row, "post_close_checkpoint_attempt_count") or 0)
+                if self._settings.anomaly_post_close_dragon_tiger_only and not has_dragon_tiger and dragon_tiger_published_for_date:
+                    await self._postgres.upsert_post_close_review_checkpoint(
+                        {
+                            "trade_date": row["anomaly_date"],
+                            "symbol": str(row["symbol"]),
+                            "representative_anomaly_id": row["id"],
+                            "status": "unavailable",
+                            "attempt_count": checkpoint_attempt_count,
+                            "last_error": "no_dragon_tiger_evidence",
+                        }
+                    )
+                    continue
                 if not has_dragon_tiger and not dragon_tiger_published_for_date:
                     unavailable_after = _dragon_tiger_evidence_deadline(self._settings, row["anomaly_date"])
                     if datetime.now(UTC) < unavailable_after:

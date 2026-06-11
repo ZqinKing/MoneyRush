@@ -3188,6 +3188,139 @@ textarea {
   border: 1px solid rgba(129, 164, 255, 0.12);
 }
 
+.detail-activity-card {
+  background:
+    radial-gradient(circle at 12% 8%, rgba(61, 109, 255, 0.16), transparent 34%),
+    linear-gradient(135deg, rgba(14, 26, 55, 0.92), rgba(8, 14, 32, 0.94));
+}
+
+.detail-activity-badges,
+.detail-activity-column-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.detail-activity-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.8fr) repeat(2, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.detail-activity-summary,
+.detail-activity-column {
+  border: 1px solid rgba(129, 164, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(9, 18, 42, 0.58);
+  padding: 16px;
+}
+
+.detail-activity-summary {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.detail-activity-summary > span,
+.detail-activity-column-heading span,
+.detail-activity-summary em {
+  color: #8fa6d8;
+  font-size: 0.82rem;
+  font-style: normal;
+}
+
+.detail-activity-summary strong {
+  color: #f3f7ff;
+  font-size: clamp(1.4rem, 3vw, 2.1rem);
+}
+
+.detail-activity-summary dl {
+  display: grid;
+  gap: 8px;
+  margin: 4px 0 0;
+}
+
+.detail-activity-summary dl div,
+.detail-compact-tick-row {
+  display: grid;
+  grid-template-columns: 0.8fr 1fr 1fr 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-activity-summary dt {
+  color: #6f83b2;
+  font-size: 0.76rem;
+}
+
+.detail-activity-summary dd {
+  grid-column: span 3;
+  margin: 0;
+  color: #d7e2ff;
+  font-size: 0.88rem;
+}
+
+.detail-activity-column {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+}
+
+.detail-activity-column-heading {
+  justify-content: space-between;
+}
+
+.detail-activity-column-heading h4 {
+  margin: 0;
+  color: #edf3ff;
+}
+
+.detail-compact-tick-list {
+  display: grid;
+  gap: 8px;
+}
+
+.detail-compact-tick-row {
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(157, 180, 255, 0.1);
+}
+
+.detail-compact-tick-row:last-child,
+.detail-event-list.compact li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.detail-compact-tick-row span,
+.detail-compact-tick-row em,
+.detail-compact-tick-row small {
+  color: #9fb0d7;
+  font-size: 0.82rem;
+  font-style: normal;
+}
+
+.detail-compact-tick-row strong {
+  color: #f3f7ff;
+}
+
+.detail-event-list.compact {
+  gap: 8px;
+}
+
+.detail-event-list.compact li {
+  gap: 6px;
+  padding-bottom: 8px;
+}
+
+.detail-event-list.compact .detail-event-meta span {
+  padding: 3px 7px;
+}
+
+.detail-activity-empty {
+  margin: 0;
+}
+
 @media (max-width: 1080px) {
   .layout {
     width: min(100% - 24px, 1120px);
@@ -3211,6 +3344,10 @@ textarea {
   .wide,
   .wide-card {
     grid-column: auto;
+  }
+
+  .detail-activity-grid {
+    grid-template-columns: 1fr;
   }
 
   .section-heading,

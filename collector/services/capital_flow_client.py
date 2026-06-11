@@ -74,21 +74,29 @@ class CapitalFlowClient:
         self,
         *,
         eastmoney_base_url: str,
+        eastmoney_delay_base_url: str | None = None,
         timeout_seconds: float = 15.0,
         retry_attempts: int = 3,
         retry_backoff_seconds: float = 0.8,
         akshare_fallback_enabled: bool = True,
     ) -> None:
         self._eastmoney_base_url = eastmoney_base_url
+        self._eastmoney_delay_base_url = eastmoney_delay_base_url
         self._timeout_seconds = timeout_seconds
         self._retry_attempts = max(int(retry_attempts), 1)
         self._retry_backoff_seconds = max(float(retry_backoff_seconds), 0.0)
         self._akshare_fallback_enabled = akshare_fallback_enabled
 
     def fetch_latest(self, symbol: str) -> dict[str, object]:
+        return self._fetch_with_fallback(symbol=symbol, trade_date=None)
+
+    def fetch_for_trade_date(self, symbol: str, trade_date: date) -> dict[str, object]:
+        return self._fetch_with_fallback(symbol=symbol, trade_date=trade_date)
+
+    def _fetch_with_fallback(self, *, symbol: str, trade_date: date | None) -> dict[str, object]:
         direct_error: Exception | None = None
         try:
-            return self._fetch_latest_direct(symbol)
+            return self._fetch_latest_direct(symbol) if trade_date is None else self._fetch_direct_for_trade_date(symbol, trade_date)
         except Exception as exc:  # noqa: BLE001 - collector must degrade gracefully
             direct_error = exc
             logger.warning("capital flow direct fetch failed; trying akshare fallback", extra={"symbol": symbol, "error": str(exc)})
@@ -97,25 +105,45 @@ class CapitalFlowClient:
             raise CapitalFlowClientError(f"direct source failed: {direct_error}; akshare fallback disabled") from direct_error
 
         try:
-            return self._fetch_latest_akshare(symbol)
+            return self._fetch_latest_akshare(symbol) if trade_date is None else self._fetch_akshare_for_trade_date(symbol, trade_date)
         except Exception as exc:  # noqa: BLE001 - collector must report combined failure
             message = f"direct source failed: {direct_error}; akshare fallback failed: {exc}"
             raise CapitalFlowClientError(message) from exc
 
     def _fetch_latest_direct(self, symbol: str) -> dict[str, object]:
         market = _infer_market(symbol)
-        payload = self._request_json(symbol=symbol, market=market)
+        payload, source = self._request_json(symbol=symbol, market=market)
         data = payload.get("data")
+        latest_line = self._latest_direct_line(symbol=symbol, data=data)
+        return self._parse_direct_line(symbol=symbol, data=data, latest_line=latest_line, source=source)
+
+    def _fetch_direct_for_trade_date(self, symbol: str, trade_date: date) -> dict[str, object]:
+        market = _infer_market(symbol)
+        payload, source = self._request_json(symbol=symbol, market=market)
+        data = payload.get("data")
+        for line in self._direct_lines(symbol=symbol, data=data):
+            parts = line.split(",")
+            if parts and _to_trade_date(parts[0]) == trade_date:
+                return self._parse_direct_line(symbol=symbol, data=data, latest_line=line, source=source)
+        raise CapitalFlowClientError(f"capital flow row missing requested trade date for {symbol}: {trade_date.isoformat()}")
+
+    def _direct_lines(self, *, symbol: str, data: object) -> list[str]:
         if not isinstance(data, dict):
             raise CapitalFlowClientError(f"capital flow payload missing data for {symbol}")
         klines = data.get("klines")
         if not isinstance(klines, list) or not klines:
             raise CapitalFlowClientError(f"capital flow payload missing klines for {symbol}")
+        return [line for line in klines if isinstance(line, str)]
 
-        latest_line = klines[-1]
-        if not isinstance(latest_line, str):
+    def _latest_direct_line(self, *, symbol: str, data: object) -> str:
+        lines = self._direct_lines(symbol=symbol, data=data)
+        if not lines:
             raise CapitalFlowClientError(f"capital flow latest row malformed for {symbol}")
+        return lines[-1]
 
+    def _parse_direct_line(self, *, symbol: str, data: object, latest_line: str, source: str) -> dict[str, object]:
+        if not isinstance(data, dict):
+            raise CapitalFlowClientError(f"capital flow payload missing data for {symbol}")
         parts = latest_line.split(",")
         if len(parts) < 13:
             raise CapitalFlowClientError(f"capital flow latest row too short for {symbol}: {len(parts)}")
@@ -140,7 +168,7 @@ class CapitalFlowClient:
             "super_large_net_ratio": _to_float(parts[10]),
             "close_price": _to_float(parts[11]),
             "change_pct": _to_float(parts[12]),
-            "source": "eastmoney-direct",
+            "source": source,
             "source_status": "fresh",
             "generated_at": None,
             "raw_payload": {
@@ -158,6 +186,19 @@ class CapitalFlowClient:
             raise CapitalFlowClientError(f"akshare returned no capital flow rows for {symbol}")
 
         latest_row = self._latest_dataframe_row(dataframe)
+        return self._parse_akshare_row(symbol=symbol, latest_row=latest_row)
+
+    def _fetch_akshare_for_trade_date(self, symbol: str, trade_date: date) -> dict[str, object]:
+        market = _infer_market(symbol)
+        dataframe = ak.stock_individual_fund_flow(stock=symbol, market=market)
+        if dataframe is None or dataframe.empty:
+            raise CapitalFlowClientError(f"akshare returned no capital flow rows for {symbol}")
+        for row in dataframe.to_dict(orient="records"):
+            if _to_trade_date(row.get("日期")) == trade_date:
+                return self._parse_akshare_row(symbol=symbol, latest_row=row)
+        raise CapitalFlowClientError(f"akshare capital flow row missing requested trade date for {symbol}: {trade_date.isoformat()}")
+
+    def _parse_akshare_row(self, *, symbol: str, latest_row: dict[str, object]) -> dict[str, object]:
         trade_date = _to_trade_date(latest_row.get("日期"))
         if trade_date is None:
             raise CapitalFlowClientError(f"akshare capital flow missing trade date for {symbol}")
@@ -184,7 +225,7 @@ class CapitalFlowClient:
             "raw_payload": latest_row,
         }
 
-    def _request_json(self, *, symbol: str, market: str) -> dict[str, object]:
+    def _request_json(self, *, symbol: str, market: str) -> tuple[dict[str, object], str]:
         params = {
             "lmt": "0",
             "klt": "101",
@@ -194,26 +235,30 @@ class CapitalFlowClient:
             "ut": "b2884a393a59ad64002292a3e90d46a5",
             "_": int(time.time() * 1000),
         }
-        query = urlencode(params)
-        request = Request(f"{self._eastmoney_base_url}?{query}", headers=DEFAULT_HEADERS)
         last_error: Exception | None = None
+        sources = [(self._eastmoney_base_url, "eastmoney-direct")]
+        if self._eastmoney_delay_base_url and self._eastmoney_delay_base_url != self._eastmoney_base_url:
+            sources.append((self._eastmoney_delay_base_url, "eastmoney-delay"))
 
-        for attempt in range(1, self._retry_attempts + 1):
-            try:
-                with urlopen(request, timeout=self._timeout_seconds) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise CapitalFlowClientError(f"unexpected capital flow payload type for {symbol}")
-                return payload
-            except CapitalFlowClientError:
-                raise
-            except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-                last_error = exc
-                if attempt >= self._retry_attempts:
-                    break
-                delay_seconds = self._retry_backoff_seconds * attempt
-                if delay_seconds > 0:
-                    time.sleep(delay_seconds)
+        for base_url, source in sources:
+            query = urlencode(params)
+            request = Request(f"{base_url}?{query}", headers=DEFAULT_HEADERS)
+            for attempt in range(1, self._retry_attempts + 1):
+                try:
+                    with urlopen(request, timeout=self._timeout_seconds) as response:
+                        payload = json.loads(response.read().decode("utf-8"))
+                    if not isinstance(payload, dict):
+                        raise CapitalFlowClientError(f"unexpected capital flow payload type for {symbol}")
+                    return payload, source
+                except CapitalFlowClientError:
+                    raise
+                except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                    last_error = exc
+                    if attempt >= self._retry_attempts:
+                        break
+                    delay_seconds = self._retry_backoff_seconds * (2 ** (attempt - 1))
+                    if delay_seconds > 0:
+                        time.sleep(delay_seconds)
 
         raise CapitalFlowClientError(
             f"capital flow request failed after {self._retry_attempts} attempts for {symbol}: {last_error}"
