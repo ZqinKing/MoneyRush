@@ -527,6 +527,101 @@ CREATE TABLE IF NOT EXISTS macro_snapshot (
     payload JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS timeline_event (
+    id TEXT PRIMARY KEY,
+    event_date DATE NOT NULL,
+    end_date DATE,
+    title TEXT NOT NULL,
+    category TEXT NOT NULL,
+    impact_assets JSONB NOT NULL DEFAULT '[]'::jsonb,
+    level TEXT NOT NULL,
+    source TEXT,
+    description TEXT,
+    previous_value TEXT,
+    market_expectation TEXT,
+    status TEXT NOT NULL DEFAULT 'upcoming',
+    source_url TEXT,
+    display_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS timeline_event_date_idx
+    ON timeline_event (event_date);
+CREATE INDEX IF NOT EXISTS timeline_event_category_idx
+    ON timeline_event (category);
+CREATE INDEX IF NOT EXISTS timeline_event_level_date_idx
+    ON timeline_event (level, event_date);
+
+INSERT INTO timeline_event (
+    id, event_date, end_date, title, category, impact_assets, level, source, description
+) VALUES
+    (
+        'seed-fomc-2026-06',
+        DATE '2026-06-16',
+        DATE '2026-06-17',
+        'FOMC 利率决议 + SEP',
+        'fomc',
+        '["UST", "USD", "Gold", "BTC", "成长股"]'::jsonb,
+        'high',
+        'seed',
+        '美联储议息会议与经济预测摘要，作为未来风险时间轴的 MVP 种子事件。'
+    ),
+    (
+        'seed-options-etf-2026-06',
+        DATE '2026-06-18',
+        NULL,
+        'ETF/期权月度到期',
+        'options',
+        '["美股ETF", "指数", "对冲链条"]'::jsonb,
+        'high',
+        'seed',
+        '月度到期窗口可能放大指数、ETF 与对冲链条波动。'
+    ),
+    (
+        'seed-cme-btc-2026-06',
+        DATE '2026-06-26',
+        NULL,
+        'CME BTC 6月合约结算',
+        'crypto',
+        '["BTC", "ETH", "矿股", "加密主题ETF"]'::jsonb,
+        'medium',
+        'seed',
+        'CME 加密期货结算窗口，先用于风险时间轴占位。'
+    ),
+    (
+        'seed-fomc-2026-07',
+        DATE '2026-07-28',
+        DATE '2026-07-29',
+        'FOMC 7月会议',
+        'fomc',
+        '["UST", "USD", "Gold", "BTC", "风险资产"]'::jsonb,
+        'high',
+        'seed',
+        '后续 FOMC 会议预告，后续可接入官方日历数据源。'
+    ),
+    (
+        'seed-fomc-2026-09',
+        DATE '2026-09-15',
+        DATE '2026-09-16',
+        'FOMC 9月会议',
+        'fomc',
+        '["UST", "USD", "Gold", "BTC", "风险资产"]'::jsonb,
+        'high',
+        'seed',
+        '后续 FOMC 会议预告，后续可接入官方日历数据源。'
+    )
+ON CONFLICT (id) DO UPDATE SET
+    event_date = EXCLUDED.event_date,
+    end_date = EXCLUDED.end_date,
+    title = EXCLUDED.title,
+    category = EXCLUDED.category,
+    impact_assets = EXCLUDED.impact_assets,
+    level = EXCLUDED.level,
+    source = EXCLUDED.source,
+    description = EXCLUDED.description,
+    updated_at = NOW();
+
 CREATE TABLE IF NOT EXISTS macro_analysis (
     id BIGSERIAL PRIMARY KEY,
     trigger_type TEXT NOT NULL,

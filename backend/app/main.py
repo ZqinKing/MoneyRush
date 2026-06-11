@@ -15,6 +15,7 @@ from app.api.routes.llm_audit import router as llm_audit_router
 from app.api.routes.macro import router as macro_router
 from app.api.routes.market import router as market_router
 from app.api.routes.symbols import router as symbols_router
+from app.api.routes.timeline import router as timeline_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 from app.services.cache.redis_store import RedisStore
@@ -28,6 +29,7 @@ from app.services.macro_analysis_service import MacroAnalysisService
 from app.services.macro_query_service import MacroQueryService
 from app.services.market_detail.query_service import MarketDetailQueryService
 from app.services.symbol_lookup import SymbolLookupService
+from app.services.timeline_query_service import TimelineQueryService
 from app.services.vendors.dragon_tiger_client import DragonTigerClient
 from app.ws.market import router as market_ws_router
 
@@ -88,6 +90,7 @@ async def lifespan(app: FastAPI):
     app.state.dragon_tiger_query_service = DragonTigerQueryService(settings.postgres_dsn)
     app.state.macro_query_service = MacroQueryService(settings.postgres_dsn)
     app.state.llm_audit_query_service = LlmAuditQueryService(settings.postgres_dsn)
+    app.state.timeline_query_service = TimelineQueryService(settings.postgres_dsn)
     app.state.macro_analysis_service = MacroAnalysisService(settings)
     app.state.fund_portfolio_risk_analysis_service = FundPortfolioRiskAnalysisService(settings)
     app.state.symbol_lookup_service = SymbolLookupService()
@@ -103,9 +106,11 @@ async def lifespan(app: FastAPI):
     await app.state.dragon_tiger_query_service.connect()
     await app.state.macro_query_service.connect()
     await app.state.llm_audit_query_service.connect()
+    await app.state.timeline_query_service.connect()
 
     yield
 
+    await app.state.timeline_query_service.close()
     await app.state.llm_audit_query_service.close()
     await app.state.macro_query_service.close()
     await app.state.dragon_tiger_query_service.close()
@@ -146,6 +151,7 @@ def create_app() -> FastAPI:
     app.include_router(funds_router, prefix="/api/v1")
     app.include_router(macro_router, prefix="/api/v1")
     app.include_router(llm_audit_router, prefix="/api/v1")
+    app.include_router(timeline_router, prefix="/api/v1")
     app.include_router(market_ws_router)
     return app
 
