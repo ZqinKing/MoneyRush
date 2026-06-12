@@ -208,6 +208,13 @@ const timelineStatusLabels = {
 };
 
 const timelineLaneOrder = ['fomc', 'macro', 'options', 'crypto', 'meeting'];
+const timelineDayMs = 24 * 60 * 60 * 1000;
+const timelineAxisTickCount = 6;
+const timelineMinRangeDays = 30;
+const timelineWindowPaddingDays = 3;
+const timelineRelatedWindowDays = 21;
+const timelineVisualEventMinWidthPercent = 18;
+const timelineVisualEventGapPercent = 2;
 
 const dragonTigerSortOptions = {
   daily: [
@@ -754,6 +761,224 @@ function getTimelineTodayLabel() {
     month: '2-digit',
     day: '2-digit',
   }).format(new Date()).replace(/\//g, '-');
+}
+
+function parseTimelineDateKey(value) {
+  if (!value) {
+    return null;
+  }
+  const text = String(value).slice(0, 10);
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  if (!match) {
+    const timestamp = Date.parse(value);
+    if (Number.isNaN(timestamp)) {
+      return null;
+    }
+    const date = new Date(timestamp);
+    return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  }
+  const [, year, month, day] = match;
+  const timestamp = Date.UTC(Number(year), Number(month) - 1, Number(day));
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
+function formatTimelineAxisLabel(timestamp) {
+  if (typeof timestamp !== 'number' || Number.isNaN(timestamp)) {
+    return '--/--';
+  }
+  const date = new Date(timestamp);
+  const month = `${date.getUTCMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getUTCDate()}`.padStart(2, '0');
+  return `${month}/${day}`;
+}
+
+function getTimelineEventRange(item) {
+  const startMs = parseTimelineDateKey(item?.eventDate);
+  if (startMs === null) {
+    return null;
+  }
+  const parsedEndMs = parseTimelineDateKey(item?.endDate);
+  const endMs = parsedEndMs !== null && parsedEndMs >= startMs ? parsedEndMs : startMs;
+  return { startMs, endMs };
+}
+
+function clampTimelinePercent(value) {
+  return Math.min(Math.max(value, 0), 100);
+}
+
+function buildTimelineScale(events) {
+  const todayMs = parseTimelineDateKey(getTimelineTodayLabel()) ?? Date.UTC(
+    new Date().getUTCFullYear(),
+    new Date().getUTCMonth(),
+    new Date().getUTCDate(),
+  );
+  const ranges = events.map(getTimelineEventRange).filter(Boolean);
+  const minEventMs = ranges.length ? Math.min(...ranges.map((range) => range.startMs)) : todayMs;
+  const maxEventMs = ranges.length ? Math.max(...ranges.map((range) => range.endMs)) : todayMs;
+  const paddedStartMs = Math.min(minEventMs, todayMs) - timelineWindowPaddingDays * timelineDayMs;
+  const paddedEndMs = Math.max(maxEventMs, todayMs + timelineMinRangeDays * timelineDayMs) + timelineWindowPaddingDays * timelineDayMs;
+  const minEndMs = paddedStartMs + timelineMinRangeDays * timelineDayMs;
+  const startMs = paddedStartMs;
+  const endMs = Math.max(paddedEndMs, minEndMs);
+  const rangeMs = Math.max(endMs - startMs, timelineDayMs);
+  const ticks = Array.from({ length: timelineAxisTickCount }, (_, index) => {
+    const ratio = timelineAxisTickCount === 1 ? 0 : index / (timelineAxisTickCount - 1);
+    const timestamp = startMs + rangeMs * ratio;
+    return {
+      key: `timeline-axis-${index}`,
+      label: formatTimelineAxisLabel(timestamp),
+      leftPercent: clampTimelinePercent(ratio * 100),
+    };
+  });
+
+  return {
+    startMs,
+    endMs,
+    rangeMs,
+    todayMs,
+    todayLeftPercent: clampTimelinePercent(((todayMs - startMs) / rangeMs) * 100),
+    ticks,
+    windowLabel: `${formatTimelineAxisLabel(startMs)} - ${formatTimelineAxisLabel(endMs)}`,
+  };
+}
+
+function getTimelinePosition(item, scale) {
+  const range = getTimelineEventRange(item);
+  if (!range) {
+    return null;
+  }
+  const leftPercent = clampTimelinePercent(((range.startMs - scale.startMs) / scale.rangeMs) * 100);
+  const durationWidthPercent = ((range.endMs - range.startMs + timelineDayMs) / scale.rangeMs) * 100;
+  const visualWidthPercent = Math.min(
+    Math.max(durationWidthPercent, timelineVisualEventMinWidthPercent),
+    Math.max(timelineVisualEventMinWidthPercent * 0.8, 100 - leftPercent),
+  );
+  return {
+    ...range,
+    leftPercent,
+    widthPercent: Math.max(durationWidthPercent, 4.5),
+    visualWidthPercent,
+    distanceFromTodayDays: Math.round((range.startMs - scale.todayMs) / timelineDayMs),
+  };
+}
+
+function formatTimelineDistance(days) {
+  if (days === 0) {
+    return '今天';
+  }
+  if (days > 0) {
+    return `${days} 天后`;
+  }
+  return `${Math.abs(days)} 天前`;
+}
+
+function getTimelineSharedAssets(left, right) {
+  const leftAssets = Array.isArray(left?.impactAssets) ? left.impactAssets.map((asset) => String(asset)) : [];
+  const rightAssets = Array.isArray(right?.impactAssets) ? right.impactAssets.map((asset) => String(asset).toLowerCase()) : [];
+  const rightSet = new Set(rightAssets);
+  return leftAssets.filter((asset) => rightSet.has(asset.toLowerCase()));
+}
+
+function getTimelineRelationInfo(item, selectedItem) {
+  if (!item || !selectedItem || item?.id === selectedItem?.id) {
+    return null;
+  }
+  const currentRange = getTimelineEventRange(item);
+  const selectedRange = getTimelineEventRange(selectedItem);
+  if (!currentRange || !selectedRange) {
+    return null;
+  }
+  const sharedAssets = getTimelineSharedAssets(item, selectedItem);
+  const sameCategory = item?.category && selectedItem?.category && item.category === selectedItem.category;
+  const dayDistance = Math.round((currentRange.startMs - selectedRange.startMs) / timelineDayMs);
+  const nearbyHighRisk = Math.abs(dayDistance) <= timelineRelatedWindowDays && (item?.level === 'high' || selectedItem?.level === 'high');
+
+  if (sameCategory) {
+    return { reason: '同一风险泳道', score: 4, dayDistance };
+  }
+  if (sharedAssets.length) {
+    return { reason: `共同影响 ${sharedAssets.slice(0, 2).join('/')}`, score: 3, dayDistance };
+  }
+  if (nearbyHighRisk) {
+    return { reason: '相邻高波动窗口', score: 2, dayDistance };
+  }
+  return null;
+}
+
+function buildTimelineLanes(events, scale, selectedItem) {
+  const grouped = events.reduce((accumulator, item) => {
+    const category = item?.category || 'unknown';
+    if (!accumulator[category]) {
+      accumulator[category] = [];
+    }
+    accumulator[category].push(item);
+    return accumulator;
+  }, {});
+  const orderedCategories = [
+    ...timelineLaneOrder.filter((category) => grouped[category]),
+    ...Object.keys(grouped).filter((category) => !timelineLaneOrder.includes(category)).sort(),
+  ];
+
+  return orderedCategories.map((category) => {
+    const stackEndByIndex = [];
+    const laneEvents = grouped[category]
+      .map((item) => ({ item, position: getTimelinePosition(item, scale) }))
+      .filter((entry) => entry.position)
+      .sort((left, right) => left.position.startMs - right.position.startMs || String(left.item?.title || '').localeCompare(String(right.item?.title || ''), 'zh-Hans-CN'));
+
+    const positionedEvents = laneEvents.map((entry) => {
+      const visualEndPercent = Math.min(entry.position.leftPercent + entry.position.visualWidthPercent, 100);
+      const stackIndex = stackEndByIndex.findIndex((endPercent) => endPercent + timelineVisualEventGapPercent <= entry.position.leftPercent);
+      const resolvedStackIndex = stackIndex === -1 ? stackEndByIndex.length : stackIndex;
+      stackEndByIndex[resolvedStackIndex] = visualEndPercent;
+      const relation = getTimelineRelationInfo(entry.item, selectedItem);
+      return {
+        ...entry.item,
+        _timelinePosition: {
+          ...entry.position,
+          stackIndex: resolvedStackIndex,
+          relation,
+        },
+      };
+    });
+
+    return {
+      category,
+      events: positionedEvents,
+      depth: Math.max(stackEndByIndex.length, 1),
+      connectors: positionedEvents.slice(1).map((item, index) => {
+        const previous = positionedEvents[index]?._timelinePosition;
+        const current = item?._timelinePosition;
+        const previousCenter = previous.leftPercent + previous.visualWidthPercent / 2;
+        const currentCenter = current.leftPercent + current.visualWidthPercent / 2;
+        return {
+          key: `${category}-connector-${index}`,
+          leftPercent: Math.min(previousCenter, currentCenter),
+          widthPercent: Math.abs(currentCenter - previousCenter),
+          tone: getTimelineLevelTone(item?.level),
+        };
+      }),
+    };
+  });
+}
+
+function buildTimelineContext(events, selectedItem) {
+  if (!selectedItem) {
+    return { previous: null, next: null, related: [] };
+  }
+  const selectedIndex = events.findIndex((item) => item?.id === selectedItem?.id);
+  const related = events
+    .filter((item) => item?.id !== selectedItem?.id)
+    .map((item) => ({ item, relation: getTimelineRelationInfo(item, selectedItem) }))
+    .filter((entry) => entry.relation)
+    .sort((left, right) => right.relation.score - left.relation.score || Math.abs(left.relation.dayDistance) - Math.abs(right.relation.dayDistance))
+    .slice(0, 4);
+
+  return {
+    previous: selectedIndex > 0 ? events[selectedIndex - 1] : null,
+    next: selectedIndex >= 0 && selectedIndex < events.length - 1 ? events[selectedIndex + 1] : null,
+    related,
+  };
 }
 
 function formatReportQuarter(value) {
@@ -2274,6 +2499,8 @@ function App() {
     return orderedTimelineEvents.find((item) => item?.id === selectedTimelineEventId) || orderedTimelineEvents[0] || null;
   }, [orderedTimelineEvents, selectedTimelineEventId]);
 
+  const timelineScale = useMemo(() => buildTimelineScale(orderedTimelineEvents), [orderedTimelineEvents]);
+
   const timelineSummary = useMemo(() => {
     return orderedTimelineEvents.reduce(
       (summary, item) => {
@@ -2290,20 +2517,12 @@ function App() {
   }, [orderedTimelineEvents]);
 
   const timelineLanes = useMemo(() => {
-    const grouped = orderedTimelineEvents.reduce((accumulator, item) => {
-      const category = item?.category || 'unknown';
-      if (!accumulator[category]) {
-        accumulator[category] = [];
-      }
-      accumulator[category].push(item);
-      return accumulator;
-    }, {});
-    const orderedCategories = [
-      ...timelineLaneOrder.filter((category) => grouped[category]),
-      ...Object.keys(grouped).filter((category) => !timelineLaneOrder.includes(category)).sort(),
-    ];
-    return orderedCategories.map((category) => ({ category, events: grouped[category] }));
-  }, [orderedTimelineEvents]);
+    return buildTimelineLanes(orderedTimelineEvents, timelineScale, selectedTimelineEvent);
+  }, [orderedTimelineEvents, selectedTimelineEvent, timelineScale]);
+
+  const selectedTimelineContext = useMemo(() => {
+    return buildTimelineContext(orderedTimelineEvents, selectedTimelineEvent);
+  }, [orderedTimelineEvents, selectedTimelineEvent]);
 
   const dragonTigerRangeLabels = {
     '1month': '近一月',
@@ -6930,15 +7149,25 @@ function App() {
     const isSelected = selectedTimelineEvent?.id === item?.id;
     const levelTone = getTimelineLevelTone(item?.level);
     const assets = Array.isArray(item?.impactAssets) ? item.impactAssets : [];
+    const position = item?._timelinePosition;
+    const relation = position?.relation;
+    const isUnrelated = Boolean(selectedTimelineEvent && !isSelected && !relation);
+    const eventStyle = position ? {
+      '--event-left': `${position.leftPercent}%`,
+      '--event-width': `${position.visualWidthPercent}%`,
+      '--event-stack': `${position.stackIndex}`,
+    } : undefined;
     return (
       <button
-        className={`calendar-timeline-card level-${levelTone} status-${item?.status || 'unknown'}${isSelected ? ' active' : ''}`}
+        className={`calendar-timeline-card timeline-event-pill level-${levelTone} status-${item?.status || 'unknown'}${isSelected ? ' active' : ''}${relation ? ' related' : ''}${isUnrelated ? ' unrelated' : ''}`}
         type="button"
         key={item?.id || `${item?.eventDate}-${item?.title}`}
+        style={eventStyle}
         onClick={() => setSelectedTimelineEventId(item?.id || '')}
         aria-pressed={isSelected}
+        title={`${formatTimelineDateRange(item)} · ${item?.title || '未命名事件'}`}
       >
-        <span className="calendar-timeline-date">{formatTimelineDateRange(item)}</span>
+        <span className="calendar-timeline-date">{formatTimelineDateRange(item)} · {formatTimelineDistance(position?.distanceFromTodayDays ?? 0)}</span>
         <span className="calendar-timeline-main">
           <strong>{item?.title || '未命名事件'}</strong>
           <small>{getTimelineCategoryLabel(item?.category)} · {getTimelineLevelLabel(item?.level)} · {getTimelineStatusLabel(item?.status)}</small>
@@ -6947,6 +7176,25 @@ function App() {
           {assets.slice(0, 3).map((asset) => <em key={`${item?.id}-${asset}`}>{asset}</em>)}
           {assets.length > 3 ? <em>+{assets.length - 3}</em> : null}
         </span>
+        {relation ? <span className="calendar-timeline-relation">{relation.reason}</span> : null}
+      </button>
+    );
+  }
+
+  function renderTimelineRelationButton(item, label, reason) {
+    if (!item) {
+      return null;
+    }
+    return (
+      <button
+        className={`timeline-relation-item level-${getTimelineLevelTone(item?.level)}`}
+        type="button"
+        key={`${label}-${item?.id || item?.title}`}
+        onClick={() => setSelectedTimelineEventId(item?.id || '')}
+      >
+        <span>{label}</span>
+        <strong>{item?.title || '未命名事件'}</strong>
+        <small>{formatTimelineDateRange(item)} · {reason}</small>
       </button>
     );
   }
@@ -6958,6 +7206,29 @@ function App() {
     const sourceLabel = selectedTimelineEvent?.source === 'seed'
       ? 'MVP 种子'
       : selectedTimelineEvent?.source || '待补充';
+    const relationItems = [];
+    const relationSeenIds = new Set([selectedTimelineEvent?.id].filter(Boolean));
+    const addRelationItem = (item, label, reason) => {
+      if (!item) {
+        return;
+      }
+      const key = item?.id || `${item?.eventDate}-${item?.title}`;
+      if (relationSeenIds.has(key)) {
+        return;
+      }
+      relationSeenIds.add(key);
+      relationItems.push({ item, label, reason });
+    };
+    addRelationItem(selectedTimelineContext.previous, '前序', '时间上紧邻的前一项风险');
+    addRelationItem(selectedTimelineContext.next, '后续', '时间上紧邻的后一项风险');
+    selectedTimelineContext.related.forEach((entry) => addRelationItem(entry.item, '相关', entry.relation.reason));
+    const getSeedRelationLabel = (item) => {
+      if (!selectedTimelineEvent || item?.id === selectedTimelineEvent?.id) {
+        return '当前选中';
+      }
+      const relation = getTimelineRelationInfo(item, selectedTimelineEvent);
+      return relation?.reason || '独立观察';
+    };
 
     return (
       <article className="panel wide timeline-panel">
@@ -6965,10 +7236,11 @@ function App() {
           <div>
             <p className="eyebrow">Risk Calendar · Asia/Shanghai</p>
             <h2>事件时间轴</h2>
-            <p className="panel-tip compact">先以可用种子事件完成 #85 占位，所有日期按北京时间展示；缺失前值、预期和来源时明确标记为待补充。</p>
+            <p className="panel-tip compact">按日期轴定位未来风险事件；同泳道、共同影响资产和相邻高波动窗口会在选中后高亮关系。</p>
           </div>
           <div className="management-meta timeline-meta-row">
             <span className="symbol-count-badge">北京时间 {getTimelineTodayLabel()}</span>
+            <span className="symbol-count-badge">窗口 {timelineScale.windowLabel}</span>
             <span className="symbol-count-badge">事件 {orderedTimelineEvents.length}</span>
             <span className="symbol-count-badge">高影响 {timelineSummary.levelCounts.high || 0}</span>
           </div>
@@ -7013,14 +7285,35 @@ function App() {
         {timelineRequestState === 'error' ? <p className="status-line error">时间轴加载失败，请稍后重试。</p> : null}
 
         <div className="timeline-workbench">
-          <section className="timeline-lane-stack panel-scroll-area" aria-label="事件列表">
+          <section className="timeline-lane-stack" aria-label="事件时间轴" style={{ '--today-left': `${timelineScale.todayLeftPercent}%` }}>
+            <div className="timeline-axis-row">
+              <span className="timeline-axis-label">风险泳道</span>
+              <div className="timeline-axis-track" aria-hidden="true">
+                <span className="timeline-today-line"><em>今天</em></span>
+                {timelineScale.ticks.map((tick) => (
+                  <span className="timeline-axis-tick" key={tick.key} style={{ '--tick-left': `${tick.leftPercent}%` }}>
+                    <i />
+                    <b>{tick.label}</b>
+                  </span>
+                ))}
+              </div>
+            </div>
             {timelineLanes.length ? timelineLanes.map((lane) => (
-              <div className="timeline-lane" key={lane.category}>
+              <div className="timeline-lane" key={lane.category} style={{ '--lane-height': `${Math.max(260, 42 + lane.depth * 196)}px` }}>
                 <div className="timeline-lane-header">
                   <h3>{getTimelineCategoryLabel(lane.category)}</h3>
                   <span className="table-meta-badge">{lane.events.length} 条</span>
                 </div>
-                <div className="calendar-timeline-list">
+                <div className="calendar-timeline-list timeline-lane-track">
+                  <span className="timeline-today-line lane-line" aria-hidden="true" />
+                  {lane.connectors.map((connector) => (
+                    <span
+                      className={`timeline-relation-segment level-${connector.tone}`}
+                      key={connector.key}
+                      style={{ '--segment-left': `${connector.leftPercent}%`, '--segment-width': `${connector.widthPercent}%` }}
+                      aria-hidden="true"
+                    />
+                  ))}
                   {lane.events.map((item) => renderTimelineEventButton(item))}
                 </div>
               </div>
@@ -7028,7 +7321,8 @@ function App() {
               <p className="panel-tip compact timeline-empty-state">当前筛选条件下暂无时间轴事件；后续接入外部日历源后会补齐更多类别。</p>
             )}
           </section>
-
+        </div>
+        <div className="timeline-context-grid">
           <aside className="timeline-detail-card" aria-label="事件详情">
             {selectedTimelineEvent ? (
               <>
@@ -7064,6 +7358,14 @@ function App() {
                     <dd>{selectedTimelineEvent.marketExpectation || '待补充'}</dd>
                   </div>
                 </dl>
+                {relationItems.length ? (
+                  <section className="timeline-relation-panel" aria-label="前后相关事件">
+                    <h4>前后与相关事件</h4>
+                    <div className="timeline-relation-list">
+                      {relationItems.map((entry) => renderTimelineRelationButton(entry.item, entry.label, entry.reason))}
+                    </div>
+                  </section>
+                ) : null}
                 {safeTimelineSourceUrl ? (
                   <a className="timeline-source-link" href={safeTimelineSourceUrl} target="_blank" rel="noopener noreferrer">查看原始来源</a>
                 ) : (
@@ -7074,6 +7376,44 @@ function App() {
               <p className="panel-tip compact">选择左侧事件后查看详情。</p>
             )}
           </aside>
+          <section className="timeline-event-table-card" aria-label="事件种子表">
+          <div className="detail-card-header compact-card-header">
+            <div>
+              <h3>事件种子与风险索引</h3>
+              <p className="panel-tip compact">把高影响标记、选中事件和关联原因集中到表格里，减少右侧独立列对泳道空间的占用。</p>
+            </div>
+            <span className="table-meta-badge">{orderedTimelineEvents.length} 条</span>
+          </div>
+          <div className="detail-table-wrap detail-table-wrap-scrollable">
+            <table className="detail-table">
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>事件 / 关联</th>
+                  <th>类别</th>
+                  <th>影响资产</th>
+                  <th>等级</th>
+                </tr>
+              </thead>
+              <tbody>
+                {orderedTimelineEvents.length ? orderedTimelineEvents.map((item) => (
+                  <tr className={selectedTimelineEvent?.id === item?.id ? 'timeline-seed-row active' : 'timeline-seed-row'} key={`timeline-table-${item?.id || item?.title}`}>
+                    <td>{formatTimelineDateRange(item)}</td>
+                    <td>
+                      <button className="timeline-seed-event-button" type="button" onClick={() => setSelectedTimelineEventId(item?.id || '')}>
+                        <strong>{item?.title || '未命名事件'}</strong>
+                        <span>{getSeedRelationLabel(item)}</span>
+                      </button>
+                    </td>
+                    <td>{getTimelineCategoryLabel(item?.category)}</td>
+                    <td>{Array.isArray(item?.impactAssets) && item.impactAssets.length ? item.impactAssets.join('、') : '待补充'}</td>
+                    <td><span className={`timeline-level-badge level-${getTimelineLevelTone(item?.level)}`}>{getTimelineLevelLabel(item?.level)}</span></td>
+                  </tr>
+                )) : <tr><td colSpan="5" className="panel-tip compact">当前暂无可展示的时间轴事件。</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          </section>
         </div>
       </article>
     );
