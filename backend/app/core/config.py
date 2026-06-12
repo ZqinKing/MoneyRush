@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     market_event_key_prefix: str = "moneyrush:event"
     market_events_stream_key: str = "moneyrush:market:events"
     market_overview_cache_key: str = "moneyrush:market:overview"
+    global_markets_cache_key: str = "moneyrush:global_markets:latest"
     gold_dashboard_cache_key: str = "moneyrush:gold:dashboard"
     active_funds_key: str = "moneyrush:active_funds"
     fund_snapshot_key_prefix: str = "moneyrush:fund:snapshot"
