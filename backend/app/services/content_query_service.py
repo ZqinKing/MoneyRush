@@ -9,6 +9,7 @@ import asyncpg
 
 
 CHINA_CONTENT_TZ = timezone(timedelta(hours=8))
+CONTENT_FEED_OVERFETCH_MULTIPLIER = 6
 
 
 def _to_iso(value: object) -> str | None:
@@ -179,6 +180,19 @@ def _item_sort_timestamp(item: dict[str, object]) -> datetime:
     return datetime.min.replace(tzinfo=UTC)
 
 
+def _item_sort_key(item: dict[str, object]) -> tuple[datetime, str, int]:
+    raw_id = item.get("id")
+    item_id = raw_id if isinstance(raw_id, int) else 0
+    return (_item_sort_timestamp(item), str(item.get("type") or ""), item_id)
+
+
+def _item_details_content(item: dict[str, object]) -> str | None:
+    details = item.get("details")
+    if not isinstance(details, dict):
+        return None
+    return _safe_text(details.get("content"))
+
+
 def _select_preferred_news_item(current: dict[str, object], candidate: dict[str, object]) -> dict[str, object]:
     current_scope = str(current.get("scope") or "")
     candidate_scope = str(candidate.get("scope") or "")
@@ -193,8 +207,8 @@ def _select_preferred_news_item(current: dict[str, object], candidate: dict[str,
     if current_ai != candidate_ai:
         return candidate if candidate_ai else current
 
-    current_detail = bool(_safe_text((current.get("details") or {}).get("content") if isinstance(current.get("details"), dict) else None))
-    candidate_detail = bool(_safe_text((candidate.get("details") or {}).get("content") if isinstance(candidate.get("details"), dict) else None))
+    current_detail = bool(_item_details_content(current))
+    candidate_detail = bool(_item_details_content(candidate))
     if current_detail != candidate_detail:
         return candidate if candidate_detail else current
 
@@ -358,16 +372,17 @@ class ContentQueryService:
     ) -> list[dict[str, object]]:
         health_map = await self._fetch_lane_health_map(symbol=symbol)
         items: list[dict[str, object]] = []
+        fetch_limit = limit * CONTENT_FEED_OVERFETCH_MULTIPLIER
         if content_type in {None, "report"}:
-            items.extend(await self._fetch_reports(symbol=symbol, limit=limit, before=before, published_after=published_after, health_map=health_map))
+            items.extend(await self._fetch_reports(symbol=symbol, limit=fetch_limit, before=before, published_after=published_after, health_map=health_map))
         if content_type in {None, "news"}:
-            items.extend(await self._fetch_news(symbol=symbol, scope=scope, limit=limit, before=before, published_after=published_after, health_map=health_map))
+            items.extend(await self._fetch_news(symbol=symbol, scope=scope, limit=fetch_limit, before=before, published_after=published_after, health_map=health_map))
         if content_type in {None, "announcement"}:
-            items.extend(await self._fetch_announcements(symbol=symbol, limit=limit, before=before, published_after=published_after, health_map=health_map))
+            items.extend(await self._fetch_announcements(symbol=symbol, limit=fetch_limit, before=before, published_after=published_after, health_map=health_map))
 
         items = _collapse_feed_news_duplicates(items)
         items = self._filter_items_by_published_after(items, published_after)
-        items.sort(key=lambda item: item.get("publishedAt") or "", reverse=True)
+        items.sort(key=_item_sort_key, reverse=True)
         return items[:limit]
 
     async def fetch_status(self, *, symbol: str | None) -> dict[str, object]:
@@ -411,6 +426,90 @@ class ContentQueryService:
             "latestIngestedAt": latest_ingested_at,
             "summary": summary,
         }
+
+    async def fetch_feed_summary(
+        self,
+        *,
+        symbol: str | None,
+        content_type: str | None,
+        scope: str | None,
+        published_after: datetime | None,
+    ) -> dict[str, int]:
+        report_count = 0
+        news_count = 0
+        announcement_count = 0
+        ai_summary_count = 0
+        market_count = 0
+
+        if content_type in {None, "report"} and scope in {None, "symbol"}:
+            report_count = await self._count_reports(symbol=symbol, published_after=published_after)
+
+        if content_type in {None, "news"}:
+            news_summary = await self._count_news(symbol=symbol, scope=scope, published_after=published_after)
+            news_count = news_summary["total"]
+            ai_summary_count = news_summary["aiSummary"]
+            market_count = news_summary["market"]
+
+        if content_type in {None, "announcement"} and scope in {None, "symbol"}:
+            announcement_count = await self._count_announcements(symbol=symbol, published_after=published_after)
+
+        return {
+            "totalItems": report_count + news_count + announcement_count,
+            "reportItems": report_count,
+            "newsItems": news_count,
+            "announcementItems": announcement_count,
+            "aiSummaryItems": ai_summary_count,
+            "marketItems": market_count,
+        }
+
+    async def _count_reports(self, *, symbol: str | None, published_after: datetime | None) -> int:
+        row = await self._fetchrow(
+            """
+            SELECT COUNT(*) AS item_count
+            FROM stock_research_report
+            WHERE ($1::text IS NULL OR symbol = $1)
+              AND ($2::timestamptz IS NULL OR published_at >= $2)
+            """,
+            symbol,
+            published_after,
+        )
+        return int(row["item_count"] or 0) if row is not None else 0
+
+    async def _count_news(self, *, symbol: str | None, scope: str | None, published_after: datetime | None) -> dict[str, int]:
+        row = await self._fetchrow(
+            """
+            SELECT COUNT(*) AS item_count,
+                   COUNT(*) FILTER (WHERE NULLIF(BTRIM(ai_summary), '') IS NOT NULL) AS ai_summary_count,
+                   COUNT(*) FILTER (WHERE scope = 'market') AS market_count
+            FROM stock_news_item
+            WHERE ($1::text IS NULL OR symbol = $1)
+              AND ($2::text IS NULL OR scope = $2)
+              AND ($3::timestamptz IS NULL OR published_at >= $3)
+            """,
+            symbol,
+            scope,
+            published_after,
+        )
+        if row is None:
+            return {"total": 0, "aiSummary": 0, "market": 0}
+        return {
+            "total": int(row["item_count"] or 0),
+            "aiSummary": int(row["ai_summary_count"] or 0),
+            "market": int(row["market_count"] or 0),
+        }
+
+    async def _count_announcements(self, *, symbol: str | None, published_after: datetime | None) -> int:
+        row = await self._fetchrow(
+            """
+            SELECT COUNT(*) AS item_count
+            FROM stock_announcement_item
+            WHERE ($1::text IS NULL OR symbol = $1)
+              AND ($2::timestamptz IS NULL OR published_at >= $2)
+            """,
+            symbol,
+            published_after,
+        )
+        return int(row["item_count"] or 0) if row is not None else 0
 
     async def _fetch_reports(self, *, symbol: str | None, limit: int, before: datetime | None, published_after: datetime | None, health_map: dict[tuple[str, str | None], dict[str, object]]) -> list[dict[str, object]]:
         rows = await self._fetch(

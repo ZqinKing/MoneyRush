@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime, time, timedelta, timezone
 
@@ -10,7 +11,7 @@ from app.services.normalize.market_payloads import normalize_symbol_input
 
 router = APIRouter(prefix="/content", tags=["content"])
 CHINA_TZ = timezone(timedelta(hours=8))
-CONTENT_ITEMS_CACHE_VERSION = "v5"
+CONTENT_ITEMS_CACHE_VERSION = "v7"
 
 
 def _normalize_optional_symbol(symbol: str | None) -> str | None:
@@ -112,16 +113,25 @@ async def content_items(
     if cached is not None:
         return cached
 
-    items = await query_service.fetch_feed(
-        symbol=normalized_symbol,
-        content_type=normalized_type,
-        scope=normalized_scope,
-        limit=validated_limit,
-        before=parsed_before,
-        published_after=published_after,
+    items, summary = await asyncio.gather(
+        query_service.fetch_feed(
+            symbol=normalized_symbol,
+            content_type=normalized_type,
+            scope=normalized_scope,
+            limit=validated_limit,
+            before=parsed_before,
+            published_after=published_after,
+        ),
+        query_service.fetch_feed_summary(
+            symbol=normalized_symbol,
+            content_type=normalized_type,
+            scope=normalized_scope,
+            published_after=published_after,
+        ),
     )
-    payload = {
+    payload: dict[str, object] = {
         "items": items,
+        "summary": summary,
         "filters": {
             "symbol": normalized_symbol,
             "type": normalized_type,
