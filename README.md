@@ -11,6 +11,7 @@ This repository now contains the Milestone 1 bootstrap scaffold plus the first M
 - FastAPI API service with health and symbol-activation endpoints
 - collector process wired to Redis Streams, simulated market collection, and Timescale persistence
 - React + Vite frontend shell with symbol activation, snapshot board, and live WebSocket market-state view
+- Workbench `全球股市` view backed by the latest global market index cache
 - Docker Compose stack for TimescaleDB, Redis, API, collector, and frontend
 - initial PostgreSQL/TimescaleDB schema bootstrap
 
@@ -35,8 +36,8 @@ infra/          Compose file and Dockerfiles
    This pins the Compose project name so generated container names stay under the `moneyrush` prefix.
 
 3. Open the frontend at `http://localhost:5173`.
-4. Use the symbol form to enqueue an activation command such as `000001`.
-5. Watch the collector generate snapshots, persist market rows, and stream market-state updates.
+4. Use the symbol form to enqueue an activation command such as `000001`, or open the `全球股市` workbench view for the global market map.
+5. Watch the collectors generate snapshots, persist market rows, cache global indices, and stream market-state updates.
 
 Only the frontend service is published to the host by default:
 
@@ -50,6 +51,7 @@ The frontend dev server proxies same-origin `/api` and `/ws` traffic to the API 
 - Ready health: `http://localhost:5173/api/v1/health/ready`
 - Active symbols: `http://localhost:5173/api/v1/symbols/active`
 - Active snapshots: `http://localhost:5173/api/v1/symbols/snapshots`
+- Global markets latest: `http://localhost:5173/api/v1/global-markets/latest`
 - WebSocket stream: `ws://localhost:5173/ws/market`
 
 If you put an external Nginx reverse proxy in front of the stack, point it at the frontend service and keep `/api` plus `/ws` on the same public origin. Make sure WebSocket upgrade headers are preserved for `/ws`. For direct host access to the API during debugging, publish `api:8000` explicitly with a Compose override rather than exposing it by default.

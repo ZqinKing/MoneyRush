@@ -11,6 +11,7 @@ MoneyRush 是一个面向低延迟盯盘、实时数据沉淀与后续回放/回
 - FastAPI API 服务，提供健康检查与 symbol 激活接口
 - collector 进程，已接通 Redis Streams、模拟市场数据生成，以及 Timescale/PostgreSQL 持久化
 - React + Vite 前端壳，支持 symbol 激活、快照面板、WebSocket 实时 market-state 展示
+- 前端 `全球股市` 工作台视图，读取最新全球指数缓存并展示地图看板
 - Docker Compose 编排，包含 TimescaleDB、Redis、API、collector、frontend
 - 初始 PostgreSQL/TimescaleDB 表结构引导脚本
 
@@ -40,8 +41,8 @@ infra/          Compose 文件、Dockerfiles、数据库初始化脚本
    这样可以固定 Compose 项目名，生成的容器名会保持 `moneyrush` 前缀，不再受目录名影响。
 
 3. 打开前端：`http://localhost:5173`
-4. 在页面中输入股票代码，例如 `000001`，触发激活请求
-5. 观察 collector 生成模拟快照、写入市场数据，并通过 WebSocket 向前端持续推送 market-state
+4. 在页面中输入股票代码，例如 `000001`，触发激活请求；也可以打开 `全球股市` 工作台视图查看全球指数地图
+5. 观察 collector 生成模拟快照、写入市场数据、缓存全球指数，并通过 WebSocket 向前端持续推送 market-state
 
 默认只对宿主机暴露前端服务：
 
@@ -55,6 +56,7 @@ infra/          Compose 文件、Dockerfiles、数据库初始化脚本
 - 就绪检查：`http://localhost:5173/api/v1/health/ready`
 - 当前激活 symbols：`http://localhost:5173/api/v1/symbols/active`
 - 当前激活 snapshots：`http://localhost:5173/api/v1/symbols/snapshots`
+- 全球股市最新数据：`http://localhost:5173/api/v1/global-markets/latest`
 - WebSocket 实时流：`ws://localhost:5173/ws/market`
 
 如果在外部额外使用 Nginx 反向代理，请将公网入口代理到 frontend 服务，并保持 `/api` 与 `/ws` 在同一个公网 origin 下。`/ws` 需要保留 WebSocket Upgrade 相关请求头。如需调试时从宿主机直连 API，可通过 Compose override 临时发布 `api:8000`，而不是默认暴露。
