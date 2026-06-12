@@ -5027,11 +5027,54 @@ textarea {
   }
 
   .content-toolbar-groups {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(132px, auto) minmax(150px, 0.65fr) minmax(190px, 1fr) minmax(220px, 0.9fr);
+    align-items: center;
   }
 
-  .content-filter-row {
-    width: 100%;
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-filter-row {
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    width: auto;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-switch-group {
+    height: 38px;
+    min-height: 38px;
+    padding: 3px;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-switch-option {
+    min-width: 60px;
+    padding: 6px 12px;
+    font-size: 0.82rem;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-symbol-select-label {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    font-size: 0.74rem;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-symbol-select {
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 38px;
+    min-height: 38px;
+    padding: 6px 10px;
+    font-size: 0.82rem;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline {
+    grid-column: auto;
+    align-self: end;
+    border-left: 1px solid rgba(157, 180, 255, 0.12);
+    border-top: 0;
+    padding: 0 0 0 10px;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline h3 {
+    display: none;
   }
 
   .content-insight-inline {
@@ -5041,7 +5084,24 @@ textarea {
   }
 
   .content-insight-inline .content-insight-metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline .content-insight-metrics span {
+    display: inline-flex;
+    min-height: 34px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 5px 7px;
+    white-space: nowrap;
+    font-size: 0.74rem;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline .content-insight-metrics strong {
+    font-size: 0.84rem;
   }
 
   .anomaly-filter-grid {
@@ -5248,7 +5308,93 @@ textarea {
   }
 
   .content-filter-row {
-    flex: 1 1 100%;
+    flex: 0 0 auto;
+  }
+
+  .content-toolbar-row {
+    overflow: hidden;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 8px;
+    overflow-x: auto;
+    padding: 8px;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-switch-group {
+    flex: 0 0 auto;
+    height: 36px;
+    min-height: 36px;
+    padding: 3px;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-switch-option {
+    min-width: 58px;
+    padding: 6px 12px;
+    font-size: 0.82rem;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-filter-row {
+    flex: 0 0 auto;
+    flex-direction: row;
+    align-items: center;
+    gap: 6px;
+    width: auto;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-symbol-select-label {
+    white-space: nowrap;
+    font-size: 0.72rem;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-symbol-select {
+    width: min(42vw, 160px);
+    height: 36px;
+    min-height: 36px;
+    padding: 6px 10px;
+    font-size: 0.82rem;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline {
+    flex: 0 0 auto;
+    align-self: center;
+    width: max-content;
+    max-width: none;
+    min-height: 0;
+    border-top: 0;
+    border-left: 1px solid rgba(157, 180, 255, 0.12);
+    padding: 0 0 0 8px;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline h3 {
+    display: none;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline .content-insight-metrics {
+    display: flex;
+    flex-wrap: nowrap;
+    gap: 6px;
+    width: max-content;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline .content-insight-metrics span {
+    display: inline-flex;
+    min-height: 30px;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 4px 6px;
+    white-space: nowrap;
+    font-size: 0.72rem;
+  }
+
+  .content-toolbar-groups:not(.dragon-tiger-toolbar-groups) .content-insight-inline .content-insight-metrics strong {
+    font-size: 0.78rem;
   }
 
   .anomaly-filter-grid {
