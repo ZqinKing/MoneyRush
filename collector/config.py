@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     gold_au0_url: str = "https://hq.sinajs.cn/list=nf_AU0"
     gold_xau_url: str = "https://hq.sinajs.cn/list=hf_XAU"
     gold_etf_url: str = "https://qt.gtimg.cn/q=sh518880"
+    global_markets_collector_enabled: bool = True
+    global_markets_refresh_seconds: ClassVar[int] = 30
+    global_markets_cache_key: str = "moneyrush:global_markets:latest"
+    global_markets_request_timeout_seconds: ClassVar[float] = 10.0
+    global_markets_stale_after_minutes: ClassVar[int] = 30
     fund_collector_enabled: bool = True
     fund_collector_poll_interval_seconds: ClassVar[int] = 3600
     fund_collector_request_interval_seconds: ClassVar[float] = 1.0
