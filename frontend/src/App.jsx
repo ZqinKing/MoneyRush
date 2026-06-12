@@ -592,13 +592,24 @@ function dedupeContentItems(items) {
 
   const seen = new Set();
   return items.filter((item) => {
-    const identity = `${item?.type || 'content'}-${item?.id || item?.publishedAt || item?.firstSeenAt || item?.title || ''}`;
+    const identity = item?.id !== undefined && item?.id !== null
+      ? `${item?.type || 'content'}-${item.id}`
+      : [item?.type || 'content', item?.url || '', item?.title || '', item?.publishedAt || '', item?.firstSeenAt || ''].join('|');
     if (seen.has(identity)) {
       return false;
     }
     seen.add(identity);
     return true;
   });
+}
+
+function getContentPaginationCursor(items) {
+  if (!Array.isArray(items) || !items.length) {
+    return '';
+  }
+
+  const lastItem = items[items.length - 1];
+  return lastItem?.publishedAt || lastItem?.firstSeenAt || '';
 }
 
 function formatCompactNumber(value) {
@@ -2143,6 +2154,7 @@ function App() {
   const [contentTimeRange, setContentTimeRange] = useState('today');
   const [contentSymbolFilter, setContentSymbolFilter] = useState('');
   const [contentFeed, setContentFeed] = useState([]);
+  const [contentFeedSummary, setContentFeedSummary] = useState(null);
   const [contentStatus, setContentStatus] = useState({ jobs: [], latestIngestedAt: null, summary: null });
   const [contentRequestState, setContentRequestState] = useState('idle');
   const [dailyAnomalyReport, setDailyAnomalyReport] = useState(null);
@@ -2900,12 +2912,12 @@ function App() {
           return;
         }
 
+        const nextSummary = firstFeedPayload?.summary && typeof firstFeedPayload.summary === 'object' ? firstFeedPayload.summary : null;
         let nextFeed = Array.isArray(firstFeedPayload.items) ? firstFeedPayload.items : [];
         const seenBefore = new Set();
-        let cursor = nextFeed.length ? (nextFeed[nextFeed.length - 1]?.publishedAt || nextFeed[nextFeed.length - 1]?.firstSeenAt || '') : '';
-        let lastPageItemCount = nextFeed.length;
+        let cursor = getContentPaginationCursor(nextFeed);
 
-        while (!cancelled && cursor && lastPageItemCount === pageSize && !seenBefore.has(cursor)) {
+        while (!cancelled && cursor && !seenBefore.has(cursor)) {
           seenBefore.add(cursor);
           const pageResponse = await fetch(
             buildContentFeedUrl({
@@ -2918,18 +2930,15 @@ function App() {
           );
           const pagePayload = await parseJsonOrThrow(pageResponse, 'content feed fetch failed');
           const pageItems = Array.isArray(pagePayload.items) ? pagePayload.items : [];
-          lastPageItemCount = pageItems.length;
           if (!pageItems.length) {
             break;
           }
           nextFeed = dedupeContentItems([...nextFeed, ...pageItems]);
-          if (lastPageItemCount < pageSize) {
-            break;
-          }
-          cursor = pageItems[pageItems.length - 1]?.publishedAt || pageItems[pageItems.length - 1]?.firstSeenAt || '';
+          cursor = getContentPaginationCursor(pageItems);
         }
 
         setContentFeed(nextFeed);
+        setContentFeedSummary(nextSummary);
         setContentStatus(statusPayload && typeof statusPayload === 'object' ? statusPayload : { jobs: [], latestIngestedAt: null, summary: null });
         setContentRequestState('ready');
       } catch {
@@ -5406,8 +5415,10 @@ function App() {
   function renderContentView() {
     const hasCooldown = Array.isArray(contentStatus.jobs) && contentStatus.jobs.some((job) => job?.isCoolingDown);
     const degradedJobs = Array.isArray(contentStatus.jobs) ? contentStatus.jobs.filter((job) => !job?.isHealthy) : [];
-    const contentAiSummaryCount = contentFeed.filter((item) => item?.aiSummary).length;
-    const contentMarketCount = contentFeed.filter((item) => item?.scope === 'market').length;
+    const contentSummary = contentFeedSummary && typeof contentFeedSummary === 'object' ? contentFeedSummary : {};
+    const contentItemCount = typeof contentSummary.totalItems === 'number' ? contentSummary.totalItems : contentFeed.length;
+    const contentAiSummaryCount = typeof contentSummary.aiSummaryItems === 'number' ? contentSummary.aiSummaryItems : contentFeed.filter((item) => item?.aiSummary).length;
+    const contentMarketCount = typeof contentSummary.marketItems === 'number' ? contentSummary.marketItems : contentFeed.filter((item) => item?.scope === 'market').length;
     const contentStaleCount = contentFeed.filter((item) => item?.stale).length;
     const hasContentHealthNotice = (contentRequestState === 'loading' && !contentFeed.length) || contentRequestState === 'error' || hasCooldown || degradedJobs.length > 0;
     return (
@@ -5475,7 +5486,7 @@ function App() {
             <div className="content-insight-card content-insight-inline" aria-label="当前筛选概览">
               <h3>当前筛选</h3>
               <div className="content-insight-metrics">
-                <span>条目 <strong>{contentFeed.length}</strong></span>
+                <span>条目 <strong>{contentItemCount}</strong></span>
                 <span>AI摘要 <strong>{contentAiSummaryCount}</strong></span>
                 <span>市场 <strong>{contentMarketCount}</strong></span>
                 <span>待刷新 <strong>{contentStaleCount}</strong></span>
