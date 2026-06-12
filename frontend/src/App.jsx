@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+
+const GlobalMarketsGlobe = lazy(() => import('./GlobalMarketsGlobe'));
 
 function getBrowserHostname() {
   if (typeof window === 'undefined') {
@@ -114,6 +116,7 @@ const baseWorkbenchNavItems = [
 ];
 
 const macroWorkbenchNavItem = { key: 'macro', label: '宏观', shortLabel: '宏观', description: '美债环境' };
+const globalMarketsWorkbenchNavItem = { key: 'globalMarkets', label: '全球股市', shortLabel: '全球', description: '环球指数' };
 const llmAuditWorkbenchNavItem = { key: 'llmAudit', label: 'AI审计', shortLabel: 'AI审计', description: '调用记录' };
 
 const marketStatusLabels = {
@@ -275,6 +278,10 @@ function buildMarketOverviewUrl() {
 
 function buildGoldDashboardUrl() {
   return `${apiBaseUrl}/api/v1/gold/dashboard`;
+}
+
+function buildGlobalMarketsUrl() {
+  return `${apiBaseUrl}/api/v1/global-markets/latest`;
 }
 
 function buildMacroCapabilitiesUrl() {
@@ -2137,6 +2144,8 @@ function App() {
   const [marketOverview, setMarketOverview] = useState({ indexes: [], generatedAt: null });
   const [goldDashboard, setGoldDashboard] = useState({ generatedAt: null, isTradingSession: false, quotes: [], sources: {}, degraded: false, funds: [], news: [] });
   const [goldRequestState, setGoldRequestState] = useState('idle');
+  const [globalMarkets, setGlobalMarkets] = useState({ items: [], regions: [], source: null, updatedAt: null, delayLabel: '', stale: false, errors: [] });
+  const [globalMarketsRequestState, setGlobalMarketsRequestState] = useState('idle');
   const [activeView, setActiveView] = useState('overview');
   const [managementAssetView, setManagementAssetView] = useState('stock');
   const [selectedSnapshotSymbol, setSelectedSnapshotSymbol] = useState(null);
@@ -2685,6 +2694,51 @@ function App() {
 
     loadGoldDashboard();
     const intervalId = window.setInterval(() => loadGoldDashboard({ keepReadyState: true }), 15000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== 'globalMarkets') {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    async function loadGlobalMarkets({ keepReadyState = false } = {}) {
+      if (!keepReadyState) {
+        setGlobalMarketsRequestState('loading');
+      }
+
+      try {
+        const response = await fetch(buildGlobalMarketsUrl());
+        const payload = await parseJsonOrThrow(response, 'global markets fetch failed');
+        if (cancelled) {
+          return;
+        }
+
+        setGlobalMarkets({
+          items: Array.isArray(payload?.items) ? payload.items : [],
+          regions: Array.isArray(payload?.regions) ? payload.regions : [],
+          source: typeof payload?.source === 'string' ? payload.source : null,
+          updatedAt: typeof payload?.updatedAt === 'string' ? payload.updatedAt : null,
+          delayLabel: typeof payload?.delayLabel === 'string' ? payload.delayLabel : '',
+          stale: Boolean(payload?.stale),
+          errors: Array.isArray(payload?.errors) ? payload.errors : [],
+        });
+        setGlobalMarketsRequestState('ready');
+      } catch {
+        if (!cancelled) {
+          setGlobalMarketsRequestState('error');
+        }
+      }
+    }
+
+    loadGlobalMarkets();
+    const intervalId = window.setInterval(() => loadGlobalMarkets({ keepReadyState: true }), 30000);
 
     return () => {
       cancelled = true;
@@ -7109,8 +7163,46 @@ function App() {
     );
   }
 
+  function renderGlobalMarketsView() {
+    const globalMarketsErrors = Array.isArray(globalMarkets.errors) ? globalMarkets.errors : [];
+    return (
+      <article className="panel wide global-markets-panel">
+        <div className="section-heading overview-heading">
+          <div>
+            <h2>全球股市</h2>
+            <p className="panel-tip compact">跟踪主要市场指数、区域涨跌和跨时区交易状态。</p>
+          </div>
+          <div className="overview-heading-meta">
+            <span className="symbol-count-badge">指数 {Array.isArray(globalMarkets.items) ? globalMarkets.items.length : 0}</span>
+            <span className="symbol-count-badge">区域 {Array.isArray(globalMarkets.regions) ? globalMarkets.regions.length : 0}</span>
+            <span className="symbol-count-badge">更新 {globalMarkets.updatedAt ? formatRelativeDateTime(globalMarkets.updatedAt) : '--'}</span>
+            {globalMarkets.stale ? <span className="symbol-count-badge warning">数据延迟</span> : null}
+          </div>
+        </div>
+        {globalMarketsRequestState === 'error' ? (
+          <p className="status-line error">全球股市缓存暂不可用，等待采集器写入首个快照。</p>
+        ) : null}
+        {globalMarketsErrors.length ? (
+          <p className="status-line warning">部分数据源异常：{globalMarketsErrors.length} 个市场使用降级或缓存数据。</p>
+        ) : null}
+        <Suspense fallback={<p className="status-line pending">全球股市视图加载中...</p>}>
+          <GlobalMarketsGlobe
+            displayItems={Array.isArray(globalMarkets.items) ? globalMarkets.items : []}
+            regions={Array.isArray(globalMarkets.regions) ? globalMarkets.regions : []}
+            sourceLabel={globalMarkets.source || '--'}
+            delayLabel={globalMarkets.delayLabel || ''}
+            updatedAt={globalMarkets.updatedAt}
+            stale={globalMarkets.stale}
+            requestState={globalMarketsRequestState}
+          />
+        </Suspense>
+      </article>
+    );
+  }
+
   const workbenchNavItems = [
     ...baseWorkbenchNavItems.slice(0, 6),
+    globalMarketsWorkbenchNavItem,
     ...(macroCapabilities.enabled ? [macroWorkbenchNavItem] : []),
     baseWorkbenchNavItems[6],
     ...(llmAuditCapabilities.enabled ? [llmAuditWorkbenchNavItem] : []),
@@ -7279,6 +7371,8 @@ function App() {
           renderTimelineView()
         ) : activeView === 'gold' ? (
           renderGoldView()
+        ) : activeView === 'globalMarkets' ? (
+          renderGlobalMarketsView()
         ) : activeView === 'funds' ? (
           renderFundsView()
         ) : activeView === 'dragonTiger' ? (
