@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
+from app.services.market_detail.capital_flow_snapshots import CAPITAL_FLOW_STALE_REASON, enrich_snapshots_with_capital_flow
 from app.services.normalize.market_payloads import normalize_symbol_input
 
 
@@ -79,19 +80,7 @@ async def active_snapshots(request: Request) -> dict[str, dict[str, object]]:
     query_service = request.app.state.market_detail_query_service
     symbols = await redis_store.get_active_symbols()
     snapshots = await redis_store.get_symbol_snapshots(symbols)
-    capital_flows = await query_service.fetch_latest_capital_flows(symbols)
-
-    for symbol in symbols:
-        snapshot = snapshots.get(symbol)
-        if not isinstance(snapshot, dict):
-            continue
-        capital_flow = capital_flows.get(symbol)
-        if not capital_flow:
-            continue
-        snapshot["capitalFlowMainNetInflow"] = capital_flow.get("mainNetInflow")
-        snapshot["capitalFlowMainNetRatio"] = capital_flow.get("mainNetRatio")
-        snapshot["capitalFlowTradeDate"] = capital_flow.get("tradeDate")
-        snapshot["capitalFlowSourceStatus"] = capital_flow.get("sourceStatus")
+    _ = await enrich_snapshots_with_capital_flow(snapshots=snapshots, symbols=symbols, query_service=query_service)
 
     return {"snapshots": snapshots}
 
@@ -144,7 +133,7 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
     ):
         capital_flow["sourceStatus"] = "stale"
         capital_flow["stale"] = True
-        capital_flow["staleReason"] = "资金流向数据尚未更新至当前交易日。"
+        capital_flow["staleReason"] = CAPITAL_FLOW_STALE_REASON
 
     reference_intraday_ts = (
         (snapshot or {}).get("updatedAt")

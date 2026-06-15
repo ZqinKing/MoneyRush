@@ -315,6 +315,7 @@ class MarketDetailQueryService:
                     generated_at,
                     collected_at,
                     last_attempt_at,
+                    stale_reason,
                     ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_date DESC) AS row_choice
                 FROM stock_capital_flow_daily
                 WHERE symbol = ANY($1::text[])
@@ -329,7 +330,8 @@ class MarketDetailQueryService:
                 source_status,
                 generated_at,
                 collected_at,
-                last_attempt_at
+                last_attempt_at,
+                stale_reason
             FROM ranked
             WHERE row_choice = 1
             """,
@@ -351,6 +353,7 @@ class MarketDetailQueryService:
                 "generatedAt": _to_iso(row["generated_at"]),
                 "collectedAt": _to_iso(row["collected_at"]),
                 "lastAttemptAt": _to_iso(row["last_attempt_at"]),
+                "staleReason": row["stale_reason"],
                 "stale": source_status == "stale",
             }
         return items
