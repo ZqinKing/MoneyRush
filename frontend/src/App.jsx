@@ -378,6 +378,56 @@ async function parseJsonOrThrow(response, fallbackMessage) {
   return response.json();
 }
 
+const capitalFlowSnapshotKeys = [
+  'capitalFlowMainNetInflow',
+  'capitalFlowMainNetRatio',
+  'capitalFlowTradeDate',
+  'capitalFlowReferenceTradeDate',
+  'capitalFlowSourceStatus',
+  'capitalFlowStale',
+  'capitalFlowStaleReason',
+];
+
+function hasCapitalFlowSnapshotFields(snapshot) {
+  return Boolean(snapshot && capitalFlowSnapshotKeys.some((key) => Object.prototype.hasOwnProperty.call(snapshot, key)));
+}
+
+function mergeSnapshotPreservingCapitalFlow(previousSnapshot, incomingSnapshot) {
+  if (!incomingSnapshot || typeof incomingSnapshot !== 'object') {
+    return incomingSnapshot;
+  }
+
+  if (hasCapitalFlowSnapshotFields(incomingSnapshot)) {
+    return incomingSnapshot;
+  }
+
+  if (!previousSnapshot || !hasCapitalFlowSnapshotFields(previousSnapshot)) {
+    return incomingSnapshot;
+  }
+
+  const previousTradeDay = getChinaTradeDayKey(previousSnapshot.updatedAt);
+  const incomingTradeDay = getChinaTradeDayKey(incomingSnapshot.updatedAt);
+  if (!previousTradeDay || !incomingTradeDay || previousTradeDay !== incomingTradeDay) {
+    return incomingSnapshot;
+  }
+
+  const mergedSnapshot = { ...incomingSnapshot };
+  capitalFlowSnapshotKeys.forEach((key) => {
+    if (Object.prototype.hasOwnProperty.call(previousSnapshot, key)) {
+      mergedSnapshot[key] = previousSnapshot[key];
+    }
+  });
+  return mergedSnapshot;
+}
+
+function mergeRealtimeSnapshots(currentSnapshots, incomingSnapshots) {
+  const nextSnapshots = {};
+  Object.entries(incomingSnapshots).forEach(([symbol, snapshot]) => {
+    nextSnapshots[symbol] = mergeSnapshotPreservingCapitalFlow(currentSnapshots?.[symbol], snapshot);
+  });
+  return nextSnapshots;
+}
+
 function formatRelativeDateTime(value) {
   if (!value) {
     return '--';
@@ -2375,7 +2425,6 @@ function App() {
   const [managementAssetView, setManagementAssetView] = useState('stock');
   const [selectedSnapshotSymbol, setSelectedSnapshotSymbol] = useState(null);
   const [snapshotDetails, setSnapshotDetails] = useState({});
-  const [overviewPreviewDetails, setOverviewPreviewDetails] = useState({});
   const [detailRequestState, setDetailRequestState] = useState('idle');
   const [detailChartView, setDetailChartView] = useState('intraday');
   const [overviewViewMode, setOverviewViewMode] = useState('dense');
@@ -2797,7 +2846,7 @@ function App() {
           setActiveSymbols(payload.activeSymbols);
         }
         if (payload.snapshots && typeof payload.snapshots === 'object') {
-          setSnapshots(payload.snapshots);
+          setSnapshots((current) => mergeRealtimeSnapshots(current, payload.snapshots));
         }
         if (typeof payload.marketStatus === 'string') {
           setMarketStatus(payload.marketStatus);
@@ -2856,23 +2905,42 @@ function App() {
   }, []);
 
   useEffect(() => {
-    fetch(`${apiBaseUrl}/api/v1/symbols/snapshots`)
-      .then((response) => response.json())
-      .then((payload) => {
+    let cancelled = false;
+
+    async function loadActiveSnapshots() {
+      try {
+        const response = await fetch(`${apiBaseUrl}/api/v1/symbols/snapshots`);
+        const payload = await parseJsonOrThrow(response, 'symbol snapshots fetch failed');
+        if (cancelled) {
+          return;
+        }
         if (payload.snapshots && typeof payload.snapshots === 'object') {
           setSnapshots(payload.snapshots);
         }
-      })
-      .catch(() => undefined);
+      } catch {
+        // Keep the latest WebSocket snapshot if the enriched REST snapshot is temporarily unavailable.
+      }
+    }
+
+    loadActiveSnapshots();
+    const intervalId = window.setInterval(loadActiveSnapshots, 30000);
 
     fetch(`${apiBaseUrl}/api/v1/symbols/active`)
       .then((response) => response.json())
       .then((payload) => {
+        if (cancelled) {
+          return;
+        }
         if (Array.isArray(payload.symbols)) {
           setActiveSymbols(payload.symbols);
         }
       })
       .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   useEffect(() => {
@@ -3432,44 +3500,8 @@ function App() {
   }, [overviewItems, overviewPreviewSymbol]);
 
   const overviewPreviewSnapshot = activeOverviewPreviewSymbol ? snapshots[activeOverviewPreviewSymbol] : null;
-  const overviewPreviewDetail = activeOverviewPreviewSymbol ? overviewPreviewDetails[activeOverviewPreviewSymbol] : null;
   const overviewPreviewAnomaly = activeOverviewPreviewSymbol ? overviewAnomalyBySymbol.get(activeOverviewPreviewSymbol) : null;
   const overviewPreviewFundExposure = activeOverviewPreviewSymbol ? overviewFundExposureBySymbol.get(activeOverviewPreviewSymbol) : null;
-
-  useEffect(() => {
-    if (!activeOverviewPreviewSymbol || Object.prototype.hasOwnProperty.call(overviewPreviewDetails, activeOverviewPreviewSymbol)) {
-      return undefined;
-    }
-
-    let cancelled = false;
-
-    async function loadOverviewPreviewDetail() {
-      try {
-        const response = await fetch(`${apiBaseUrl}/api/v1/symbols/${encodeURIComponent(activeOverviewPreviewSymbol)}/detail`);
-        const payload = await parseJsonOrThrow(response, 'overview preview detail fetch failed');
-        if (cancelled) {
-          return;
-        }
-        setOverviewPreviewDetails((current) => ({
-          ...current,
-          [activeOverviewPreviewSymbol]: payload,
-        }));
-      } catch {
-        if (!cancelled) {
-          setOverviewPreviewDetails((current) => ({
-            ...current,
-            [activeOverviewPreviewSymbol]: null,
-          }));
-        }
-      }
-    }
-
-    loadOverviewPreviewDetail();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeOverviewPreviewSymbol, apiBaseUrl, overviewPreviewDetails]);
 
   useEffect(() => {
     if (contentSymbolFilter && !activeSymbols.includes(contentSymbolFilter)) {
@@ -3722,11 +3754,6 @@ function App() {
       return next;
     });
     setSnapshotDetails((current) => {
-      const next = { ...current };
-      delete next[symbolToRemove];
-      return next;
-    });
-    setOverviewPreviewDetails((current) => {
       const next = { ...current };
       delete next[symbolToRemove];
       return next;
@@ -4198,13 +4225,12 @@ function App() {
     }
 
     const snapshot = overviewPreviewSnapshot || {};
-    const previewCapitalFlow = overviewPreviewDetail?.capitalFlow || null;
     const mainNetInflow = typeof snapshot?.capitalFlowMainNetInflow === 'number'
       ? snapshot.capitalFlowMainNetInflow
-      : previewCapitalFlow?.mainNetInflow;
+      : null;
     const mainNetRatio = typeof snapshot?.capitalFlowMainNetRatio === 'number'
       ? snapshot.capitalFlowMainNetRatio
-      : previewCapitalFlow?.mainNetRatio;
+      : null;
     const anomaly = overviewPreviewAnomaly;
     const fundExposure = overviewPreviewFundExposure;
     const changeTone = getSnapshotCardTone(snapshot?.changePct);
@@ -4306,13 +4332,12 @@ function App() {
                 <tbody>
                   {overviewItems.map((item) => {
                     const snapshot = snapshots[item] || {};
-                    const previewCapitalFlow = overviewPreviewDetails[item]?.capitalFlow || null;
                     const mainNetInflow = typeof snapshot?.capitalFlowMainNetInflow === 'number'
                       ? snapshot.capitalFlowMainNetInflow
-                      : previewCapitalFlow?.mainNetInflow;
+                      : null;
                     const mainNetRatio = typeof snapshot?.capitalFlowMainNetRatio === 'number'
                       ? snapshot.capitalFlowMainNetRatio
-                      : previewCapitalFlow?.mainNetRatio;
+                      : null;
                     const anomaly = overviewAnomalyBySymbol.get(item);
                     const fundExposure = overviewFundExposureBySymbol.get(item);
                     const rowTone = getSnapshotCardTone(snapshot?.changePct);
