@@ -96,6 +96,7 @@ class Settings(BaseSettings):
     fund_collector_enabled: bool = True
     fund_collector_poll_interval_seconds: ClassVar[int] = 3600
     fund_collector_request_interval_seconds: ClassVar[float] = 1.0
+    fund_collector_fetch_timeout_seconds: ClassVar[float] = 180.0
     content_report_backfill_days: int = 365
     content_announcement_backfill_pages: int = 5
     content_news_backfill_max_items: int = 100

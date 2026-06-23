@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from typing import cast
 
 from redis.asyncio import Redis
 
@@ -95,21 +96,28 @@ class FundCollectorWorker:
                 elapsed = (datetime.now(UTC) - last_refreshed).total_seconds()
                 if elapsed < self._settings.fund_collector_poll_interval_seconds:
                     continue
-            await self._refresh_fund(fund_code)
+            try:
+                await self._refresh_fund(fund_code)
+            except Exception:
+                logger.exception("fund collector refresh failed; continuing with next active fund", extra={"fund_code": fund_code})
 
     async def _refresh_fund(self, fund_code: str, *, auto_link_stocks: bool | None = None) -> None:
-        state = await asyncio.to_thread(self._client.fetch_fund_state, fund_code)
-        profile = state["profile"]
-        snapshot = state["snapshot"]
-        nav_history = state["nav_history"]
-        holdings = state["holdings"]
+        timeout_seconds = max(float(getattr(self._settings, "fund_collector_fetch_timeout_seconds", 180.0)), 1.0)
+        state = cast(
+            dict[str, object],
+            await asyncio.wait_for(asyncio.to_thread(self._client.fetch_fund_state, fund_code), timeout=timeout_seconds),
+        )
+        profile = cast(dict[str, object], state["profile"])
+        snapshot = cast(dict[str, object], state["snapshot"])
+        nav_history = cast(list[dict[str, object]], state["nav_history"])
+        holdings = cast(list[dict[str, object]], state["holdings"])
 
         await self._postgres.upsert_fund_profile(profile)
         await self._postgres.upsert_fund_snapshot(snapshot)
         await self._postgres.upsert_fund_nav_rows(nav_history)
         await self._postgres.upsert_fund_holding_rows(holdings)
 
-        linked_symbols = [item["stock_symbol"] for item in holdings if item.get("stock_symbol")]
+        linked_symbols = [str(item["stock_symbol"]) for item in holdings if item.get("stock_symbol")]
         auto_linkable_symbols = [symbol for symbol in linked_symbols if self._is_stock_collector_supported_symbol(symbol)]
         previous_symbols = set(await self._redis.smembers(f"{self._settings.active_symbols_key}:fund:{fund_code}"))
         await self._postgres.upsert_fund_stock_links(
@@ -129,11 +137,18 @@ class FundCollectorWorker:
                 await self._redis.sadd(self._settings.active_symbols_key, symbol)
                 await self._redis.sadd(f"{self._settings.active_symbols_key}:fund:{fund_code}", symbol)
             if self._is_stock_collector_supported_symbol(symbol):
-                stock_fund_rows = await asyncio.to_thread(self._client.fetch_stock_fund_holders, symbol)
+                stock_fund_rows = cast(
+                    list[dict[str, object]],
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self._client.fetch_stock_fund_holders, symbol),
+                        timeout=timeout_seconds,
+                    ),
+                )
                 await self._postgres.upsert_stock_fund_holding_rows(stock_fund_rows)
+                stock_fund_codes = [str(row["fund_code"]) for row in stock_fund_rows if row.get("fund_code")]
                 await self._redis.set(
                     f"{self._settings.stock_funds_key_prefix}:{symbol}:funds",
-                    json.dumps(sorted({row["fund_code"] for row in stock_fund_rows if row.get("fund_code")})),
+                    json.dumps(sorted(set(stock_fund_codes))),
                 )
 
         stale_symbols = previous_symbols.difference(linked_symbols)
@@ -223,5 +238,5 @@ class FundCollectorWorker:
             timestamp=timestamp,
             fund_code=fund_code,
             command_type=payload.get("event", "unknown"),
-            payload=payload,
+            payload=dict(payload),
         )
