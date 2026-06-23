@@ -5,6 +5,7 @@ import logging
 import re
 from html import unescape
 from datetime import UTC, datetime, timedelta, timezone
+from typing import cast
 
 from redis.asyncio import Redis
 
@@ -112,9 +113,13 @@ class ContentCollectorWorker:
         due_items = [
             item
             for item in checkpoints
-            if isinstance(item.get("next_due_at"), datetime)
-            and item["next_due_at"] <= now
-            and (item.get("cooldown_until") is None or item["cooldown_until"] <= now)
+            if (next_due_at := item.get("next_due_at"))
+            and isinstance(next_due_at, datetime)
+            and next_due_at <= now
+            and (
+                (cooldown_until := item.get("cooldown_until")) is None
+                or (isinstance(cooldown_until, datetime) and cooldown_until <= now)
+            )
         ]
         if not due_items:
             return False
@@ -163,7 +168,7 @@ class ContentCollectorWorker:
                 last_success_at=finished_at,
                 last_attempt_at=finished_at,
                 failure_count=0,
-                last_error=result.warning_message,
+                last_error=None,
             )
             await self._postgres.insert_content_fetch_log(
                 lane=lane,
@@ -176,17 +181,18 @@ class ContentCollectorWorker:
                 error_message=result.warning_message,
                 meta={"items": len(result.items), "upstreamSource": result.upstream_source, "warning": result.warning_message},
             )
+            await self._clear_content_caches()
         except Exception as exc:
             finished_at = datetime.now(UTC)
-            failure_count = int(checkpoint.get("failure_count") or 0) + 1
+            failure_count = int(cast(int | str | float | None, checkpoint.get("failure_count")) or 0) + 1
             cooldown_until = finished_at + self._cooldown_delta(failure_count)
             await self._postgres.upsert_content_checkpoint(
                 lane=lane,
                 symbol=symbol,
-                cursor=checkpoint.get("cursor") or {},
+                cursor=cast(dict[str, object], checkpoint.get("cursor") or {}),
                 next_due_at=cooldown_until,
                 cooldown_until=cooldown_until,
-                last_success_at=checkpoint.get("last_success_at"),
+                last_success_at=cast(datetime | None, checkpoint.get("last_success_at")),
                 last_attempt_at=finished_at,
                 failure_count=failure_count,
                 last_error=str(exc),
@@ -202,6 +208,7 @@ class ContentCollectorWorker:
                 error_message=str(exc),
                 meta={"failureCount": failure_count},
             )
+            await self._clear_content_caches()
             logger.exception("content collector job failed", extra={"lane": lane, "symbol": symbol})
 
     def _fetch_lane(self, lane: str, symbol: str):

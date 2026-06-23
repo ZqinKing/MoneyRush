@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     anomaly_materiality_threshold: float = 0.0
     content_collector_enabled: bool = True
     content_collector_poll_interval_seconds: ClassVar[int] = 5
-    content_collector_batch_size: int = 3
+    content_collector_batch_size: int = 20
     content_fetch_min_interval_seconds: ClassVar[int] = 10
     content_fetch_jitter_seconds: ClassVar[int] = 2
     content_fetch_cooldown_base_seconds: ClassVar[int] = 1800
@@ -100,7 +100,7 @@ class Settings(BaseSettings):
     content_report_backfill_days: int = 365
     content_announcement_backfill_pages: int = 5
     content_news_backfill_max_items: int = 100
-    content_news_detail_fetch_max_items: int = 5
+    content_news_detail_fetch_max_items: int = 1
     content_news_detail_fetch_max_age_seconds: int = 1800
     ai_base_url: str | None = None
     ai_api_key: str | None = None

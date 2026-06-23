@@ -715,7 +715,7 @@ class ContentQueryService:
         now = datetime.now(UTC)
         lane = str(row["lane"])
         refresh_seconds = max(int(self._lane_refresh_seconds.get(lane, 1800)), 60)
-        overdue_grace_seconds = max(min(refresh_seconds // 2, 1800), 300)
+        overdue_grace_seconds = max(min(refresh_seconds, 3600), 600)
         last_success_at = row["last_success_at"]
         last_attempt_at = row["last_attempt_at"]
         cooldown_until = row["cooldown_until"]
@@ -725,6 +725,7 @@ class ContentQueryService:
             last_success_at is None or (last_attempt_at is not None and last_attempt_at >= last_success_at)
         )
         is_cooling_down = isinstance(cooldown_until, datetime) and cooldown_until > now
+        is_initial_pending = last_success_at is None and last_attempt_at is None and failure_count == 0 and not row["last_error"]
         is_overdue = (
             isinstance(next_due_at, datetime)
             and (now - next_due_at).total_seconds() > overdue_grace_seconds
@@ -732,12 +733,12 @@ class ContentQueryService:
         )
         stale_by_age = isinstance(last_success_at, datetime) and (now - last_success_at).total_seconds() > refresh_seconds * 2
         has_public_error = bool(_public_lane_error(row["last_error"]))
-        has_never_run_but_not_due = last_success_at is None and isinstance(next_due_at, datetime) and next_due_at > now
-        is_stale = False if has_never_run_but_not_due else (last_success_at is None or has_recent_failure or stale_by_age or is_overdue or has_public_error)
+        is_stale = is_overdue if is_initial_pending else (last_success_at is None or has_recent_failure or stale_by_age or is_overdue or has_public_error)
         is_healthy = not is_stale and not is_cooling_down and not row["last_error"]
         return {
             "isHealthy": is_healthy,
             "isStale": is_stale,
+            "isPending": is_initial_pending and not is_overdue,
             "isCoolingDown": is_cooling_down,
             "isOverdue": is_overdue,
             "refreshIntervalSeconds": refresh_seconds,
