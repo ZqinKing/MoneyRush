@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
+from decimal import Decimal
 
 import asyncpg
 
 
 BEIJING_TZ = timezone(timedelta(hours=8))
 DISPLAY_TIMEZONE = "Asia/Shanghai"
+TIMED_EVENT_ACTIVE_WINDOW = timedelta(hours=2)
 
 
 TIMELINE_EVENT_SEEDS = [
@@ -93,6 +95,26 @@ def _decode_jsonish_list(value: object) -> list[str]:
     return [str(item) for item in decoded if item not in (None, "")]
 
 
+def _decode_jsonish_dict(value: object) -> dict[str, object]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+def _numeric_to_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float, Decimal)):
+        return float(value)
+    return None
+
+
 def _timeline_status(event_date: date, end_date: date | None, today: date | None = None) -> str:
     local_today = today or datetime.now(BEIJING_TZ).date()
     effective_end = end_date or event_date
@@ -103,10 +125,32 @@ def _timeline_status(event_date: date, end_date: date | None, today: date | None
     return "active"
 
 
+def _timed_timeline_status(event_time: datetime, now: datetime | None = None) -> str:
+    normalized_time = event_time.astimezone(UTC) if event_time.tzinfo else event_time.replace(tzinfo=UTC)
+    current_time = now or datetime.now(UTC)
+    if current_time < normalized_time:
+        return "upcoming"
+    if current_time <= normalized_time + TIMED_EVENT_ACTIVE_WINDOW:
+        return "active"
+    return "passed"
+
+
 def _date_label(event_date: date, end_date: date | None) -> str:
     if end_date is None or end_date == event_date:
         return event_date.isoformat()
     return f"{event_date.isoformat()} 至 {end_date.isoformat()}"
+
+
+def _beijing_time_label(event_time: datetime) -> str:
+    normalized_time = event_time.astimezone(BEIJING_TZ) if event_time.tzinfo else event_time.replace(tzinfo=UTC).astimezone(BEIJING_TZ)
+    return normalized_time.strftime("%Y-%m-%d %H:%M")
+
+
+def _iso_datetime(value: object) -> str | None:
+    if not isinstance(value, datetime):
+        return None
+    normalized = value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+    return normalized.isoformat()
 
 
 class TimelineQueryService:
@@ -146,14 +190,46 @@ class TimelineQueryService:
                     status TEXT NOT NULL DEFAULT 'upcoming',
                     source_url TEXT,
                     display_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+                    event_time TIMESTAMPTZ,
+                    event_timezone TEXT,
+                    source_provider TEXT,
+                    source_event_id TEXT,
+                    event_kind TEXT,
+                    importance_score NUMERIC,
+                    confidence_score NUMERIC,
+                    actual_value NUMERIC,
+                    forecast_value NUMERIC,
+                    previous_value_numeric NUMERIC,
+                    unit TEXT,
+                    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    duplicate_group_key TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
                 """
             )
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS event_timezone TEXT")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS source_provider TEXT")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS source_event_id TEXT")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS event_kind TEXT")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS importance_score NUMERIC")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS confidence_score NUMERIC")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS actual_value NUMERIC")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS forecast_value NUMERIC")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS previous_value_numeric NUMERIC")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS unit TEXT")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb")
+            await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS duplicate_group_key TEXT")
             await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_date_idx ON timeline_event (event_date)")
+            await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_time_idx ON timeline_event (event_time)")
             await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_category_idx ON timeline_event (category)")
             await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_level_date_idx ON timeline_event (level, event_date)")
+            await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_category_level_time_idx ON timeline_event (category, level, event_time)")
+            await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_source_identity_idx ON timeline_event (source_provider, source_event_id)")
+            await connection.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS timeline_event_duplicate_group_idx ON timeline_event (duplicate_group_key) WHERE duplicate_group_key IS NOT NULL"
+            )
 
     async def _seed_initial_events(self) -> None:
         if self._pool is None:
@@ -216,15 +292,37 @@ class TimelineQueryService:
             args.append(level)
             filters.append(f"level = ${len(args)}")
 
-        where_clause = f"WHERE {' AND '.join(filters)}" if filters else ""
+        filters.append(
+            """
+            NOT (
+                source = 'seed'
+                AND EXISTS (
+                    SELECT 1
+                    FROM timeline_event replacement
+                    WHERE replacement.source IS DISTINCT FROM 'seed'
+                      AND replacement.event_kind IS NOT NULL
+                      AND (
+                          replacement.category = timeline_event.category
+                          OR (timeline_event.category = 'fomc' AND replacement.event_kind = 'fomc_meeting_window')
+                      )
+                      AND replacement.event_date <= COALESCE(timeline_event.end_date, timeline_event.event_date)
+                      AND COALESCE(replacement.end_date, replacement.event_date) >= timeline_event.event_date
+                )
+            )
+            """
+        )
+        where_clause = f"WHERE {' AND '.join(filters)}"
         rows = await self._fetch(
             f"""
             SELECT id, event_date, end_date, title, category, impact_assets, level,
-                   source, description, previous_value, market_expectation, status,
-                   source_url, display_timezone, created_at, updated_at
+                    source, description, previous_value, market_expectation, status,
+                   source_url, display_timezone, event_time, event_timezone,
+                   source_provider, source_event_id, event_kind, importance_score,
+                   confidence_score, actual_value, forecast_value, previous_value_numeric,
+                   unit, raw_payload, duplicate_group_key, created_at, updated_at
             FROM timeline_event
             {where_clause}
-            ORDER BY event_date ASC, category ASC, title ASC
+            ORDER BY event_date ASC, event_time ASC NULLS LAST, category ASC, title ASC
             """,
             *args,
         )
@@ -243,12 +341,15 @@ class TimelineQueryService:
         if not isinstance(event_date, date):
             raise RuntimeError("timeline_event.event_date must be a date")
         normalized_end_date = end_date if isinstance(end_date, date) else None
-        computed_status = _timeline_status(event_date, normalized_end_date)
+        event_time = row["event_time"]
+        timed_event_time = event_time if isinstance(event_time, datetime) else None
+        computed_status = _timed_timeline_status(timed_event_time) if timed_event_time is not None else _timeline_status(event_date, normalized_end_date)
+        date_label = _beijing_time_label(timed_event_time) if timed_event_time is not None else _date_label(event_date, normalized_end_date)
         return {
             "id": row["id"],
             "eventDate": _date_to_iso(event_date),
             "endDate": _date_to_iso(normalized_end_date),
-            "dateLabel": _date_label(event_date, normalized_end_date),
+            "dateLabel": date_label,
             "title": row["title"],
             "category": row["category"],
             "impactAssets": _decode_jsonish_list(row["impact_assets"]),
@@ -260,6 +361,19 @@ class TimelineQueryService:
             "status": computed_status,
             "sourceUrl": row["source_url"],
             "displayTimezone": row["display_timezone"] or DISPLAY_TIMEZONE,
-            "createdAt": row["created_at"].astimezone(timezone.utc).isoformat() if isinstance(row["created_at"], datetime) else None,
-            "updatedAt": row["updated_at"].astimezone(timezone.utc).isoformat() if isinstance(row["updated_at"], datetime) else None,
+            "eventTime": _iso_datetime(timed_event_time),
+            "eventTimezone": row["event_timezone"],
+            "sourceProvider": row["source_provider"],
+            "sourceEventId": row["source_event_id"],
+            "eventKind": row["event_kind"],
+            "importanceScore": _numeric_to_float(row["importance_score"]),
+            "confidenceScore": _numeric_to_float(row["confidence_score"]),
+            "actualValue": _numeric_to_float(row["actual_value"]),
+            "forecastValue": _numeric_to_float(row["forecast_value"]),
+            "previousValueNumeric": _numeric_to_float(row["previous_value_numeric"]),
+            "unit": row["unit"],
+            "rawPayload": _decode_jsonish_dict(row["raw_payload"]),
+            "duplicateGroupKey": row["duplicate_group_key"],
+            "createdAt": _iso_datetime(row["created_at"]),
+            "updatedAt": _iso_datetime(row["updated_at"]),
         }

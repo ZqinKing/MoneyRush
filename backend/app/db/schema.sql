@@ -542,16 +542,38 @@ CREATE TABLE IF NOT EXISTS timeline_event (
     status TEXT NOT NULL DEFAULT 'upcoming',
     source_url TEXT,
     display_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+    event_time TIMESTAMPTZ,
+    event_timezone TEXT,
+    source_provider TEXT,
+    source_event_id TEXT,
+    event_kind TEXT,
+    importance_score NUMERIC,
+    confidence_score NUMERIC,
+    actual_value NUMERIC,
+    forecast_value NUMERIC,
+    previous_value_numeric NUMERIC,
+    unit TEXT,
+    raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+    duplicate_group_key TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS timeline_event_date_idx
     ON timeline_event (event_date);
+CREATE INDEX IF NOT EXISTS timeline_event_time_idx
+    ON timeline_event (event_time);
 CREATE INDEX IF NOT EXISTS timeline_event_category_idx
     ON timeline_event (category);
 CREATE INDEX IF NOT EXISTS timeline_event_level_date_idx
     ON timeline_event (level, event_date);
+CREATE INDEX IF NOT EXISTS timeline_event_category_level_time_idx
+    ON timeline_event (category, level, event_time);
+CREATE INDEX IF NOT EXISTS timeline_event_source_identity_idx
+    ON timeline_event (source_provider, source_event_id);
+CREATE UNIQUE INDEX IF NOT EXISTS timeline_event_duplicate_group_idx
+    ON timeline_event (duplicate_group_key)
+    WHERE duplicate_group_key IS NOT NULL;
 
 INSERT INTO timeline_event (
     id, event_date, end_date, title, category, impact_assets, level, source, description

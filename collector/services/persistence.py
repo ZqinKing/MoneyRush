@@ -112,6 +112,15 @@ class PostgresStore:
             self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
             await self._ensure_runtime_schema()
 
+    async def connect_timeline_only(self) -> None:
+        if self._pool is None:
+            self._pool = await asyncpg.create_pool(self._dsn, min_size=1, max_size=4)
+        pool = self._pool
+        if pool is None:
+            raise RuntimeError("PostgresStore timeline pool was not initialized")
+        async with pool.acquire() as connection:
+            await self._ensure_timeline_schema(connection)
+
     async def _ensure_runtime_schema(self) -> None:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before schema initialization")
@@ -475,6 +484,7 @@ class PostgresStore:
             await self._ensure_fund_schema(connection)
             await self._ensure_anomaly_schema(connection)
             await self._ensure_macro_schema(connection)
+            await self._ensure_timeline_schema(connection)
             if self._enable_runtime_data_repair:
                 repairs = await self._repair_runtime_data(connection)
                 if any(repairs.values()):
@@ -524,6 +534,65 @@ class PostgresStore:
         )
         await connection.execute("CREATE INDEX IF NOT EXISTS macro_analysis_generated_idx ON macro_analysis (generated_at DESC)")
         await connection.execute("CREATE INDEX IF NOT EXISTS macro_analysis_snapshot_idx ON macro_analysis (snapshot_date DESC, trigger_type)")
+
+    async def _ensure_timeline_schema(self, connection: asyncpg.Connection) -> None:
+        await connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS timeline_event (
+                id TEXT PRIMARY KEY,
+                event_date DATE NOT NULL,
+                end_date DATE,
+                title TEXT NOT NULL,
+                category TEXT NOT NULL,
+                impact_assets JSONB NOT NULL DEFAULT '[]'::jsonb,
+                level TEXT NOT NULL,
+                source TEXT,
+                description TEXT,
+                previous_value TEXT,
+                market_expectation TEXT,
+                status TEXT NOT NULL DEFAULT 'upcoming',
+                source_url TEXT,
+                display_timezone TEXT NOT NULL DEFAULT 'Asia/Shanghai',
+                event_time TIMESTAMPTZ,
+                event_timezone TEXT,
+                source_provider TEXT,
+                source_event_id TEXT,
+                event_kind TEXT,
+                importance_score NUMERIC,
+                confidence_score NUMERIC,
+                actual_value NUMERIC,
+                forecast_value NUMERIC,
+                previous_value_numeric NUMERIC,
+                unit TEXT,
+                raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                duplicate_group_key TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS event_time TIMESTAMPTZ")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS event_timezone TEXT")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS source_provider TEXT")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS source_event_id TEXT")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS event_kind TEXT")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS importance_score NUMERIC")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS confidence_score NUMERIC")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS actual_value NUMERIC")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS forecast_value NUMERIC")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS previous_value_numeric NUMERIC")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS unit TEXT")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb")
+        await connection.execute("ALTER TABLE timeline_event ADD COLUMN IF NOT EXISTS duplicate_group_key TEXT")
+        await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_date_idx ON timeline_event (event_date)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_time_idx ON timeline_event (event_time)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_category_idx ON timeline_event (category)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_level_date_idx ON timeline_event (level, event_date)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_category_level_time_idx ON timeline_event (category, level, event_time)")
+        await connection.execute("CREATE INDEX IF NOT EXISTS timeline_event_source_identity_idx ON timeline_event (source_provider, source_event_id)")
+        await connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS timeline_event_duplicate_group_idx ON timeline_event (duplicate_group_key) WHERE duplicate_group_key IS NOT NULL"
+        )
 
     async def _ensure_fund_schema(self, connection: asyncpg.Connection) -> None:
         await connection.execute(
@@ -1003,6 +1072,108 @@ class PostgresStore:
             raise RuntimeError("PostgresStore must be connected before use")
         async with self._pool.acquire() as connection:
             return await connection.fetch(query, *args)
+
+    async def upsert_timeline_events(self, items: list[dict[str, object]]) -> int:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+        if not items:
+            return 0
+
+        rows = []
+        for item in items:
+            event_time = _coerce_optional_utc_datetime(item.get("event_time"), field_name="timeline_event.event_time")
+            event_date = item.get("event_date")
+            if isinstance(event_date, datetime):
+                event_date = event_date.date()
+            if not isinstance(event_date, date):
+                if event_time is None:
+                    raise TypeError("timeline_event.event_date must be a date when event_time is missing")
+                event_date = event_time.astimezone(CHINA_MARKET_TZ).date()
+            end_date = item.get("end_date")
+            if isinstance(end_date, datetime):
+                end_date = end_date.date()
+            if end_date is not None and not isinstance(end_date, date):
+                raise TypeError("timeline_event.end_date must be a date or None")
+            rows.append(
+                (
+                    item["id"],
+                    event_date,
+                    end_date,
+                    item["title"],
+                    item["category"],
+                    _json_dumps(item.get("impact_assets", [])),
+                    item["level"],
+                    item.get("source"),
+                    item.get("description"),
+                    item.get("previous_value"),
+                    item.get("market_expectation"),
+                    item.get("status") or "upcoming",
+                    item.get("source_url"),
+                    item.get("display_timezone") or "Asia/Shanghai",
+                    event_time,
+                    item.get("event_timezone"),
+                    item.get("source_provider"),
+                    item.get("source_event_id"),
+                    item.get("event_kind"),
+                    item.get("importance_score"),
+                    item.get("confidence_score"),
+                    item.get("actual_value"),
+                    item.get("forecast_value"),
+                    item.get("previous_value_numeric"),
+                    item.get("unit"),
+                    _json_dumps(item.get("raw_payload", {})),
+                    item.get("duplicate_group_key"),
+                )
+            )
+
+        async with self._pool.acquire() as connection:
+            await self._ensure_timeline_schema(connection)
+            await connection.executemany(
+                """
+                INSERT INTO timeline_event (
+                    id, event_date, end_date, title, category, impact_assets,
+                    level, source, description, previous_value, market_expectation,
+                    status, source_url, display_timezone, event_time, event_timezone,
+                    source_provider, source_event_id, event_kind, importance_score,
+                    confidence_score, actual_value, forecast_value, previous_value_numeric,
+                    unit, raw_payload, duplicate_group_key
+                ) VALUES (
+                    $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11,
+                    $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                    $21, $22, $23, $24, $25, $26::jsonb, $27
+                )
+                ON CONFLICT (id) DO UPDATE SET
+                    event_date = EXCLUDED.event_date,
+                    end_date = EXCLUDED.end_date,
+                    title = EXCLUDED.title,
+                    category = EXCLUDED.category,
+                    impact_assets = EXCLUDED.impact_assets,
+                    level = EXCLUDED.level,
+                    source = EXCLUDED.source,
+                    description = EXCLUDED.description,
+                    previous_value = EXCLUDED.previous_value,
+                    market_expectation = EXCLUDED.market_expectation,
+                    status = EXCLUDED.status,
+                    source_url = EXCLUDED.source_url,
+                    display_timezone = EXCLUDED.display_timezone,
+                    event_time = EXCLUDED.event_time,
+                    event_timezone = EXCLUDED.event_timezone,
+                    source_provider = EXCLUDED.source_provider,
+                    source_event_id = EXCLUDED.source_event_id,
+                    event_kind = EXCLUDED.event_kind,
+                    importance_score = EXCLUDED.importance_score,
+                    confidence_score = EXCLUDED.confidence_score,
+                    actual_value = EXCLUDED.actual_value,
+                    forecast_value = EXCLUDED.forecast_value,
+                    previous_value_numeric = EXCLUDED.previous_value_numeric,
+                    unit = EXCLUDED.unit,
+                    raw_payload = EXCLUDED.raw_payload,
+                    duplicate_group_key = EXCLUDED.duplicate_group_key,
+                    updated_at = NOW()
+                """,
+                rows,
+            )
+        return len(rows)
 
     async def persist_market_state(
         self,
