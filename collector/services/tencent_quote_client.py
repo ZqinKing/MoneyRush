@@ -4,10 +4,12 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from importlib import import_module
+import json
 import logging
+from pathlib import Path
 import random
 from time import monotonic, sleep
-from typing import Protocol, cast
+from typing import Callable, Protocol, cast
 from urllib.request import urlopen
 
 from mootdx.quotes import Quotes
@@ -18,7 +20,7 @@ from collector.services.vendor_scheduler import VendorScheduler
 
 QUOTE_URL = "https://qt.gtimg.cn/q="
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
-DEFAULT_MOOTDX_SERVER = ("180.153.18.170", 7709)
+DEFAULT_MOOTDX_SERVERS = "180.153.18.170:7709"
 A_SHARE_LOT_SIZE = 100
 QUOTE_SYMBOL_FAILURE_BACKOFF_SECONDS = 30.0
 QUOTE_SERVER_FAILURE_BACKOFF_SECONDS = 10.0
@@ -31,6 +33,46 @@ AKSHARE_INTRADAY_SOURCE = "eastmoney-akshare"
 MOOTDX_INTRADAY_SOURCE = "mootdx"
 REALTIME_AGGREGATED_SOURCE = "realtime-quote-aggregate"
 logger = logging.getLogger(__name__)
+MootdxServer = tuple[str, int]
+
+
+def parse_mootdx_servers(value: object) -> tuple[MootdxServer, ...]:
+    if not isinstance(value, str):
+        raise TypeError("collector_mootdx_servers must be a comma-separated string")
+
+    servers: list[MootdxServer] = []
+    for item in value.split(","):
+        endpoint = item.strip()
+        if not endpoint:
+            continue
+        host, separator, port_text = endpoint.rpartition(":")
+        if not separator or not host.strip() or not port_text.strip():
+            raise ValueError(f"invalid mootdx server endpoint: {endpoint}")
+        try:
+            port = int(port_text)
+        except ValueError as exc:
+            raise ValueError(f"invalid mootdx server port: {endpoint}") from exc
+        if port <= 0 or port > 65535:
+            raise ValueError(f"invalid mootdx server port: {endpoint}")
+        servers.append((host.strip(), port))
+
+    if not servers:
+        raise ValueError("collector_mootdx_servers must include at least one endpoint")
+    return tuple(servers)
+
+
+def default_mootdx_config_path() -> Path:
+    return Path.home() / ".mootdx" / "config.json"
+
+
+def ensure_mootdx_config_file(config_path: Path | None = None) -> Path:
+    path = config_path or default_mootdx_config_path()
+    if path.exists():
+        return path
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({}), encoding="utf-8")
+    return path
 
 
 def _symbol_to_vendor_code(symbol: str) -> str:
@@ -101,7 +143,7 @@ def _to_utc_day_bucket(value: object) -> datetime | None:
 
 def _to_utc_intraday_bucket(value: object, trade_day: date | None = None) -> datetime | None:
     if isinstance(value, datetime):
-        normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        normalized = value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=CHINA_MARKET_TZ).astimezone(UTC)
         return normalized.replace(second=0, microsecond=0)
     if isinstance(value, date):
         return datetime(value.year, value.month, value.day, tzinfo=UTC)
@@ -424,25 +466,60 @@ class TencentQuoteClient:
 
 
 class MootdxQuoteClient:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        servers: tuple[MootdxServer, ...],
+        *,
+        quotes_factory: Callable[..., object] = Quotes.factory,
+        config_path: Path | None = None,
+    ) -> None:
+        self._servers = servers
+        self._quotes_factory = quotes_factory
+        self._config_path = config_path
+        self._active_server_index = 0
         self._client = None
 
-    def reset(self) -> None:
+    def reset(self, *, rotate_server: bool = False) -> None:
         self._client = None
+        if rotate_server and len(self._servers) > 1:
+            self._active_server_index = (self._active_server_index + 1) % len(self._servers)
 
-    def _ensure_client(self):
-        if self._client is None:
-            self._client = Quotes.factory(
-                market="std",
-                server=DEFAULT_MOOTDX_SERVER,
-                heartbeat=True,
-                timeout=15,
+    def ensure_client(self):
+        if self._client is not None:
+            return self._client
+
+        _ = ensure_mootdx_config_file(self._config_path)
+        errors: list[str] = []
+        for offset in range(len(self._servers)):
+            server_index = (self._active_server_index + offset) % len(self._servers)
+            server = self._servers[server_index]
+            try:
+                client = self._quotes_factory(
+                    market="std",
+                    server=server,
+                    heartbeat=True,
+                    timeout=15,
+                )
+            except Exception as exc:
+                errors.append(f"{server[0]}:{server[1]}:{exc}")
+                logger.warning(
+                    "mootdx server connection failed; trying next candidate",
+                    extra={"server_host": server[0], "server_port": server[1], "reason": str(exc)},
+                )
+                continue
+
+            self._active_server_index = server_index
+            self._client = client
+            logger.info(
+                "mootdx server selected",
+                extra={"server_host": server[0], "server_port": server[1], "server_index": server_index},
             )
+            return self._client
 
-        return self._client
+        raise RuntimeError(f"failed to connect to mootdx servers: {', '.join(errors)}")
 
     def fetch_quote(self, symbol: str) -> MootdxQuote:
-        client = self._ensure_client()
+        client = self.ensure_client()
         quote_frame = client.quotes(symbol=[symbol])
         if quote_frame.empty:
             raise ValueError(f"empty mootdx quote payload for {symbol}")
@@ -480,7 +557,7 @@ class MootdxQuoteClient:
         )
 
     def fetch_daily_history(self, symbol: str, limit: int = 60) -> list[dict[str, object]]:
-        client = self._ensure_client()
+        client = self.ensure_client()
         remaining = max(limit, 0)
         start = 0
         records: list[dict[str, object]] = []
@@ -546,132 +623,8 @@ class MootdxQuoteClient:
                 deduped[bucket_ts] = item
         return [deduped[key] for key in sorted(deduped.keys(), reverse=True)[:limit]]
 
-    def fetch_intraday_history(self, symbol: str, trade_day: date) -> list[dict[str, object]]:
-        client = self._ensure_client()
-        market = _infer_market_code(symbol)
-        day_code = trade_day.strftime("%Y%m%d")
-        frame = self._fetch_minute_frame(client, symbol=symbol, market=market, day_code=day_code)
-        if frame is None or frame.empty:
-            return []
-
-        normalized_frame = frame.copy()
-        if getattr(normalized_frame.index, "name", None) and normalized_frame.index.name not in normalized_frame.columns:
-            normalized_frame = normalized_frame.reset_index()
-
-        records: list[dict[str, object]] = []
-        for row in normalized_frame.to_dict("records"):
-            bucket_ts = self._intraday_bucket_ts(row, trade_day=trade_day)
-            close_price = _to_float(str(row.get("price") if row.get("price") is not None else row.get("close")))
-            open_price = _to_float(str(row.get("open"))) if row.get("open") is not None else close_price
-            high_price = _to_float(str(row.get("high"))) if row.get("high") is not None else close_price
-            low_price = _to_float(str(row.get("low"))) if row.get("low") is not None else close_price
-            volume_lots = _to_int(str(row.get("volume") if row.get("volume") is not None else row.get("vol")))
-            amount = _to_float(str(row.get("amount")))
-            volume = _lots_to_shares(volume_lots)
-
-            if bucket_ts is None or None in (open_price, high_price, low_price, close_price):
-                continue
-
-            records.append(
-                {
-                    "bucketTs": bucket_ts,
-                    "symbol": symbol,
-                    "period": "1m",
-                    "open": open_price,
-                    "high": high_price,
-                    "low": low_price,
-                    "close": close_price,
-                    "volume": volume,
-                    "amount": amount,
-                    "source": "mootdx",
-                    "raw": {
-                        **row,
-                        "provider": "mootdx",
-                        "quality": "vendor_verified",
-                        "synthetic": False,
-                        "providerVolumeUnit": "lots",
-                        "volumeUnit": "shares",
-                        "tradeDate": day_code,
-                    },
-                }
-            )
-
-        deduped: dict[datetime, dict[str, object]] = {}
-        for item in records:
-            bucket_ts = item.get("bucketTs")
-            if isinstance(bucket_ts, datetime):
-                deduped[bucket_ts] = item
-        return [deduped[key] for key in sorted(deduped.keys())]
-
-    @staticmethod
-    def _fetch_minute_frame(client, *, symbol: str, market: int, day_code: str):
-        minutes_method = getattr(client, "minutes", None)
-        if callable(minutes_method):
-            for args, kwargs in (
-                ((), {"symbol": symbol, "market": market, "date": day_code}),
-                ((symbol, market, day_code), {}),
-                ((), {"symbol": symbol, "date": day_code}),
-            ):
-                try:
-                    return minutes_method(*args, **kwargs)
-                except TypeError:
-                    continue
-
-        minute_method = getattr(client, "minute", None)
-        if callable(minute_method):
-            for args, kwargs in (
-                ((), {"symbol": symbol, "market": market, "date": day_code}),
-                ((symbol, market, day_code), {}),
-                ((), {"symbol": symbol, "market": market}),
-            ):
-                try:
-                    return minute_method(*args, **kwargs)
-                except TypeError:
-                    continue
-
-        raise AttributeError("mootdx client does not expose usable minute history methods")
-
-    @classmethod
-    def _intraday_bucket_ts(cls, row: dict[str, object], *, trade_day: date) -> datetime | None:
-        raw_datetime = row.get("datetime")
-        if isinstance(raw_datetime, datetime):
-            normalized = raw_datetime.astimezone(UTC) if raw_datetime.tzinfo is not None else raw_datetime.replace(tzinfo=CHINA_MARKET_TZ).astimezone(UTC)
-            return normalized.replace(second=0, microsecond=0)
-
-        if isinstance(raw_datetime, str):
-            normalized = raw_datetime.strip()
-            for pattern in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y%m%d %H:%M:%S", "%Y%m%d %H:%M"):
-                try:
-                    parsed = datetime.strptime(normalized, pattern)
-                    return parsed.replace(tzinfo=CHINA_MARKET_TZ).astimezone(UTC).replace(second=0, microsecond=0)
-                except ValueError:
-                    continue
-
-        raw_time = row.get("time")
-        if raw_time is None:
-            return None
-
-        digits = "".join(character for character in str(raw_time).strip() if character.isdigit())
-        if len(digits) == 3:
-            digits = f"0{digits}"
-        if len(digits) == 4:
-            digits = f"{digits}00"
-        if len(digits) != 6:
-            return None
-
-        local_timestamp = datetime(
-            trade_day.year,
-            trade_day.month,
-            trade_day.day,
-            int(digits[0:2]),
-            int(digits[2:4]),
-            int(digits[4:6]),
-            tzinfo=CHINA_MARKET_TZ,
-        )
-        return local_timestamp.astimezone(UTC).replace(second=0, microsecond=0)
-
     def fetch_intraday_history(self, symbol: str, trade_day: date | None = None) -> list[dict[str, object]]:
-        client = self._ensure_client()
+        client = self.ensure_client()
         trade_day = trade_day or datetime.now(CHINA_MARKET_TZ).date()
         day_label = trade_day.strftime("%Y%m%d")
         market = _infer_market_code(symbol)
@@ -801,8 +754,9 @@ class MootdxQuoteClient:
 class MarketQuoteClient:
     def __init__(self, settings) -> None:
         self._settings = settings
-        self._mootdx_quote_client = MootdxQuoteClient()
-        self._mootdx_history_client = MootdxQuoteClient()
+        mootdx_servers = parse_mootdx_servers(getattr(settings, "collector_mootdx_servers", DEFAULT_MOOTDX_SERVERS))
+        self._mootdx_quote_client = MootdxQuoteClient(mootdx_servers)
+        self._mootdx_history_client = MootdxQuoteClient(mootdx_servers)
         self._akshare_minute_client = AkshareMinuteClient()
         self._tencent_client = TencentQuoteClient()
         self._vendor_scheduler = VendorScheduler()
@@ -889,7 +843,27 @@ class MarketQuoteClient:
         ):
             try:
                 self._vendor_scheduler.raise_if_symbol_source_cooldown_active(source, symbol, "intraday")
+            except RuntimeError as exc:
+                reason = "symbol_cooldown"
+                errors.append(f"{source}:{reason}")
+                logger.info(
+                    "intraday minute source skipped due to symbol cooldown",
+                    extra={"symbol": symbol, "trade_day": trade_day.isoformat(), "source": source, "reason": str(exc)},
+                )
+                continue
+
+            try:
                 self._vendor_scheduler.wait_for_slot(source)
+            except RuntimeError as exc:
+                reason = "source_cooldown"
+                errors.append(f"{source}:{reason}")
+                logger.info(
+                    "intraday minute source skipped due to source cooldown",
+                    extra={"symbol": symbol, "trade_day": trade_day.isoformat(), "source": source, "reason": str(exc)},
+                )
+                continue
+
+            try:
                 history = fetch()
             except Exception as exc:
                 reason = self._classify_mootdx_failure(exc) if source == "mootdx" else self._classify_generic_vendor_failure(exc)
@@ -960,7 +934,7 @@ class MarketQuoteClient:
                     QUOTE_SERVER_FAILURE_BACKOFF_SECONDS,
                 )
                 self._quote_server_failure_until = now + cooldown_seconds
-                self._mootdx_quote_client.reset()
+                self._mootdx_quote_client.reset(rotate_server=True)
                 logger.exception(
                     "mootdx quote transport failure; applying server-scoped cooldown",
                     extra={
@@ -1028,7 +1002,7 @@ class MarketQuoteClient:
         )
         self._history_failure_until_by_key[key] = monotonic() + backoff_seconds
         if transport_failure:
-            self._mootdx_history_client.reset()
+            self._mootdx_history_client.reset(rotate_server=True)
 
         logger.warning(
             "mootdx history fetch failed; applying symbol/trade-day cooldown",
@@ -1054,7 +1028,7 @@ class MarketQuoteClient:
         if isinstance(exc, (ConnectionError, OSError, TimeoutError)):
             return True
         message = str(exc).lower()
-        return any(token in message for token in ("timeout", "timed out", "reconnect", "socket", "connection", "server unavailable"))
+        return any(token in message for token in ("timeout", "timed out", "connect", "reconnect", "socket", "connection", "server unavailable"))
 
     @staticmethod
     def _classify_mootdx_failure(exc: Exception) -> str:
