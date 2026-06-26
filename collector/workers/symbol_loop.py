@@ -154,10 +154,10 @@ class CollectorWorker:
             try:
                 await self._ensure_postgres_connection()
                 await self._consume_command_stream()
-                await self._collect_active_symbols()
                 await self._aggregate_active_symbol_anomalies()
                 await self._analyze_pending_anomaly_reasons()
                 await self._analyze_post_close_anomaly_reasons()
+                await self._collect_active_symbols()
                 await self._aggregate_active_symbol_anomalies(force=True)
             except Exception:
                 self._postgres_ready = False
@@ -176,22 +176,10 @@ class CollectorWorker:
         active_symbols = sorted(await self._redis.smembers(self._settings.active_symbols_key))
         logger.info("active symbols snapshot", extra={"active_symbols": active_symbols})
 
-        collected_symbols: list[str] = []
         for symbol in active_symbols:
-            try:
-                await self._collect_symbol(symbol)
-                collected_symbols.append(symbol)
-            except Exception:
-                logger.exception("collector skipped symbol after market state fetch failed", extra={"symbol": symbol})
-                continue
-
-        for symbol in collected_symbols:
-            try:
-                await self._safe_ensure_daily_history(symbol)
-                await self._safe_ensure_intraday_history(symbol)
-            except Exception:
-                logger.exception("collector skipped symbol history refresh after failure", extra={"symbol": symbol})
-                continue
+            await self._safe_ensure_daily_history(symbol)
+            await self._safe_ensure_intraday_history(symbol)
+            await self._collect_symbol(symbol)
 
     async def _aggregate_active_symbol_anomalies(self, *, force: bool = False) -> None:
         if not self._settings.anomaly_aggregation_enabled:
@@ -488,14 +476,10 @@ class CollectorWorker:
 
         self._last_collected_at[symbol] = now
         market_state = await asyncio.to_thread(self._quote_client.fetch_quote, symbol)
-        self._remember_market_state_trade_day(symbol, market_state)
         market_state_identity = self._market_state_identity(market_state)
         previous_identity = self._last_market_state_identity.get(symbol)
 
         if market_state_identity == previous_identity:
-            realtime_intraday_bar = self._build_realtime_intraday_bar(market_state)
-            if realtime_intraday_bar is not None:
-                await self._postgres.persist_kline_history([realtime_intraday_bar])
             unchanged_quote_count = self._unchanged_quote_counts.get(symbol, 0) + 1
             self._unchanged_quote_counts[symbol] = unchanged_quote_count
             self._symbol_poll_interval_seconds[symbol] = self._next_symbol_poll_interval_seconds(unchanged_quote_count)
@@ -550,42 +534,6 @@ class CollectorWorker:
                 "source": market_state["snapshot"]["source"],
             },
         )
-
-    def _remember_market_state_trade_day(self, symbol: str, market_state: dict[str, dict[str, object]]) -> None:
-        trade_day = self._market_state_trade_day(market_state)
-        if trade_day is None:
-            return
-
-        previous_trade_day = self._latest_daily_trade_day_by_symbol.get(symbol)
-        if previous_trade_day == trade_day:
-            return
-
-        self._latest_daily_trade_day_by_symbol[symbol] = trade_day
-        _ = self._intraday_history_terminal_for_trade_day.pop(symbol, None)
-        _ = self._intraday_history_last_refresh_at.pop(symbol, None)
-
-    @staticmethod
-    def _market_state_trade_day(market_state: dict[str, dict[str, object]]) -> date | None:
-        snapshot = market_state.get("snapshot") or {}
-        tick = market_state.get("tick") or {}
-        kline = market_state.get("kline") or {}
-        for value in (snapshot.get("updatedAt"), tick.get("ts"), kline.get("bucketTs")):
-            timestamp = CollectorWorker._coerce_datetime(value)
-            if timestamp is not None:
-                return timestamp.astimezone(CHINA_MARKET_TZ).date()
-        return None
-
-    @staticmethod
-    def _coerce_datetime(value: object) -> datetime | None:
-        if isinstance(value, datetime):
-            return value if value.tzinfo is not None else value.replace(tzinfo=CHINA_MARKET_TZ)
-        if isinstance(value, str):
-            try:
-                parsed = datetime.fromisoformat(value)
-            except ValueError:
-                return None
-            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=CHINA_MARKET_TZ)
-        return None
 
     @staticmethod
     def _build_realtime_intraday_bar(market_state: dict[str, dict[str, object]]) -> dict[str, object] | None:
