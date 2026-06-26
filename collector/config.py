@@ -34,6 +34,7 @@ class Settings(BaseSettings):
     collector_unchanged_quote_backoff_max_seconds: ClassVar[int] = 300
     collector_tencent_enrichment_interval_seconds: ClassVar[int] = 600
     collector_vendor_failure_cooldown_seconds: ClassVar[int] = 60
+    collector_mootdx_servers: str = "180.153.18.170:7709"
     collector_intraday_history_enabled: bool = True
     collector_intraday_history_refresh_seconds: ClassVar[int] = 1800
     collector_intraday_history_request_interval_seconds: ClassVar[int] = 8
