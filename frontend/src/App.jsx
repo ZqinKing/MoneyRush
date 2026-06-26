@@ -190,9 +190,12 @@ const llmAuditStatusLabels = {
 const timelineCategoryLabels = {
   fomc: 'Fed/FOMC',
   macro: '宏观数据',
+  derivatives: '股指期货',
   options: '期权/ETF',
   crypto: '加密',
+  policy: '政策',
   meeting: '后续会议',
+  other: '其他',
 };
 
 const timelineLevelLabels = {
@@ -207,7 +210,15 @@ const timelineStatusLabels = {
   passed: '已结束',
 };
 
-const timelineLaneOrder = ['fomc', 'macro', 'options', 'crypto', 'meeting'];
+const timelineSourceProviderLabels = {
+  bea: 'BEA 官方',
+  bls: 'BLS 官方',
+  'fed-fomc-fixture': 'Fed 官方日历',
+  rule: '规则生成',
+  seed: 'MVP 种子',
+};
+
+const timelineLaneOrder = ['macro', 'fomc', 'derivatives', 'options', 'crypto', 'policy', 'meeting', 'other'];
 const timelineDayMs = 24 * 60 * 60 * 1000;
 const timelineAxisTickCount = 6;
 const timelineMinRangeDays = 30;
@@ -777,7 +788,37 @@ function formatBeijingDateLabel(value) {
   return formatDate(value);
 }
 
+function formatBeijingDateTimeLabel(value) {
+  if (!value) {
+    return '';
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(parsed).reduce((result, part) => {
+    result[part.type] = part.value;
+    return result;
+  }, {});
+  if (!parts.year || !parts.month || !parts.day || !parts.hour || !parts.minute) {
+    return '';
+  }
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
 function formatTimelineDateRange(item) {
+  const timedLabel = formatBeijingDateTimeLabel(item?.eventTime);
+  if (timedLabel) {
+    return timedLabel;
+  }
   if (item?.dateLabel) {
     return item.dateLabel;
   }
@@ -796,6 +837,24 @@ function getTimelineLevelLabel(value) {
 
 function getTimelineStatusLabel(value) {
   return timelineStatusLabels[value] || value || '状态待补充';
+}
+
+function getTimelineSourceProviderLabel(value) {
+  return timelineSourceProviderLabels[value] || value || '来源待补充';
+}
+
+function formatTimelineScore(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '待补充';
+  }
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatTimelineNumericValue(value, unit = '') {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return '待补充';
+  }
+  return `${value}${unit || ''}`;
 }
 
 function getTimelineLevelTone(value) {
@@ -2535,8 +2594,8 @@ function App() {
 
   const orderedTimelineEvents = useMemo(() => {
     return [...timelineEvents].sort((left, right) => {
-      const leftDate = String(left?.eventDate || '');
-      const rightDate = String(right?.eventDate || '');
+      const leftDate = String(left?.eventTime || left?.eventDate || '');
+      const rightDate = String(right?.eventTime || right?.eventDate || '');
       if (leftDate === rightDate) {
         return String(left?.title || '').localeCompare(String(right?.title || ''), 'zh-Hans-CN');
       }
@@ -7197,6 +7256,10 @@ function App() {
           <strong>{item?.title || '未命名事件'}</strong>
           <small>{getTimelineCategoryLabel(item?.category)} · {getTimelineLevelLabel(item?.level)} · {getTimelineStatusLabel(item?.status)}</small>
         </span>
+        <span className="timeline-source-badge-row">
+          <em className={`timeline-source-badge source-${item?.sourceProvider || item?.source || 'unknown'}`}>{getTimelineSourceProviderLabel(item?.sourceProvider || item?.source)}</em>
+          {typeof item?.confidenceScore === 'number' ? <em className="timeline-source-badge">置信 {formatTimelineScore(item.confidenceScore)}</em> : null}
+        </span>
         <span className="calendar-timeline-assets">
           {assets.slice(0, 3).map((asset) => <em key={`${item?.id}-${asset}`}>{asset}</em>)}
           {assets.length > 3 ? <em>+{assets.length - 3}</em> : null}
@@ -7228,9 +7291,7 @@ function App() {
     const selectedAssets = Array.isArray(selectedTimelineEvent?.impactAssets) ? selectedTimelineEvent.impactAssets : [];
     const categoryOptions = Object.keys(timelineCategoryLabels);
     const safeTimelineSourceUrl = sanitizeExternalUrl(selectedTimelineEvent?.sourceUrl);
-    const sourceLabel = selectedTimelineEvent?.source === 'seed'
-      ? 'MVP 种子'
-      : selectedTimelineEvent?.source || '待补充';
+    const sourceLabel = getTimelineSourceProviderLabel(selectedTimelineEvent?.sourceProvider || selectedTimelineEvent?.source);
     const relationItems = [];
     const relationSeenIds = new Set([selectedTimelineEvent?.id].filter(Boolean));
     const addRelationItem = (item, label, reason) => {
@@ -7375,8 +7436,24 @@ function App() {
                     <dd>{sourceLabel}</dd>
                   </div>
                   <div>
+                    <dt>事件类型</dt>
+                    <dd>{selectedTimelineEvent.eventKind || '待补充'}</dd>
+                  </div>
+                  <div>
+                    <dt>置信 / 重要度</dt>
+                    <dd>{formatTimelineScore(selectedTimelineEvent.confidenceScore)} / {formatTimelineScore(selectedTimelineEvent.importanceScore)}</dd>
+                  </div>
+                  <div>
+                    <dt>实际值</dt>
+                    <dd>{formatTimelineNumericValue(selectedTimelineEvent.actualValue, selectedTimelineEvent.unit)}</dd>
+                  </div>
+                  <div>
+                    <dt>预测值</dt>
+                    <dd>{formatTimelineNumericValue(selectedTimelineEvent.forecastValue, selectedTimelineEvent.unit)}</dd>
+                  </div>
+                  <div>
                     <dt>前值</dt>
-                    <dd>{selectedTimelineEvent.previousValue || '待补充'}</dd>
+                    <dd>{selectedTimelineEvent.previousValue || formatTimelineNumericValue(selectedTimelineEvent.previousValueNumeric, selectedTimelineEvent.unit)}</dd>
                   </div>
                   <div>
                     <dt>市场预期</dt>
