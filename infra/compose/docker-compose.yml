@@ -244,6 +244,26 @@ services:
       redis:
         condition: service_healthy
 
+  event-calendar-collector:
+    build:
+      context: ../..
+      dockerfile: infra/docker/collector.Dockerfile
+    command: ["python", "-m", "collector.event_calendar_main"]
+    env_file:
+      - path: ../../.env
+        required: false
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      POSTGRES_DSN: postgresql://${POSTGRES_USER:-moneyrush}:${POSTGRES_PASSWORD:-moneyrush}@db:5432/${POSTGRES_DB:-moneyrush}
+      EVENT_CALENDAR_COLLECTOR_ENABLED: ${EVENT_CALENDAR_COLLECTOR_ENABLED:-true}
+      EVENT_CALENDAR_LOOKAHEAD_DAYS: ${EVENT_CALENDAR_LOOKAHEAD_DAYS:-370}
+      EVENT_CALENDAR_LOOKBACK_DAYS: ${EVENT_CALENDAR_LOOKBACK_DAYS:-45}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   frontend:
     build:
       context: ../..
