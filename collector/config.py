@@ -143,6 +143,12 @@ class Settings(BaseSettings):
     macro_snapshot_cache_key: str = "moneyrush:macro:snapshot"
     macro_analysis_latest_cache_key: str = "moneyrush:macro:analysis:latest"
     macro_collector_status_cache_key: str = "moneyrush:macro:collector_status"
+    event_calendar_collector_enabled: bool = True
+    event_calendar_refresh_seconds: int = 21600
+    event_calendar_lookahead_days: int = 370
+    event_calendar_lookback_days: int = 45
+    event_calendar_request_timeout_seconds: float = 15.0
+    event_calendar_status_cache_key: str = "moneyrush:event_calendar:collector_status"
 
 
 @lru_cache(maxsize=1)
