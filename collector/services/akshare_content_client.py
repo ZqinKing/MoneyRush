@@ -135,9 +135,15 @@ class AkshareContentClient:
         return func(*args, **kwargs)
 
     def fetch_research_reports(self, symbol: str) -> FetchResult:
-        frame = self._call(ak.stock_research_report_em, symbol=symbol)
         fetched_at = datetime.now(UTC)
         items: list[dict[str, object]] = []
+
+        try:
+            frame = self._call(ak.stock_research_report_em, symbol=symbol)
+        except KeyError as exc:
+            warning_message = f"stock_research_report_em unusable payload for {symbol}: missing {exc}"
+            logger.warning(warning_message)
+            return FetchResult(items=items, upstream_source="eastmoney", fetched_at=fetched_at, warning_message=warning_message)
 
         if frame is None or getattr(frame, "empty", True):
             return FetchResult(items=items, upstream_source="eastmoney", fetched_at=fetched_at)
