@@ -739,8 +739,16 @@ class MootdxQuoteClient:
             raise TypeError("mootdx quote servertime must be a string")
 
         trade_day = datetime.now(CHINA_MARKET_TZ).date()
-        time_part = servertime.split(".", 1)[0]
-        local_timestamp = datetime.strptime(f"{trade_day:%Y-%m-%d} {time_part}", "%Y-%m-%d %H:%M:%S")
+        time_part = servertime.strip().split(".", 1)[0]
+        if time_part.count(":") != 2:
+            logger.warning("mootdx quote servertime placeholder received", extra={"servertime": servertime})
+            return datetime.now(CHINA_MARKET_TZ).replace(microsecond=0).astimezone(UTC)
+
+        try:
+            local_timestamp = datetime.strptime(f"{trade_day:%Y-%m-%d} {time_part}", "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            logger.warning("mootdx quote servertime parse failed", extra={"servertime": servertime})
+            return datetime.now(CHINA_MARKET_TZ).replace(microsecond=0).astimezone(UTC)
         return local_timestamp.replace(tzinfo=CHINA_MARKET_TZ).astimezone(UTC)
 
     @staticmethod
@@ -1147,6 +1155,18 @@ class MarketQuoteClient:
     @staticmethod
     def _align_trade_day(mootdx_quote: MootdxQuote, tencent_quote: TencentQuote) -> MootdxQuote:
         trade_day = tencent_quote.updated_at.astimezone(CHINA_MARKET_TZ).date()
+        mootdx_trade_day = mootdx_quote.updated_at.astimezone(CHINA_MARKET_TZ).date()
+        if trade_day < mootdx_trade_day:
+            logger.warning(
+                "tencent enrichment trade day is stale; preserving mootdx quote timestamp",
+                extra={
+                    "symbol": mootdx_quote.symbol,
+                    "mootdx_trade_day": mootdx_trade_day.isoformat(),
+                    "tencent_trade_day": trade_day.isoformat(),
+                },
+            )
+            return mootdx_quote
+
         quote_time = mootdx_quote.updated_at.astimezone(CHINA_MARKET_TZ).time()
         aligned_local = datetime.combine(trade_day, quote_time, tzinfo=CHINA_MARKET_TZ)
         aligned_updated_at = aligned_local.astimezone(UTC)
