@@ -115,13 +115,23 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
     latest_kline = await query_service.fetch_latest_kline(normalized_symbol, period="1d")
     capital_flow = await query_service.fetch_latest_capital_flow(normalized_symbol)
     daily_bars_preview = await query_service.fetch_klines(normalized_symbol, period="1d", limit=30)
+    reference_intraday_ts = (
+        (snapshot or {}).get("updatedAt")
+        or (latest_event or {}).get("generatedAt")
+        or (latest_kline or {}).get("bucketTs")
+    )
     intraday_minute_bars = await query_service.fetch_intraday_sampled_bars(
         normalized_symbol,
         interval_minutes=1,
         allow_tick_fallback=False,
+        reference_ts=reference_intraday_ts,
     )
-    intraday_sampled_bars = await query_service.fetch_intraday_sampled_bars(normalized_symbol, interval_minutes=5)
-    order_book = await query_service.fetch_best_bid_ask(normalized_symbol)
+    intraday_sampled_bars = await query_service.fetch_intraday_sampled_bars(
+        normalized_symbol,
+        interval_minutes=5,
+        reference_ts=reference_intraday_ts,
+    )
+    order_book = await query_service.fetch_order_book(normalized_symbol)
     fund_holding_summary = await request.app.state.fund_query_service.fetch_stock_funds(normalized_symbol)
 
     capital_flow_reference_trade_day = _china_trade_day_label((latest_kline or {}).get("bucketTs"))
@@ -135,11 +145,6 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
         capital_flow["stale"] = True
         capital_flow["staleReason"] = CAPITAL_FLOW_STALE_REASON
 
-    reference_intraday_ts = (
-        (snapshot or {}).get("updatedAt")
-        or (latest_event or {}).get("generatedAt")
-        or (latest_kline or {}).get("bucketTs")
-    )
     intraday_minute_bars = _filter_intraday_bars_for_reference_day(
         intraday_minute_bars,
         reference_ts=reference_intraday_ts,
@@ -169,13 +174,27 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
         "capabilities": {
             "supportsIntradayKline": len(intraday_minute_bars) > 1,
             "supportsIntradayMinuteBars": len(intraday_minute_bars) > 1,
-            "supportsOrderBookDepth5": False,
+            "supportsOrderBookDepth5": _supports_order_book_depth5(order_book),
             "supportsSampledIntradayBars": len(intraday_sampled_bars) > 1,
-            "supportsBestBidAsk": any(value is not None for value in order_book.values()),
+            "supportsBestBidAsk": _supports_best_bid_ask(order_book),
             "supportsFundHoldings": True,
             "supportsCapitalFlow": capital_flow is not None,
         },
     }
+
+
+def _supports_best_bid_ask(order_book: dict[str, object]) -> bool:
+    return any(order_book.get(key) is not None for key in ("bid1", "bidVolume1", "ask1", "askVolume1"))
+
+
+def _supports_order_book_depth5(order_book: dict[str, object]) -> bool:
+    for side in ("bids", "asks"):
+        levels = order_book.get(side)
+        if not isinstance(levels, list):
+            continue
+        if any(isinstance(level, dict) and level.get("level") == 5 and (level.get("price") is not None or level.get("volume") is not None) for level in levels):
+            return True
+    return False
 
 
 @router.get("/{symbol}/funds")
