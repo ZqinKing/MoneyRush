@@ -3984,6 +3984,39 @@ textarea {
   color: #a9b9dd;
 }
 
+.order-book-depth {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.order-book-row {
+  display: grid;
+  grid-template-columns: 34px minmax(52px, 1fr) minmax(56px, 1fr) minmax(52px, 1fr) minmax(56px, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 28px;
+  color: #cbd7f2;
+  font-size: 0.82rem;
+}
+
+.order-book-row span,
+.order-book-row strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.order-book-row strong {
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.order-book-head {
+  color: #8192b6;
+  font-size: 0.74rem;
+  min-height: 22px;
+}
+
 .kline-chart,
 .volume-chart {
   width: 100%;

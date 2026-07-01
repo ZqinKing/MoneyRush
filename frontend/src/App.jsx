@@ -6312,6 +6312,16 @@ function App() {
     const latestEvent = detailPayload?.latestEvent || null;
     const intradayCompleteness = detailPayload?.intradayCompleteness || null;
     const orderBook = detailPayload?.orderBook || {};
+    const orderBookBids = Array.isArray(orderBook?.bids) ? orderBook.bids.slice(0, 5) : [];
+    const orderBookAsks = Array.isArray(orderBook?.asks) ? orderBook.asks.slice(0, 5) : [];
+    const orderBookRows = Array.from({ length: 5 }, (_, index) => {
+      const level = index + 1;
+      return {
+        level,
+        bid: orderBookBids.find((item) => item?.level === level) || null,
+        ask: orderBookAsks.find((item) => item?.level === level) || null,
+      };
+    });
     const capabilities = detailPayload?.capabilities || {};
     const stockFundHoldings = Array.isArray(detailPayload?.fundHoldingSummary?.items) ? detailPayload.fundHoldingSummary.items : [];
     const activeFundCodeSet = new Set(activeFunds.map((item) => (item || '').trim()).filter(Boolean));
@@ -6879,27 +6889,50 @@ function App() {
 
           <section className="detail-card">
              <h3>盘口摘要</h3>
-             <dl>
-              <div>
-                <dt>买一</dt>
-                <dd>
-                  {orderBook?.bid1 != null || orderBook?.bidVolume1 != null
-                    ? `${formatPrice(orderBook?.bid1)} / ${formatTickVolume(orderBook?.bidVolume1)}`
-                    : '--'}
-                </dd>
+            {capabilities?.supportsOrderBookDepth5 ? (
+              <div className="order-book-depth" aria-label="五档盘口">
+                <div className="order-book-row order-book-head">
+                  <span>档位</span>
+                  <span>买价</span>
+                  <span>买量</span>
+                  <span>卖价</span>
+                  <span>卖量</span>
+                </div>
+                {orderBookRows.map((row) => (
+                  <div className="order-book-row" key={row.level}>
+                    <span>{row.level}</span>
+                    <strong className="positive">{formatPrice(row.bid?.price)}</strong>
+                    <span>{formatTickVolume(row.bid?.volume)}</span>
+                    <strong className="negative">{formatPrice(row.ask?.price)}</strong>
+                    <span>{formatTickVolume(row.ask?.volume)}</span>
+                  </div>
+                ))}
               </div>
-              <div>
-                <dt>卖一</dt>
-                <dd>
-                  {orderBook?.ask1 != null || orderBook?.askVolume1 != null
-                    ? `${formatPrice(orderBook?.ask1)} / ${formatTickVolume(orderBook?.askVolume1)}`
-                    : '--'}
-                </dd>
-              </div>
-            </dl>
-            <p className="panel-tip compact">
-              {!capabilities?.supportsBestBidAsk ? '当前数据源未稳定提供买一卖一；' : ''} 暂不提供五档盘口。
-            </p>
+            ) : (
+              <>
+                <dl>
+                  <div>
+                    <dt>买一</dt>
+                    <dd>
+                      {orderBook?.bid1 != null || orderBook?.bidVolume1 != null
+                        ? `${formatPrice(orderBook?.bid1)} / ${formatTickVolume(orderBook?.bidVolume1)}`
+                        : '--'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>卖一</dt>
+                    <dd>
+                      {orderBook?.ask1 != null || orderBook?.askVolume1 != null
+                        ? `${formatPrice(orderBook?.ask1)} / ${formatTickVolume(orderBook?.askVolume1)}`
+                        : '--'}
+                    </dd>
+                  </div>
+                </dl>
+                <p className="panel-tip compact">
+                  {!capabilities?.supportsBestBidAsk ? '当前数据源未稳定提供买一卖一。' : '当前仅提供买一卖一。'}
+                </p>
+              </>
+            )}
           </section>
 
           <section className="detail-card wide-card">
