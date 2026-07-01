@@ -544,12 +544,21 @@ function normalizeSectorInfo(source) {
     return null;
   }
 
-  const industry = cleanSectorText(rawSector.industry);
+  const shenwan = rawSector.shenwan && typeof rawSector.shenwan === 'object' ? rawSector.shenwan : null;
+  const shenwanLevel1 = shenwan?.level1 && typeof shenwan.level1 === 'object' ? shenwan.level1 : null;
+  const shenwanLevel2 = shenwan?.level2 && typeof shenwan.level2 === 'object' ? shenwan.level2 : null;
+  const shenwanLevel3 = shenwan?.level3 && typeof shenwan.level3 === 'object' ? shenwan.level3 : null;
+  const industry = cleanSectorText(shenwanLevel3?.name) || cleanSectorText(rawSector.industry);
   const region = cleanSectorText(rawSector.region || rawSector.sector);
   const concepts = Array.isArray(rawSector.concepts)
     ? rawSector.concepts.map(cleanSectorText).filter(Boolean)
     : [];
-  const sectorCode = cleanSectorText(rawSector.sectorCode);
+  [cleanSectorText(shenwanLevel1?.name), cleanSectorText(shenwanLevel2?.name)].forEach((label) => {
+    if (label && label !== industry && !concepts.includes(label)) {
+      concepts.push(label);
+    }
+  });
+  const sectorCode = cleanSectorText(rawSector.sectorCode) || cleanSectorText(shenwanLevel3?.code);
 
   if (!industry && !region && !concepts.length && !sectorCode) {
     return null;
