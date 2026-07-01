@@ -32,6 +32,7 @@ SECTOR_FETCH_TIMEOUT_SECONDS = 10.0
 AKSHARE_INTRADAY_SOURCE = "eastmoney-akshare"
 MOOTDX_INTRADAY_SOURCE = "mootdx"
 REALTIME_AGGREGATED_SOURCE = "realtime-quote-aggregate"
+INTRADAY_EXPECTED_BUCKET_COUNT = 240
 logger = logging.getLogger(__name__)
 MootdxServer = tuple[str, int]
 
@@ -846,8 +847,8 @@ class MarketQuoteClient:
         trade_day = trade_day or datetime.now(CHINA_MARKET_TZ).date()
         errors: list[str] = []
         for source, fetch in (
-            ("eastmoney-push2his", lambda: self._akshare_minute_client.fetch_intraday_history(symbol, trade_day)),
             ("mootdx", lambda: self._mootdx_history_client.fetch_intraday_history(symbol, trade_day=trade_day)),
+            ("eastmoney-push2his", lambda: self._akshare_minute_client.fetch_intraday_history(symbol, trade_day)),
         ):
             try:
                 self._vendor_scheduler.raise_if_symbol_source_cooldown_active(source, symbol, "intraday")
@@ -882,6 +883,14 @@ class MarketQuoteClient:
                 continue
 
             if history:
+                if source == MOOTDX_INTRADAY_SOURCE and not self._is_intraday_history_complete(trade_day, history):
+                    errors.append(f"{source}:history_incomplete")
+                    self._vendor_scheduler.record_symbol_source_failure(source, symbol, "intraday", cooldown_seconds=HISTORY_FAILURE_BACKOFF_INITIAL_SECONDS, reason="history_incomplete")
+                    logger.warning(
+                        "intraday minute source returned incomplete rows; trying next source",
+                        extra={"symbol": symbol, "trade_day": trade_day.isoformat(), "source": source, "rows": len(history)},
+                    )
+                    continue
                 self._vendor_scheduler.record_success(source)
                 return history
 
@@ -890,6 +899,18 @@ class MarketQuoteClient:
             logger.warning("intraday minute source returned no rows; trying next source", extra={"symbol": symbol, "trade_day": trade_day.isoformat(), "source": source})
 
         raise ValueError(f"empty intraday history payload for {symbol} on {trade_day.isoformat()} after sources {', '.join(errors)}")
+
+    @staticmethod
+    def _is_intraday_history_complete(trade_day: date, history: list[dict[str, object]]) -> bool:
+        if trade_day == datetime.now(CHINA_MARKET_TZ).date():
+            return True
+        bucket_ts_values = {
+            item.get("bucketTs")
+            for item in history
+            if isinstance(item.get("bucketTs"), datetime)
+        }
+        expected_final_bucket = datetime(trade_day.year, trade_day.month, trade_day.day, 14, 59, tzinfo=CHINA_MARKET_TZ).astimezone(UTC)
+        return len(bucket_ts_values) >= INTRADAY_EXPECTED_BUCKET_COUNT and expected_final_bucket in bucket_ts_values
 
     def _wait_for_history_slot(self) -> None:
         now = monotonic()
