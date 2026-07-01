@@ -36,6 +36,24 @@ def _to_int(value: object) -> int | None:
     return None
 
 
+def _raw_float(value: object) -> float | None:
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return _to_float(value)
+
+
+def _raw_int(value: object) -> int | None:
+    if isinstance(value, str):
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+    return _to_int(value)
+
+
 def _to_iso(value: object) -> str | None:
     if not isinstance(value, datetime):
         return None
@@ -915,6 +933,15 @@ class MarketDetailQueryService:
         return {str(row["symbol"]): row for row in rows}
 
     async def fetch_best_bid_ask(self, symbol: str) -> dict[str, object]:
+        order_book = await self.fetch_order_book(symbol)
+        return {
+            "bid1": order_book.get("bid1"),
+            "bidVolume1": order_book.get("bidVolume1"),
+            "ask1": order_book.get("ask1"),
+            "askVolume1": order_book.get("askVolume1"),
+        }
+
+    async def fetch_order_book(self, symbol: str) -> dict[str, object]:
         row = await self._fetchrow(
             """
             SELECT raw
@@ -926,12 +953,7 @@ class MarketDetailQueryService:
             symbol,
         )
         raw = _decode_jsonish(row["raw"]) if row is not None else None
-        return {
-            "bid1": _to_float(raw.get("bid1")) if raw else None,
-            "bidVolume1": _to_int(raw.get("bidVolume1")) if raw else None,
-            "ask1": _to_float(raw.get("ask1")) if raw else None,
-            "askVolume1": _to_int(raw.get("askVolume1")) if raw else None,
-        }
+        return self._order_book_from_raw(raw or {})
 
     async def fetch_intraday_sampled_bars(
         self,
@@ -939,17 +961,23 @@ class MarketDetailQueryService:
         *,
         interval_minutes: int = 5,
         allow_tick_fallback: bool = True,
+        reference_ts: object = None,
     ) -> list[dict[str, object]]:
         if interval_minutes < 1:
             raise ValueError("interval_minutes must be >= 1")
 
-        latest_trade_day_window = await self._latest_intraday_trade_day_window(symbol)
-        if latest_trade_day_window is None:
+        reference_dt = reference_ts if isinstance(reference_ts, datetime) else _parse_iso_timestamp(reference_ts)
+        trade_day_window = (
+            self._trade_day_window_for_ts(reference_dt)
+            if isinstance(reference_dt, datetime)
+            else await self._latest_intraday_trade_day_window(symbol)
+        )
+        if trade_day_window is None:
             return []
 
         persisted_bars = await self._fetch_intraday_bars_from_kline(
             symbol,
-            trade_day_window=latest_trade_day_window,
+            trade_day_window=trade_day_window,
             interval_minutes=interval_minutes,
         )
         if persisted_bars:
@@ -958,7 +986,7 @@ class MarketDetailQueryService:
         if not allow_tick_fallback:
             return []
 
-        day_start_utc, day_end_utc = latest_trade_day_window
+        day_start_utc, day_end_utc = trade_day_window
         source_priority_rows = await self._fetch(
             """
             SELECT source, COUNT(*) AS row_count, MAX(ts) AS last_ts
@@ -1247,6 +1275,42 @@ class MarketDetailQueryService:
             "syntheticCount": synthetic_count,
             "providers": sorted(providers),
         }
+
+    @classmethod
+    def _order_book_from_raw(cls, raw: dict[str, object]) -> dict[str, object]:
+        quote_value = raw.get("quote")
+        quote = {str(key): value for key, value in quote_value.items()} if isinstance(quote_value, dict) else {}
+        bids = cls._order_book_levels(raw, quote, side="bid")
+        asks = cls._order_book_levels(raw, quote, side="ask")
+        best_bid = bids[0] if bids else {}
+        best_ask = asks[0] if asks else {}
+        return {
+            "bid1": best_bid.get("price"),
+            "bidVolume1": best_bid.get("volume"),
+            "ask1": best_ask.get("price"),
+            "askVolume1": best_ask.get("volume"),
+            "bids": bids,
+            "asks": asks,
+            "source": raw.get("provider") or raw.get("source"),
+        }
+
+    @staticmethod
+    def _order_book_levels(raw: dict[str, object], quote: dict[str, object], *, side: str) -> list[dict[str, object]]:
+        levels: list[dict[str, object]] = []
+        for level in range(1, 6):
+            price = _raw_float(raw.get(f"{side}{level}"))
+            if price is None:
+                price = _raw_float(quote.get(f"{side}{level}"))
+
+            volume = _raw_int(raw.get(f"{side}Volume{level}"))
+            if volume is None:
+                raw_lot_volume = _raw_int(quote.get(f"{side}_vol{level}"))
+                volume = raw_lot_volume * 100 if raw_lot_volume is not None else None
+
+            if price is None and volume is None:
+                continue
+            levels.append({"level": level, "price": price, "volume": volume})
+        return levels
 
     async def _latest_intraday_trade_day_window(self, symbol: str) -> tuple[datetime, datetime] | None:
         latest_tick_row = await self._fetchrow(
