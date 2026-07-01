@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -12,6 +13,19 @@ INTRADAY_EXPECTED_BUCKET_COUNT = 240
 ANOMALY_SEVERITY_PRIORITY = {"critical": 3, "high": 2, "medium": 1, "normal": 0}
 TICK_SIDE_BASIS = "price_vs_previous_close"
 TICK_SIDE_CONFIDENCE = "estimated"
+CAPITAL_FLOW_UNAVAILABLE_SOURCE = "capital-flow-unavailable"
+CAPITAL_FLOW_TIER_FIELDS = (
+    {"key": "main", "label": "主力", "net_field": "main_net_inflow", "ratio_field": "main_net_ratio"},
+    {"key": "superLarge", "label": "超大单", "net_field": "super_large_net_inflow", "ratio_field": "super_large_net_ratio"},
+    {"key": "large", "label": "大单", "net_field": "large_net_inflow", "ratio_field": "large_net_ratio"},
+    {"key": "medium", "label": "中单", "net_field": "medium_net_inflow", "ratio_field": "medium_net_ratio"},
+    {"key": "small", "label": "小单", "net_field": "small_net_inflow", "ratio_field": "small_net_ratio"},
+)
+CAPITAL_FLOW_PERIOD_WINDOWS = (
+    {"period": "1d", "label": "今日", "window": 1},
+    {"period": "5d", "label": "5日", "window": 5},
+    {"period": "10d", "label": "10日", "window": 10},
+)
 
 
 def _to_float(value: object) -> float | None:
@@ -126,6 +140,88 @@ def _safe_ratio(numerator: int, denominator: int) -> float | None:
     if denominator <= 0:
         return None
     return numerator / denominator
+
+
+def _row_get(row: object, key: str) -> object:
+    if isinstance(row, dict):
+        return row.get(key)
+    getter = getattr(row, "__getitem__", None)
+    if not callable(getter):
+        return None
+    try:
+        return getter(key)
+    except (KeyError, TypeError, IndexError):
+        return None
+
+
+def _capital_flow_has_numeric_tier(row: object) -> bool:
+    return any(_to_float(_row_get(row, tier["net_field"])) is not None for tier in CAPITAL_FLOW_TIER_FIELDS)
+
+
+def _capital_flow_period_row_is_usable(row: object) -> bool:
+    return _row_get(row, "source") != CAPITAL_FLOW_UNAVAILABLE_SOURCE and _capital_flow_has_numeric_tier(row)
+
+
+def _capital_flow_denominator(net_inflow: float | None, ratio: float | None) -> float | None:
+    if net_inflow is None or ratio is None or ratio == 0:
+        return None
+    denominator = abs(net_inflow / (ratio / 100))
+    return denominator if denominator > 0 else None
+
+
+def _serialize_capital_flow_tier(row: object | None, tier: dict[str, str]) -> dict[str, object]:
+    if row is None:
+        return {"key": tier["key"], "label": tier["label"], "netInflow": None, "ratio": None}
+    return {
+        "key": tier["key"],
+        "label": tier["label"],
+        "netInflow": _to_float(_row_get(row, tier["net_field"])),
+        "ratio": _to_float(_row_get(row, tier["ratio_field"])),
+    }
+
+
+def _aggregate_capital_flow_tier(rows: list[object], tier: dict[str, str]) -> dict[str, object]:
+    net_values = [_to_float(_row_get(row, tier["net_field"])) for row in rows]
+    usable_net_values = [value for value in net_values if value is not None]
+    net_inflow = sum(usable_net_values) if usable_net_values else None
+    denominator = 0.0
+    for row in rows:
+        row_net_inflow = _to_float(_row_get(row, tier["net_field"]))
+        row_ratio = _to_float(_row_get(row, tier["ratio_field"]))
+        row_denominator = _capital_flow_denominator(row_net_inflow, row_ratio)
+        if row_denominator is not None:
+            denominator += row_denominator
+    ratio = (net_inflow / denominator * 100) if net_inflow is not None and denominator > 0 else None
+    return {"key": tier["key"], "label": tier["label"], "netInflow": net_inflow, "ratio": ratio}
+
+
+def build_capital_flow_periods(rows: Sequence[object]) -> list[dict[str, object]]:
+    usable_rows = [row for row in rows if _capital_flow_period_row_is_usable(row)]
+    periods: list[dict[str, object]] = []
+    for period_spec in CAPITAL_FLOW_PERIOD_WINDOWS:
+        window = int(period_spec["window"])
+        period_rows = usable_rows[:window]
+        sample_size = len(period_rows)
+        start_trade_date = _to_iso_date(_row_get(period_rows[-1], "trade_date")) if period_rows else None
+        end_trade_date = _to_iso_date(_row_get(period_rows[0], "trade_date")) if period_rows else None
+        tiers = [
+            _serialize_capital_flow_tier(period_rows[0], tier) if window == 1 and period_rows else _aggregate_capital_flow_tier(period_rows, tier)
+            for tier in CAPITAL_FLOW_TIER_FIELDS
+        ]
+        periods.append(
+            {
+                "period": period_spec["period"],
+                "label": period_spec["label"],
+                "window": window,
+                "tradeDate": end_trade_date,
+                "startTradeDate": start_trade_date,
+                "endTradeDate": end_trade_date,
+                "sampleSize": sample_size,
+                "complete": sample_size >= window,
+                "tiers": tiers,
+            }
+        )
+    return periods
 
 
 def _tick_side_label(side: object) -> str:
@@ -251,7 +347,7 @@ class MarketDetailQueryService:
         return self._serialize_kline_row(row)
 
     async def fetch_latest_capital_flow(self, symbol: str) -> dict[str, object] | None:
-        row = await self._fetchrow(
+        rows = await self._fetch(
             """
             SELECT
                 trade_date,
@@ -278,13 +374,14 @@ class MarketDetailQueryService:
             FROM stock_capital_flow_daily
             WHERE symbol = $1
             ORDER BY trade_date DESC
-            LIMIT 1
+            LIMIT 20
             """,
             symbol,
         )
-        if row is None:
+        if not rows:
             return None
 
+        row = rows[0]
         trade_date = row["trade_date"]
         source_status = row["source_status"]
         is_stale = source_status == "stale"
@@ -312,6 +409,7 @@ class MarketDetailQueryService:
             "lastAttemptAt": _to_iso(row["last_attempt_at"]),
             "staleReason": stale_reason,
             "stale": is_stale,
+            "periods": build_capital_flow_periods(rows),
         }
 
     async def fetch_latest_capital_flows(self, symbols: list[str]) -> dict[str, dict[str, object]]:
