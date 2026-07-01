@@ -139,6 +139,7 @@ class CollectorWorker:
         self._daily_history_synced_for_trade_day: dict[str, str] = {}
         self._intraday_history_terminal_for_trade_day: dict[str, tuple[str, str]] = {}
         self._intraday_history_last_refresh_at: dict[str, float] = {}
+        self._intraday_history_last_attempt_at_by_key: dict[tuple[str, str], float] = {}
         self._latest_daily_trade_day_by_symbol: dict[str, date] = {}
         self._last_anomaly_aggregation_at = 0.0
         self._last_anomaly_reason_analysis_at = 0.0
@@ -563,6 +564,7 @@ class CollectorWorker:
         self._latest_daily_trade_day_by_symbol[symbol] = trade_day
         _ = self._intraday_history_terminal_for_trade_day.pop(symbol, None)
         _ = self._intraday_history_last_refresh_at.pop(symbol, None)
+        self._clear_intraday_attempt_state(symbol)
 
     @staticmethod
     def _market_state_trade_day(market_state: dict[str, dict[str, object]]) -> date | None:
@@ -654,7 +656,14 @@ class CollectorWorker:
         self._daily_history_synced_for_trade_day.pop(symbol, None)
         self._intraday_history_terminal_for_trade_day.pop(symbol, None)
         self._intraday_history_last_refresh_at.pop(symbol, None)
+        self._clear_intraday_attempt_state(symbol)
         self._latest_daily_trade_day_by_symbol.pop(symbol, None)
+
+    def _clear_intraday_attempt_state(self, symbol: str) -> None:
+        attempts = getattr(self, "_intraday_history_last_attempt_at_by_key", {})
+        stale_keys = [key for key in attempts if key[0] == symbol]
+        for key in stale_keys:
+            attempts.pop(key, None)
 
     def _market_state_identity(self, market_state: dict[str, dict[str, object]]) -> tuple[object, ...]:
         snapshot = market_state.get("snapshot") or {}
@@ -745,9 +754,21 @@ class CollectorWorker:
         if terminal_state is not None and terminal_state[0] == trade_day:
             return
 
+        if await self._has_complete_persisted_intraday_history(symbol, trade_day_date):
+            self._intraday_history_terminal_for_trade_day[symbol] = (trade_day, "complete")
+            logger.info(
+                "collector skipped intraday kline backfill; persisted history is complete",
+                extra={"symbol": symbol, "trade_day": trade_day},
+            )
+            return
+
         if self._should_skip_intraday_refresh(symbol, trade_day_date):
             return
 
+        if self._should_skip_intraday_attempt(symbol, trade_day_date):
+            return
+
+        self._record_intraday_attempt(symbol, trade_day_date)
         history = await asyncio.to_thread(self._quote_client.fetch_intraday_history, symbol, trade_day_date)
         self._intraday_history_last_refresh_at[symbol] = monotonic()
         terminal_status = self._resolve_intraday_terminal_status(trade_day_date, history)
@@ -775,6 +796,14 @@ class CollectorWorker:
         if terminal_status is not None:
             self._intraday_history_terminal_for_trade_day[symbol] = (trade_day, terminal_status)
 
+    async def _has_complete_persisted_intraday_history(self, symbol: str, trade_day_date: date) -> bool:
+        return await self._postgres.has_complete_intraday_history(
+            symbol=symbol,
+            trade_day=trade_day_date,
+            expected_bucket_count=INTRADAY_EXPECTED_BUCKET_COUNT,
+            expected_final_bucket=self._expected_intraday_final_bucket(trade_day_date),
+        )
+
     def _should_skip_intraday_refresh(self, symbol: str, trade_day_date: date) -> bool:
         if trade_day_date != datetime.now(CHINA_MARKET_TZ).date():
             return False
@@ -785,6 +814,21 @@ class CollectorWorker:
 
         refresh_seconds = self._intraday_refresh_interval_seconds(trade_day_date)
         return monotonic() - last_refresh_at < refresh_seconds
+
+    def _should_skip_intraday_attempt(self, symbol: str, trade_day_date: date) -> bool:
+        last_attempt_at = self._intraday_history_last_attempt_at_by_key.get(self._intraday_attempt_key(symbol, trade_day_date))
+        if last_attempt_at is None:
+            return False
+
+        refresh_seconds = self._intraday_refresh_interval_seconds(trade_day_date)
+        return monotonic() - last_attempt_at < refresh_seconds
+
+    def _record_intraday_attempt(self, symbol: str, trade_day_date: date) -> None:
+        self._intraday_history_last_attempt_at_by_key[self._intraday_attempt_key(symbol, trade_day_date)] = monotonic()
+
+    @staticmethod
+    def _intraday_attempt_key(symbol: str, trade_day_date: date) -> tuple[str, str]:
+        return symbol, trade_day_date.isoformat()
 
     def _intraday_refresh_interval_seconds(self, trade_day_date: date) -> int:
         base_refresh_seconds = max(int(self._settings.collector_intraday_history_refresh_seconds), 1)

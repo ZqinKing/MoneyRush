@@ -1435,6 +1435,45 @@ class PostgresStore:
                     rows,
                 )
 
+    async def has_complete_intraday_history(
+        self,
+        *,
+        symbol: str,
+        trade_day: date,
+        expected_bucket_count: int,
+        expected_final_bucket: datetime,
+    ) -> bool:
+        if self._pool is None:
+            raise RuntimeError("PostgresStore must be connected before use")
+
+        day_start_local = datetime(trade_day.year, trade_day.month, trade_day.day, tzinfo=CHINA_MARKET_TZ)
+        day_start_utc = day_start_local.astimezone(UTC)
+        day_end_utc = (day_start_local + timedelta(days=1)).astimezone(UTC)
+        final_bucket_utc = _coerce_utc_datetime(expected_final_bucket, field_name="expected_final_bucket")
+
+        async with self._pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """
+                SELECT COUNT(DISTINCT bucket_ts)::int AS bucket_count,
+                       BOOL_OR(bucket_ts = $4) AS has_final_bucket
+                FROM stock_kline
+                WHERE symbol = $1
+                  AND period = '1m'
+                  AND source IN ('mootdx', 'eastmoney-akshare')
+                  AND COALESCE(raw ->> 'synthetic', 'false') <> 'true'
+                  AND bucket_ts >= $2
+                  AND bucket_ts < $3
+                """,
+                symbol,
+                day_start_utc,
+                day_end_utc,
+                final_bucket_utc,
+            )
+
+        if row is None:
+            return False
+        return int(row["bucket_count"] or 0) >= expected_bucket_count and bool(row["has_final_bucket"])
+
     async def persist_symbol_command(self, *, timestamp, symbol: str, command_type: str, payload: dict[str, object]) -> None:
         if self._pool is None:
             raise RuntimeError("PostgresStore must be connected before use")
