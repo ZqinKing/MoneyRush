@@ -399,6 +399,20 @@ const capitalFlowSnapshotKeys = [
   'capitalFlowStaleReason',
 ];
 
+const capitalFlowTierDefinitions = [
+  { key: 'main', label: '主力', netField: 'mainNetInflow', ratioField: 'mainNetRatio' },
+  { key: 'superLarge', label: '超大单', netField: 'superLargeNetInflow', ratioField: 'superLargeNetRatio' },
+  { key: 'large', label: '大单', netField: 'largeNetInflow', ratioField: 'largeNetRatio' },
+  { key: 'medium', label: '中单', netField: 'mediumNetInflow', ratioField: 'mediumNetRatio' },
+  { key: 'small', label: '小单', netField: 'smallNetInflow', ratioField: 'smallNetRatio' },
+];
+
+const capitalFlowPeriodDefinitions = [
+  { period: '1d', label: '今日资金' },
+  { period: '5d', label: '5日资金' },
+  { period: '10d', label: '10日资金' },
+];
+
 function hasCapitalFlowSnapshotFields(snapshot) {
   return Boolean(snapshot && capitalFlowSnapshotKeys.some((key) => Object.prototype.hasOwnProperty.call(snapshot, key)));
 }
@@ -437,6 +451,94 @@ function mergeRealtimeSnapshots(currentSnapshots, incomingSnapshots) {
     nextSnapshots[symbol] = mergeSnapshotPreservingCapitalFlow(currentSnapshots?.[symbol], snapshot);
   });
   return nextSnapshots;
+}
+
+function getToneClass(value) {
+  if (value > 0) {
+    return 'positive';
+  }
+  if (value < 0) {
+    return 'negative';
+  }
+  return '';
+}
+
+function normalizeCapitalFlowTier(tier, definition) {
+  return {
+    key: definition.key,
+    label: definition.label,
+    netInflow: typeof tier?.netInflow === 'number' ? tier.netInflow : null,
+    ratio: typeof tier?.ratio === 'number' ? tier.ratio : null,
+  };
+}
+
+function buildLegacyCapitalFlowPeriod(capitalFlow) {
+  return {
+    period: '1d',
+    label: '今日',
+    window: 1,
+    tradeDate: capitalFlow?.tradeDate || null,
+    startTradeDate: capitalFlow?.tradeDate || null,
+    endTradeDate: capitalFlow?.tradeDate || null,
+    sampleSize: capitalFlow ? 1 : 0,
+    complete: Boolean(capitalFlow),
+    tiers: capitalFlowTierDefinitions.map((definition) => ({
+      key: definition.key,
+      label: definition.label,
+      netInflow: typeof capitalFlow?.[definition.netField] === 'number' ? capitalFlow[definition.netField] : null,
+      ratio: typeof capitalFlow?.[definition.ratioField] === 'number' ? capitalFlow[definition.ratioField] : null,
+    })),
+  };
+}
+
+function normalizeCapitalFlowPeriod(period, definition) {
+  const tiers = Array.isArray(period?.tiers) ? period.tiers : [];
+  return {
+    period: definition.period,
+    label: definition.label,
+    window: typeof period?.window === 'number' ? period.window : null,
+    tradeDate: period?.tradeDate || period?.endTradeDate || null,
+    startTradeDate: period?.startTradeDate || null,
+    endTradeDate: period?.endTradeDate || period?.tradeDate || null,
+    sampleSize: typeof period?.sampleSize === 'number' ? period.sampleSize : 0,
+    complete: Boolean(period?.complete),
+    tiers: capitalFlowTierDefinitions.map((tierDefinition) => normalizeCapitalFlowTier(
+      tiers.find((item) => item?.key === tierDefinition.key),
+      tierDefinition,
+    )),
+  };
+}
+
+function getCapitalFlowDisplayPeriods(capitalFlow) {
+  const periods = Array.isArray(capitalFlow?.periods) ? capitalFlow.periods : [];
+  if (!periods.length) {
+    const legacyPeriod = buildLegacyCapitalFlowPeriod(capitalFlow);
+    return capitalFlowPeriodDefinitions.map((definition) => (
+      definition.period === '1d' ? normalizeCapitalFlowPeriod(legacyPeriod, definition) : normalizeCapitalFlowPeriod(null, definition)
+    ));
+  }
+
+  return capitalFlowPeriodDefinitions.map((definition) => (
+    normalizeCapitalFlowPeriod(periods.find((item) => item?.period === definition.period), definition)
+  ));
+}
+
+function getCapitalFlowTierCell(period, tierKey) {
+  return period?.tiers?.find((item) => item.key === tierKey) || null;
+}
+
+function formatCapitalFlowPeriodRange(period) {
+  const startDate = period?.startTradeDate;
+  const endDate = period?.endTradeDate;
+  const rangeLabel = startDate && endDate && startDate !== endDate
+    ? `${formatDate(startDate)} - ${formatDate(endDate)}`
+    : formatDate(endDate || startDate);
+  const sampleSize = typeof period?.sampleSize === 'number' ? period.sampleSize : 0;
+  const windowSize = typeof period?.window === 'number' ? period.window : 0;
+  if (windowSize > 1 && sampleSize > 0 && sampleSize < windowSize) {
+    return `${rangeLabel} · 样本 ${sampleSize}/${windowSize}`;
+  }
+  return rangeLabel;
 }
 
 function formatRelativeDateTime(value) {
@@ -6363,6 +6465,7 @@ function App() {
     const monitoredFundCodeSet = new Set(monitoredFundHoldings.map((item) => (item?.fundCode || '').trim()).filter(Boolean));
     const otherFundHoldings = displayedFundHoldings.filter((item) => !monitoredFundCodeSet.has((item?.fundCode || '').trim()));
     const capitalFlow = detailPayload?.capitalFlow || null;
+    const capitalFlowPeriods = getCapitalFlowDisplayPeriods(capitalFlow);
     const events = dedupeEvents(selectedDetail?.events || []);
     const readableEvents = buildReadableEventItems(events);
     const snapshot = selectedSnapshot || detailPayload?.snapshot || null;
@@ -6957,39 +7060,44 @@ function App() {
             </div>
             {capitalFlow ? (
               <>
-                <div className="market-summary-grid capital-flow-summary-grid">
-                  <article className="summary-metric summary-metric-strong">
-                    <span>主力净流入</span>
-                    <strong className={capitalFlow?.mainNetInflow > 0 ? 'positive' : capitalFlow?.mainNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.mainNetInflow)}</strong>
-                    <em className={capitalFlow?.mainNetRatio > 0 ? 'positive' : capitalFlow?.mainNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.mainNetRatio)}</em>
-                  </article>
-                  <article className="summary-metric">
-                    <span>超大单</span>
-                    <strong className={capitalFlow?.superLargeNetInflow > 0 ? 'positive' : capitalFlow?.superLargeNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.superLargeNetInflow)}</strong>
-                    <em className={capitalFlow?.superLargeNetRatio > 0 ? 'positive' : capitalFlow?.superLargeNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.superLargeNetRatio)}</em>
-                  </article>
-                  <article className="summary-metric">
-                    <span>大单</span>
-                    <strong className={capitalFlow?.largeNetInflow > 0 ? 'positive' : capitalFlow?.largeNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.largeNetInflow)}</strong>
-                    <em className={capitalFlow?.largeNetRatio > 0 ? 'positive' : capitalFlow?.largeNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.largeNetRatio)}</em>
-                  </article>
-                  <article className="summary-metric">
-                    <span>中单</span>
-                    <strong className={capitalFlow?.mediumNetInflow > 0 ? 'positive' : capitalFlow?.mediumNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.mediumNetInflow)}</strong>
-                    <em className={capitalFlow?.mediumNetRatio > 0 ? 'positive' : capitalFlow?.mediumNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.mediumNetRatio)}</em>
-                  </article>
-                  <article className="summary-metric">
-                    <span>小单</span>
-                    <strong className={capitalFlow?.smallNetInflow > 0 ? 'positive' : capitalFlow?.smallNetInflow < 0 ? 'negative' : ''}>{formatSignedTurnoverAmount(capitalFlow?.smallNetInflow)}</strong>
-                    <em className={capitalFlow?.smallNetRatio > 0 ? 'positive' : capitalFlow?.smallNetRatio < 0 ? 'negative' : ''}>{formatSignedPercent(capitalFlow?.smallNetRatio)}</em>
-                  </article>
-                  <article className="summary-metric">
-                    <span>对应收盘 / 涨跌幅</span>
-                    <strong>{`${formatPrice(capitalFlow?.closePrice)} / ${formatSignedPercent(capitalFlow?.changePct)}`}</strong>
-                    <em>{capitalFlow?.companyName || snapshot?.companyName || selectedSnapshotSymbol}</em>
-                  </article>
+                <div className="capital-flow-stat-table-wrap">
+                  <table className="capital-flow-stat-table">
+                    <thead>
+                      <tr>
+                        <th>资金类型</th>
+                        {capitalFlowPeriods.map((period) => (
+                          <th key={period.period}>
+                            <span className="capital-flow-period-heading">
+                              <strong>{period.label}</strong>
+                              <small>{formatCapitalFlowPeriodRange(period)}</small>
+                            </span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {capitalFlowTierDefinitions.map((tier) => (
+                        <tr key={tier.key}>
+                          <th scope="row">{tier.label}</th>
+                          {capitalFlowPeriods.map((period) => {
+                            const cell = getCapitalFlowTierCell(period, tier.key);
+                            const toneClass = getToneClass(cell?.netInflow);
+                            return (
+                              <td key={`${period.period}-${tier.key}`}>
+                                <span className="capital-flow-period-cell">
+                                  <strong className={`capital-flow-amount ${toneClass}`}>{formatSignedTurnoverAmount(cell?.netInflow)}</strong>
+                                  <small className={`capital-flow-ratio ${getToneClass(cell?.ratio)}`}>{formatSignedPercent(cell?.ratio)}</small>
+                                </span>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
                 <div className="capital-flow-footnote-row">
+                  <span className="panel-tip compact">对应收盘 {formatPrice(capitalFlow?.closePrice)} / {formatSignedPercent(capitalFlow?.changePct)}</span>
                   <span className="panel-tip compact" title={getSourceTitle(capitalFlow?.source)}>{getReadableSourceLabel(capitalFlow?.source)}</span>
                   <span className="panel-tip compact">采集于 {formatDateTime(capitalFlow?.collectedAt)}</span>
                   <span className="panel-tip compact">最近尝试 {formatDateTime(capitalFlow?.lastAttemptAt || capitalFlow?.collectedAt)}</span>

@@ -3776,6 +3776,7 @@ textarea {
 .detail-layout {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .detail-hero-grid {
@@ -3816,9 +3817,16 @@ textarea {
   grid-template-columns: minmax(0, 2.1fr) minmax(280px, 0.9fr);
   gap: 14px;
   align-items: start;
+  min-width: 0;
+}
+
+.detail-grid > *,
+.detail-hero-grid > * {
+  min-width: 0;
 }
 
 .detail-card {
+  min-width: 0;
   border-radius: 16px;
   padding: 18px;
   background: rgba(4, 8, 16, 0.9);
@@ -4432,6 +4440,76 @@ textarea {
 
 .capital-flow-summary-grid {
   margin-bottom: 12px;
+}
+
+.capital-flow-stat-table-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  margin-bottom: 12px;
+  overflow-x: auto;
+  border: 1px solid rgba(129, 164, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(6, 11, 22, 0.42);
+  -webkit-overflow-scrolling: touch;
+}
+
+.capital-flow-stat-table {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: collapse;
+}
+
+.capital-flow-stat-table th,
+.capital-flow-stat-table td {
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(157, 180, 255, 0.1);
+  text-align: left;
+  vertical-align: middle;
+}
+
+.capital-flow-stat-table tbody tr:last-child th,
+.capital-flow-stat-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.capital-flow-stat-table th {
+  color: #9fb3dc;
+  font-weight: 700;
+}
+
+.capital-flow-stat-table thead th {
+  background: rgba(10, 17, 30, 0.74);
+}
+
+.capital-flow-period-heading,
+.capital-flow-period-cell {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.capital-flow-period-heading strong {
+  color: #eff4ff;
+  font-size: 0.9rem;
+}
+
+.capital-flow-period-heading small,
+.capital-flow-ratio {
+  color: #8fa6d8;
+  font-size: 0.76rem;
+  font-weight: 500;
+}
+
+.capital-flow-amount {
+  color: #eff4ff;
+  font-size: 0.98rem;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.capital-flow-ratio {
+  white-space: nowrap;
 }
 
 .capital-flow-stale-reason {
