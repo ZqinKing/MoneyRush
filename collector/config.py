@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     postgres_dsn: str = "postgresql://moneyrush:moneyrush@db:5432/moneyrush"
     redis_stream_key: str = "moneyrush:symbol:commands"
     active_symbols_key: str = "moneyrush:active_symbols"
+    active_overseas_symbols_key: str = "moneyrush:active_symbols:overseas"
     market_snapshot_key_prefix: str = "moneyrush:snapshot"
     market_event_key_prefix: str = "moneyrush:event"
     market_events_stream_key: str = "moneyrush:market:events"
@@ -94,6 +95,15 @@ class Settings(BaseSettings):
     global_markets_cache_key: str = "moneyrush:global_markets:latest"
     global_markets_request_timeout_seconds: ClassVar[float] = 10.0
     global_markets_stale_after_minutes: ClassVar[int] = 30
+    overseas_equity_collector_enabled: bool = True
+    overseas_equity_refresh_seconds: ClassVar[int] = 900
+    overseas_equity_symbol_min_interval_seconds: ClassVar[int] = 300
+    overseas_equity_offsession_symbol_min_interval_seconds: ClassVar[int] = 3600
+    overseas_equity_request_timeout_seconds: ClassVar[float] = 10.0
+    overseas_equity_eastmoney_min_interval_seconds: ClassVar[float] = 1.0
+    overseas_equity_sina_min_interval_seconds: ClassVar[float] = 1.0
+    overseas_equity_yahoo_min_interval_seconds: ClassVar[float] = 1.0
+    overseas_equity_stooq_min_interval_seconds: ClassVar[float] = 1.0
     fund_collector_enabled: bool = True
     fund_collector_poll_interval_seconds: ClassVar[int] = 3600
     fund_collector_request_interval_seconds: ClassVar[float] = 1.0

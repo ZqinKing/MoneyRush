@@ -117,11 +117,25 @@ class FundCollectorWorker:
         await self._postgres.upsert_fund_nav_rows(nav_history)
         await self._postgres.upsert_fund_holding_rows(holdings)
 
-        linked_symbols = [str(item["stock_symbol"]) for item in holdings if item.get("stock_symbol")]
+        holding_market_by_symbol = {
+            str(item["stock_symbol"]): (str(item.get("stock_market") or "").upper() or None)
+            for item in holdings
+            if item.get("stock_symbol")
+        }
+        linked_symbols = list(holding_market_by_symbol.keys())
         auto_linkable_symbols = [symbol for symbol in linked_symbols if self._is_stock_collector_supported_symbol(symbol)]
+        overseas_symbols = [
+            symbol
+            for symbol in linked_symbols
+            if self._is_overseas_stock_symbol(symbol, market=holding_market_by_symbol.get(symbol))
+        ]
         previous_symbols = set(await self._redis.smembers(f"{self._settings.active_symbols_key}:fund:{fund_code}"))
+        previous_overseas_symbols = set(await self._redis.smembers(self._active_overseas_fund_symbols_key(fund_code)))
         await self._postgres.upsert_fund_stock_links(
-            [{"fund_code": fund_code, "stock_symbol": symbol, "link_type": "top-holding"} for symbol in auto_linkable_symbols]
+            [
+                {"fund_code": fund_code, "stock_symbol": symbol, "link_type": "top-holding"}
+                for symbol in sorted(set(auto_linkable_symbols + overseas_symbols))
+            ]
         )
         await self._redis.set(f"{self._settings.fund_snapshot_key_prefix}:{fund_code}", json.dumps(snapshot, default=str))
         await self._redis.set(f"{self._settings.fund_holdings_key_prefix}:{fund_code}:holdings", json.dumps(linked_symbols))
@@ -136,6 +150,9 @@ class FundCollectorWorker:
             if should_auto_link_stocks and self._is_stock_collector_supported_symbol(symbol):
                 await self._redis.sadd(self._settings.active_symbols_key, symbol)
                 await self._redis.sadd(f"{self._settings.active_symbols_key}:fund:{fund_code}", symbol)
+            elif should_auto_link_stocks and self._is_overseas_stock_symbol(symbol, market=holding_market_by_symbol.get(symbol)):
+                await self._redis.sadd(self._settings.active_overseas_symbols_key, symbol)
+                await self._redis.sadd(self._active_overseas_fund_symbols_key(fund_code), symbol)
             if self._is_stock_collector_supported_symbol(symbol):
                 stock_fund_rows = cast(
                     list[dict[str, object]],
@@ -156,7 +173,12 @@ class FundCollectorWorker:
             if not await self._redis.sismember(f"{self._settings.active_symbols_key}:manual", symbol):
                 await self._redis.srem(self._settings.active_symbols_key, symbol)
             await self._redis.srem(f"{self._settings.active_symbols_key}:fund:{fund_code}", symbol)
-        if stale_symbols:
+        stale_overseas_symbols = previous_overseas_symbols.difference(linked_symbols)
+        for symbol in stale_overseas_symbols:
+            await self._redis.srem(self._active_overseas_fund_symbols_key(fund_code), symbol)
+            if not await self._symbol_is_tracked_by_other_active_fund(fund_code, symbol):
+                await self._redis.srem(self._settings.active_overseas_symbols_key, symbol)
+        if stale_symbols or stale_overseas_symbols:
             await self._postgres.delete_fund_stock_links(fund_code, exclude_stock_symbols=linked_symbols)
 
         self._last_refreshed_at[fund_code] = datetime.now(UTC)
@@ -174,6 +196,18 @@ class FundCollectorWorker:
 
     def _is_stock_collector_supported_symbol(self, symbol: str | None) -> bool:
         return bool(symbol and symbol.isdigit() and len(symbol) == 6)
+
+    def _is_overseas_stock_symbol(self, symbol: str | None, *, market: str | None = None) -> bool:
+        if not symbol:
+            return False
+        normalized_market = market.upper() if isinstance(market, str) else None
+        if normalized_market in {"US", "HK"}:
+            return True
+        normalized_symbol = symbol.upper()
+        return normalized_symbol.endswith((".US", ".HK")) or normalized_symbol.startswith(("US", "HK"))
+
+    def _active_overseas_fund_symbols_key(self, fund_code: str) -> str:
+        return f"{self._settings.active_overseas_symbols_key}:fund:{fund_code}"
 
     async def _symbol_is_tracked_by_other_active_fund(self, excluding_fund_code: str, symbol: str) -> bool:
         active_funds = await self._redis.smembers(self._settings.active_funds_key)
@@ -201,6 +235,14 @@ class FundCollectorWorker:
         await self._postgres.delete_fund_stock_links(fund_code)
         for symbol in linked_symbols:
             await self._redis.srem(f"{self._settings.active_symbols_key}:fund:{fund_code}", symbol)
+            await self._redis.srem(self._active_overseas_fund_symbols_key(fund_code), symbol)
+            if self._is_overseas_stock_symbol(symbol):
+                if await self._symbol_is_tracked_by_other_active_fund(fund_code, symbol):
+                    continue
+                if await self._postgres.has_other_fund_stock_links(stock_symbol=symbol, excluding_fund_code=fund_code):
+                    continue
+                await self._redis.srem(self._settings.active_overseas_symbols_key, symbol)
+                continue
             if await self._redis.sismember(f"{self._settings.active_symbols_key}:manual", symbol):
                 continue
             if await self._symbol_is_tracked_by_other_active_fund(fund_code, symbol):
@@ -230,6 +272,12 @@ class FundCollectorWorker:
                 if not await self._redis.sismember(f"{self._settings.active_symbols_key}:manual", symbol):
                     await self._redis.srem(self._settings.active_symbols_key, symbol)
                 await self._redis.srem(f"{self._settings.active_symbols_key}:fund:{fund_code}", symbol)
+            current_overseas_symbols = set(await self._redis.smembers(self._active_overseas_fund_symbols_key(fund_code)))
+            stale_overseas_symbols = current_overseas_symbols.difference(linked_symbols_set)
+            for symbol in stale_overseas_symbols:
+                await self._redis.srem(self._active_overseas_fund_symbols_key(fund_code), symbol)
+                if not await self._symbol_is_tracked_by_other_active_fund(fund_code, symbol):
+                    await self._redis.srem(self._settings.active_overseas_symbols_key, symbol)
 
     async def _persist_command_event(self, fund_code: str, payload: dict[str, str]) -> None:
         requested_at = payload.get("requested_at")

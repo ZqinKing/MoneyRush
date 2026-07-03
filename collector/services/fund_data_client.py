@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import re
 import time
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
+from typing import cast
 
 import akshare as ak
 import pandas as pd
@@ -47,6 +48,11 @@ def _to_float(value: object) -> float | None:
 def _to_int(value: object) -> int | None:
     number = _to_float(value)
     return int(number) if number is not None else None
+
+
+def _sort_rank(value: object) -> int:
+    number = _to_int(value)
+    return number if number is not None else 9999
 
 
 def _to_date(value: object) -> date | None:
@@ -100,11 +106,27 @@ def _normalize_stock_symbol(value: object) -> str | None:
         base = normalized.rsplit(".", 1)[0]
         if base.isdigit() and len(base) >= 6:
             return base[:6]
+    if normalized.endswith(".HK"):
+        base = normalized.rsplit(".", 1)[0]
+        if base.isdigit():
+            return f"{int(base):05d}.HK"
+    if normalized.endswith(".US"):
+        base = normalized.rsplit(".", 1)[0]
+        if re.fullmatch(r"[A-Z0-9.-]+", base):
+            return f"{base}.US"
     if normalized.startswith(("SH", "SZ")) and normalized[2:].isdigit() and len(normalized) >= 8:
         return normalized[2:8]
+    if normalized.startswith("HK") and normalized[2:].isdigit():
+        return f"{int(normalized[2:]):05d}.HK"
+    if normalized.startswith("US") and re.fullmatch(r"[A-Z0-9.-]+", normalized[2:]):
+        return f"{normalized[2:]}.US"
     digits = "".join(character for character in normalized if character.isdigit())
     if len(digits) >= 6 and normalized == digits:
         return digits[:6]
+    if normalized == digits and 0 < len(digits) < 6:
+        return f"{int(digits):05d}.HK"
+    if re.fullmatch(r"[A-Z]+", normalized):
+        return f"{normalized}.US"
     if len(normalized) <= 16:
         return normalized
     return normalized[:16]
@@ -237,7 +259,7 @@ class FundDataClient:
         row = self._name_cache.get(fund_code) or {}
         fund_name = _safe_text(row.get("基金简称") or row.get("基金名称") or row.get("fund_name")) or fund_code
         fund_type = _safe_text(row.get("基金类型") or row.get("类型") or row.get("fund_type"))
-        profile = {
+        profile: dict[str, object] = {
             "fundCode": fund_code,
             "fundName": fund_name,
             "fundType": fund_type,
@@ -282,7 +304,7 @@ class FundDataClient:
                     "raw": row,
                 }
             )
-        return sorted(rows, key=lambda item: item["nav_date"], reverse=True)[:limit]
+        return sorted(rows, key=lambda item: cast(date, item["nav_date"]), reverse=True)[:limit]
 
     def fetch_top_holdings(self, fund_code: str) -> list[dict[str, object]]:
         primary_rows = self._fetch_top_holdings_from_portfolio(fund_code)
@@ -351,7 +373,7 @@ class FundDataClient:
                     "raw": row,
                 }
             )
-        return sorted(rows, key=lambda item: item["report_date"], reverse=True)
+        return sorted(rows, key=lambda item: cast(date, item["report_date"]), reverse=True)
 
     def _fetch_index_profile(self, fund_code: str) -> dict[str, object]:
         try:
@@ -474,7 +496,7 @@ class FundDataClient:
                     "raw": row,
                 }
             )
-        return sorted(rows, key=lambda item: (item.get("rank") or 9999, item["stock_symbol"]))
+        return sorted(rows, key=lambda item: (_sort_rank(item.get("rank")), str(item["stock_symbol"])))
 
     def _normalize_portfolio_holdings(self, fund_code: str, frame) -> list[dict[str, object]]:
         rows: list[dict[str, object]] = []
@@ -502,12 +524,12 @@ class FundDataClient:
                 }
             )
 
-        rows.sort(key=lambda item: (item["report_date"], -(item.get("rank") or 9999)), reverse=True)
+        rows.sort(key=lambda item: (cast(date, item["report_date"]), -_sort_rank(item.get("rank"))), reverse=True)
         latest_report_date = rows[0]["report_date"] if rows else None
         if latest_report_date is None:
             return []
         latest_rows = [item for item in rows if item["report_date"] == latest_report_date]
-        return sorted(latest_rows, key=lambda item: (item.get("rank") or 9999, item["stock_symbol"]))
+        return sorted(latest_rows, key=lambda item: (_sort_rank(item.get("rank")), str(item["stock_symbol"])))
 
     def _estimate_intraday_return(self, holdings: list[dict[str, object]]) -> float | None:
         return None
