@@ -91,7 +91,6 @@ class CapitalFlowCollectorWorker:
         success_count = 0
         stale_count = 0
         attempted_at = datetime.now(UTC)
-        source_failure_recorded = False
         stopped_by_cooldown = False
 
         for symbol in target_symbols:
@@ -114,9 +113,6 @@ class CapitalFlowCollectorWorker:
                 await self._postgres.upsert_stock_capital_flow_daily_items([item])
             except CapitalFlowClientError as exc:
                 stale_count += 1
-                if not source_failure_recorded:
-                    self._vendor_scheduler.record_failure(CAPITAL_FLOW_SOURCE, reason=str(exc))
-                    source_failure_recorded = True
                 await self._postgres.mark_stock_capital_flow_stale(
                     symbol=symbol,
                     trade_date=resolved_trade_date,
@@ -124,12 +120,10 @@ class CapitalFlowCollectorWorker:
                     reason_message="资金流向源暂不可用，当前展示最近一次可用结果。",
                 )
                 logger.warning("capital-flow refresh degraded", extra={"symbol": symbol, "error": str(exc)})
-                if source_failure_recorded:
-                    stopped_by_cooldown = True
-                    break
             except RuntimeError as exc:
                 stale_count += 1
                 stopped_by_cooldown = True
+                self._vendor_scheduler.record_failure(CAPITAL_FLOW_SOURCE, reason=str(exc))
                 await self._postgres.mark_stock_capital_flow_stale(
                     symbol=symbol,
                     trade_date=resolved_trade_date,
