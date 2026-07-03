@@ -385,7 +385,7 @@ class MarketDetailQueryService:
         trade_date = row["trade_date"]
         source_status = row["source_status"]
         is_stale = source_status == "stale"
-        stale_reason = "资金流向源暂不可用，当前展示最近一次可用结果。" if is_stale else None
+        stale_reason = row["stale_reason"] if is_stale else None
         return {
             "symbol": row["symbol"],
             "companyName": row["company_name"],

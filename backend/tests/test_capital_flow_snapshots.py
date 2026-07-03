@@ -15,7 +15,7 @@ class FakeCapitalFlowQueryService:
 
 class CapitalFlowSnapshotTests(unittest.IsolatedAsyncioTestCase):
     async def test_enriches_matching_snapshot_trade_day_capital_flow(self) -> None:
-        snapshots: dict[str, dict[str, object]] = {"000001": {"updatedAt": "2026-06-12T07:01:00+00:00"}}
+        snapshots: dict[str, dict[str, object]] = {"000001": {"updatedAt": "2026-06-12T09:11:00+00:00"}}
         query_service = FakeCapitalFlowQueryService(
             {
                 "000001": {
@@ -35,8 +35,30 @@ class CapitalFlowSnapshotTests(unittest.IsolatedAsyncioTestCase):
         assert snapshots["000001"]["capitalFlowTradeDate"] == "2026-06-12"
         assert snapshots["000001"]["capitalFlowReferenceTradeDate"] == "2026-06-12"
 
-    async def test_hides_mismatched_capital_flow_after_snapshot_trade_day_updates(self) -> None:
+    async def test_keeps_previous_trade_day_flow_before_daily_collection_window(self) -> None:
         snapshots: dict[str, dict[str, object]] = {"000001": {"updatedAt": "2026-06-15T01:45:00+00:00", "capitalFlowMainNetInflow": 999.0}}
+        query_service = FakeCapitalFlowQueryService(
+            {
+                "000001": {
+                    "tradeDate": "2026-06-12",
+                    "mainNetInflow": 123.0,
+                    "mainNetRatio": 1.5,
+                    "sourceStatus": "fresh",
+                    "stale": False,
+                }
+            }
+        )
+
+        _ = await enrich_snapshots_with_capital_flow(snapshots=snapshots, symbols=["000001"], query_service=query_service)
+
+        assert snapshots["000001"]["capitalFlowMainNetInflow"] == 123.0
+        assert snapshots["000001"]["capitalFlowMainNetRatio"] == 1.5
+        assert snapshots["000001"]["capitalFlowTradeDate"] == "2026-06-12"
+        assert snapshots["000001"]["capitalFlowReferenceTradeDate"] == "2026-06-12"
+        assert snapshots["000001"]["capitalFlowStale"] is False
+
+    async def test_hides_mismatched_capital_flow_after_daily_collection_window(self) -> None:
+        snapshots: dict[str, dict[str, object]] = {"000001": {"updatedAt": "2026-06-15T09:20:00+00:00", "capitalFlowMainNetInflow": 999.0}}
         query_service = FakeCapitalFlowQueryService(
             {
                 "000001": {
@@ -58,7 +80,7 @@ class CapitalFlowSnapshotTests(unittest.IsolatedAsyncioTestCase):
         assert snapshots["000001"]["capitalFlowStale"] is True
 
     async def test_keeps_last_trade_day_flow_when_snapshot_is_also_last_trade_day(self) -> None:
-        snapshots: dict[str, dict[str, object]] = {"000001": {"updatedAt": "2026-06-12T07:01:00+00:00"}}
+        snapshots: dict[str, dict[str, object]] = {"000001": {"updatedAt": "2026-06-12T09:11:00+00:00"}}
         query_service = FakeCapitalFlowQueryService(
             {
                 "000001": {

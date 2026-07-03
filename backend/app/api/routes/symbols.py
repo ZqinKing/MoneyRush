@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
-from app.services.market_detail.capital_flow_snapshots import CAPITAL_FLOW_STALE_REASON, enrich_snapshots_with_capital_flow
+from app.services.market_detail.capital_flow_snapshots import CAPITAL_FLOW_STALE_REASON, enrich_snapshots_with_capital_flow, expected_capital_flow_trade_date
 from app.services.normalize.market_payloads import normalize_symbol_input
 
 
@@ -59,13 +59,6 @@ def _filter_intraday_bars_for_reference_day(
     if not bars or reference_ts is None:
         return []
     return [bar for bar in bars if _is_same_china_trade_day(bar.get("bucketTs"), reference_ts)]
-
-
-def _china_trade_day_label(value: object) -> str | None:
-    timestamp = _parse_iso_datetime(value)
-    if timestamp is None:
-        return None
-    return timestamp.astimezone(CHINA_MARKET_TZ).date().isoformat()
 
 
 @router.get("/active")
@@ -134,7 +127,9 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
     order_book = await query_service.fetch_order_book(normalized_symbol)
     fund_holding_summary = await request.app.state.fund_query_service.fetch_stock_funds(normalized_symbol)
 
-    capital_flow_reference_trade_day = _china_trade_day_label((latest_kline or {}).get("bucketTs"))
+    capital_flow_reference_trade_day = expected_capital_flow_trade_date(
+        reference_intraday_ts or (latest_kline or {}).get("bucketTs")
+    )
     if (
         capital_flow
         and capital_flow.get("source") != "capital-flow-unavailable"

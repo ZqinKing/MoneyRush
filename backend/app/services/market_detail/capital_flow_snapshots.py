@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta, timezone
 from typing import Protocol
 
 
 CHINA_MARKET_TZ = timezone(timedelta(hours=8))
+CAPITAL_FLOW_READY_TIME_CHINA = time(hour=17, minute=10)
 CAPITAL_FLOW_STALE_REASON = "资金流向数据尚未更新至当前交易日。"
 CAPITAL_FLOW_REFERENCE_MISSING_REASON = "资金流向参考交易日不可用。"
 
@@ -35,11 +36,26 @@ def _parse_iso_datetime(value: object) -> datetime | None:
     return parsed
 
 
-def _snapshot_trade_day(snapshot: dict[str, object]) -> str | None:
-    timestamp = _parse_iso_datetime(snapshot.get("updatedAt"))
+def _is_weekend(value: date) -> bool:
+    return value.weekday() >= 5
+
+
+def _previous_trade_date(value: date) -> date:
+    candidate = value - timedelta(days=1)
+    while _is_weekend(candidate):
+        candidate -= timedelta(days=1)
+    return candidate
+
+
+def expected_capital_flow_trade_date(value: object) -> str | None:
+    timestamp = _parse_iso_datetime(value)
     if timestamp is None:
         return None
-    return timestamp.astimezone(CHINA_MARKET_TZ).date().isoformat()
+    local_timestamp = timestamp.astimezone(CHINA_MARKET_TZ)
+    local_date = local_timestamp.date()
+    if _is_weekend(local_date) or local_timestamp.time() < CAPITAL_FLOW_READY_TIME_CHINA:
+        return _previous_trade_date(local_date).isoformat()
+    return local_date.isoformat()
 
 
 def _clear_snapshot_capital_flow(snapshot: dict[str, object]) -> None:
@@ -73,7 +89,7 @@ async def enrich_snapshots_with_capital_flow(
         if not capital_flow:
             continue
 
-        reference_trade_date = _snapshot_trade_day(snapshot)
+        reference_trade_date = expected_capital_flow_trade_date(snapshot.get("updatedAt"))
         capital_flow_trade_date = capital_flow.get("tradeDate")
         snapshot["capitalFlowTradeDate"] = capital_flow_trade_date
 
