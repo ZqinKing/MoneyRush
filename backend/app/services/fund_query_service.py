@@ -48,6 +48,49 @@ def _decode_jsonish(value: object) -> dict[str, object]:
     return {}
 
 
+def _canonical_snapshot_symbol(symbol: str, market: object) -> str:
+    market_text = str(market or "").strip().upper()
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return normalized
+    if market_text == "US" and "." not in normalized:
+        return f"{normalized}.US"
+    if market_text == "HK":
+        if normalized.endswith(".HK"):
+            base = normalized.rsplit(".", 1)[0]
+        elif normalized.startswith("HK"):
+            base = normalized[2:]
+        else:
+            base = normalized
+        if base.isdigit():
+            return f"{int(base):05d}.HK"
+    return normalized
+
+
+def _snapshot_lookup_symbols(symbol: str, market: object) -> list[str]:
+    normalized = str(symbol or "").strip().upper()
+    canonical = _canonical_snapshot_symbol(normalized, market)
+    values = [normalized]
+    if canonical and canonical not in values:
+        values.append(canonical)
+    return values
+
+
+def _stock_holding_lookup_symbols(symbol: str) -> list[str]:
+    normalized = str(symbol or "").strip().upper()
+    if not normalized:
+        return []
+    values = [normalized]
+    if normalized.endswith(".US"):
+        values.append(normalized.removesuffix(".US"))
+    elif normalized.endswith(".HK"):
+        base = normalized.removesuffix(".HK")
+        values.append(base)
+        if base.isdigit():
+            values.append(str(int(base)))
+    return list(dict.fromkeys(values))
+
+
 def _coerce_date(value: object) -> date | None:
     if isinstance(value, datetime):
         return value.date()
@@ -287,8 +330,7 @@ class FundQueryService:
         )
         profile_payload = self._serialize_profile(profile)
         top_holdings = await self._fetch_latest_top_holding_rows_for_funds([fund_code])
-        holding_symbols = [str(row["stock_symbol"]) for row in top_holdings]
-        stock_snapshots = await self._fetch_stock_snapshots(holding_symbols)
+        stock_snapshots = await self._fetch_stock_snapshots_for_rows(top_holdings)
         holding_performance = self._build_holding_performance(top_holdings, stock_snapshots)
         estimated_intraday_return = self._sum_estimated_contributions(holding_performance)
         serialized_snapshot = self._serialize_snapshot(snapshot)
@@ -316,16 +358,19 @@ class FundQueryService:
         }
 
     async def fetch_stock_funds(self, symbol: str) -> dict[str, object]:
+        lookup_symbols = _stock_holding_lookup_symbols(symbol)
+        if not lookup_symbols:
+            return {"symbol": symbol, "latestReportDate": None, "items": []}
         rows = await self._fetch(
             """
             SELECT stock_symbol, fund_code, fund_name, fund_type, report_date, weight_percent, hold_market_value,
                    change_type, raw
             FROM stock_fund_holding
-            WHERE stock_symbol = $1
+            WHERE stock_symbol = ANY($1::text[])
             ORDER BY report_date DESC, weight_percent DESC NULLS LAST, fund_code ASC
             LIMIT 40
             """,
-            symbol,
+            lookup_symbols,
         )
         latest_report_date = None
         if rows:
@@ -431,11 +476,11 @@ class FundQueryService:
 
         participating_fund_count = len(transparency_by_fund)
         denominator = max(participating_fund_count, 1)
-        stock_snapshots = await self._fetch_stock_snapshots(sorted({str(row["stock_symbol"]) for row in latest_holding_rows}))
+        stock_snapshots = await self._fetch_stock_snapshots_for_rows(latest_holding_rows)
         exposure_map: dict[str, dict[str, object]] = {}
         for row in latest_holding_rows:
             stock_symbol = str(row["stock_symbol"])
-            stock_snapshot = stock_snapshots.get(stock_symbol) or {}
+            stock_snapshot = self._snapshot_for_holding(row, stock_snapshots)
             stock_name = row["stock_name"] or stock_symbol
             fund_code = str(row["fund_code"])
             estimated_exposure = (_to_float(row["weight_percent"]) or 0.0) / denominator
@@ -451,6 +496,9 @@ class FundQueryService:
                     "latestReportDate": None,
                     "lastPrice": _to_float(stock_snapshot.get("lastPrice")),
                     "changePct": _to_float(stock_snapshot.get("changePct")),
+                    "quoteSource": stock_snapshot.get("source"),
+                    "currency": stock_snapshot.get("currency"),
+                    "delayLabel": stock_snapshot.get("delayLabel"),
                     "snapshotUpdatedAt": stock_snapshot.get("updatedAt"),
                 },
             )
@@ -761,6 +809,19 @@ class FundQueryService:
             snapshots[str(row["symbol"])] = payload
         return snapshots
 
+    async def _fetch_stock_snapshots_for_rows(self, rows: list[asyncpg.Record]) -> dict[str, dict[str, object]]:
+        symbols: list[str] = []
+        for row in rows:
+            symbols.extend(_snapshot_lookup_symbols(str(row["stock_symbol"]), row.get("stock_market")))
+        return await self._fetch_stock_snapshots(sorted(set(symbols)))
+
+    def _snapshot_for_holding(self, row: asyncpg.Record, stock_snapshots: dict[str, dict[str, object]]) -> dict[str, object]:
+        for symbol in _snapshot_lookup_symbols(str(row["stock_symbol"]), row.get("stock_market")):
+            snapshot = stock_snapshots.get(symbol)
+            if snapshot is not None:
+                return snapshot
+        return {}
+
     def _build_holding_performance(
         self,
         holdings: list[asyncpg.Record],
@@ -769,7 +830,7 @@ class FundQueryService:
         performance: list[dict[str, object]] = []
         for row in holdings:
             symbol = str(row["stock_symbol"])
-            snapshot = stock_snapshots.get(symbol) or {}
+            snapshot = self._snapshot_for_holding(row, stock_snapshots)
             last_price = _to_float(snapshot.get("lastPrice"))
             change_pct = _to_float(snapshot.get("changePct"))
             weight = _to_float(row["weight_percent"])
@@ -802,12 +863,10 @@ class FundQueryService:
 
     async def _compute_estimated_returns_from_rows(self, rows: list[asyncpg.Record]) -> dict[str, float | None]:
         holdings_by_fund: dict[str, list[asyncpg.Record]] = {}
-        symbols: list[str] = []
         for row in rows:
             fund_code = str(row["fund_code"])
             holdings_by_fund.setdefault(fund_code, []).append(row)
-            symbols.append(str(row["stock_symbol"]))
-        stock_snapshots = await self._fetch_stock_snapshots(sorted(set(symbols)))
+        stock_snapshots = await self._fetch_stock_snapshots_for_rows(rows)
         estimated_returns: dict[str, float | None] = {}
         for fund_code, holdings in holdings_by_fund.items():
             performance = self._build_holding_performance(holdings, stock_snapshots)
