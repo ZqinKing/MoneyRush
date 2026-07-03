@@ -97,6 +97,62 @@ function normalizeStockSymbolCandidate(value) {
   return match ? match[0] : '';
 }
 
+function buildOverseasStockSymbol(symbol, market = '') {
+  const normalizedSymbol = `${symbol || ''}`.trim().toUpperCase();
+  const normalizedMarket = `${market || ''}`.trim().toUpperCase();
+  if (!normalizedSymbol) {
+    return '';
+  }
+  if (normalizedMarket === 'US' && !normalizedSymbol.endsWith('.US')) {
+    return `${normalizedSymbol.split('.')[0]}.US`;
+  }
+  if (normalizedMarket === 'HK') {
+    const digits = normalizedSymbol.replace(/^HK/i, '').replace(/\.HK$/i, '');
+    if (/^\d+$/.test(digits)) {
+      return `${String(Number(digits)).padStart(5, '0')}.HK`;
+    }
+  }
+  return normalizedSymbol;
+}
+
+function normalizeStockSymbolForComparison(symbol, market = '') {
+  const text = `${symbol || ''}`.trim().toUpperCase();
+  if (!text) {
+    return '';
+  }
+  const overseasSymbol = buildOverseasStockSymbol(text, market);
+  if (overseasSymbol.endsWith('.US') || overseasSymbol.endsWith('.HK')) {
+    return overseasSymbol;
+  }
+  return normalizeStockSymbolCandidate(text) || text;
+}
+
+function buildOverseasSnapshotFromExposure(item) {
+  if (!item || typeof item !== 'object') {
+    return null;
+  }
+  const canonicalSymbol = buildOverseasStockSymbol(item.stockSymbol, item.stockMarket);
+  if (!canonicalSymbol) {
+    return null;
+  }
+  return {
+    symbol: canonicalSymbol,
+    companyName: item.stockName || item.stockSymbol || canonicalSymbol,
+    exchange: overseasMarketLabels[item.stockMarket] || item.stockMarket || '海外',
+    lastPrice: item.lastPrice,
+    changePct: item.changePct,
+    marketCap: null,
+    pe: null,
+    pb: null,
+    turnoverRate: null,
+    source: item.quoteSource,
+    updatedAt: item.snapshotUpdatedAt,
+    market: item.stockMarket,
+    currency: item.currency,
+    delayLabel: item.delayLabel,
+  };
+}
+
 const connectionStateLabels = {
   connecting: '连接中',
   connected: '已连接',
@@ -117,7 +173,21 @@ const baseWorkbenchNavItems = [
 
 const macroWorkbenchNavItem = { key: 'macro', label: '宏观', shortLabel: '宏观', description: '美债环境' };
 const globalMarketsWorkbenchNavItem = { key: 'globalMarkets', label: '全球股市', shortLabel: '全球', description: '环球指数' };
+const overseasWorkbenchNavItem = { key: 'overseas', label: '美股/HK', shortLabel: '海外', description: 'QDII持仓' };
 const llmAuditWorkbenchNavItem = { key: 'llmAudit', label: 'AI审计', shortLabel: 'AI审计', description: '调用记录' };
+
+const overseasMarketLabels = {
+  US: '美股',
+  HK: '港股',
+};
+
+const overseasQuoteSourceLabels = {
+  'eastmoney-delay': 'Eastmoney delay',
+  'sina-finance': 'Sina Finance',
+  'yahoo-finance-chart': 'Yahoo chart',
+  'yahoo-finance': 'Yahoo quote',
+  'stooq-eod': 'Stooq EOD',
+};
 
 const marketStatusLabels = {
   trading: '交易中',
@@ -1513,6 +1583,20 @@ function formatPrice(value) {
   }).format(value);
 }
 
+function formatCurrencyPrice(value, currency = '') {
+  if (typeof value !== 'number') {
+    return '--';
+  }
+
+  if (currency === 'USD') {
+    return `$${formatPrice(value)}`;
+  }
+  if (currency === 'HKD') {
+    return `HK$${formatPrice(value)}`;
+  }
+  return currency ? `${formatPrice(value)} ${currency}` : formatPrice(value);
+}
+
 function formatGoldPrice(value, currency = 'CNY') {
   if (typeof value !== 'number') {
     return '--';
@@ -2659,6 +2743,10 @@ function App() {
   const [fundPortfolioRequestState, setFundPortfolioRequestState] = useState('idle');
   const [fundPortfolioAnalysis, setFundPortfolioAnalysis] = useState(null);
   const [fundPortfolioAnalysisRequestState, setFundPortfolioAnalysisRequestState] = useState('idle');
+  const [overseasMarketFilter, setOverseasMarketFilter] = useState('US');
+  const [overseasSearchQuery, setOverseasSearchQuery] = useState('');
+  const [overseasSortKey, setOverseasSortKey] = useState('estimatedBasketExposurePercent');
+  const [overseasPreviewSymbol, setOverseasPreviewSymbol] = useState('');
   const [macroCapabilities, setMacroCapabilities] = useState({ enabled: false, loading: true });
   const [macroSnapshot, setMacroSnapshot] = useState(null);
   const [macroCollectorStatus, setMacroCollectorStatus] = useState(null);
@@ -3204,7 +3292,7 @@ function App() {
   }, [activeView]);
 
   useEffect(() => {
-    if (activeView !== 'funds' && activeView !== 'management' && !selectedSnapshotSymbol) {
+    if (activeView !== 'funds' && activeView !== 'management' && activeView !== 'overseas' && !selectedSnapshotSymbol) {
       return undefined;
     }
 
@@ -3249,7 +3337,8 @@ function App() {
   }, [activeFundsKey]);
 
   useEffect(() => {
-    if (activeView !== 'funds' || fundsSubView !== 'portfolio' || selectedFundCode) {
+    const shouldLoadPortfolio = activeView === 'overseas' || (activeView === 'funds' && fundsSubView === 'portfolio' && !selectedFundCode);
+    if (!shouldLoadPortfolio) {
       return undefined;
     }
 
@@ -4048,6 +4137,18 @@ function App() {
     setDetailChartView('intraday');
   }
 
+  function handleOpenOverseasStockDetail(item) {
+    const snapshot = buildOverseasSnapshotFromExposure(item);
+    if (!snapshot?.symbol) {
+      return;
+    }
+    setSnapshots((current) => ({
+      ...current,
+      [snapshot.symbol]: snapshot,
+    }));
+    handleOpenSnapshotDetail(snapshot.symbol);
+  }
+
   function handleCloseSnapshotDetail() {
     setSelectedSnapshotSymbol(null);
     setDetailRequestState('idle');
@@ -4318,6 +4419,208 @@ function App() {
           </>
         ) : null}
       </div>
+    );
+  }
+
+  function renderOverseasEquityView() {
+    const portfolio = fundPortfolioView && typeof fundPortfolioView === 'object' ? fundPortfolioView : {};
+    const stockExposure = Array.isArray(portfolio?.stockExposure) ? portfolio.stockExposure : [];
+    const overseasAllItems = stockExposure.filter((item) => ['US', 'HK'].includes(String(item?.stockMarket || '').toUpperCase()));
+    const normalizedQuery = overseasSearchQuery.trim().toLowerCase();
+    const filteredItems = overseasAllItems
+      .filter((item) => overseasMarketFilter === 'all' || String(item?.stockMarket || '').toUpperCase() === overseasMarketFilter)
+      .filter((item) => {
+        if (!normalizedQuery) {
+          return true;
+        }
+        return [item?.stockSymbol, item?.stockName, item?.stockMarket]
+          .filter(Boolean)
+          .some((value) => `${value}`.toLowerCase().includes(normalizedQuery));
+      })
+      .sort((left, right) => {
+        const leftValue = left?.[overseasSortKey];
+        const rightValue = right?.[overseasSortKey];
+        const leftComparable = typeof leftValue === 'number' ? leftValue : Number.NEGATIVE_INFINITY;
+        const rightComparable = typeof rightValue === 'number' ? rightValue : Number.NEGATIVE_INFINITY;
+        if (leftComparable === rightComparable) {
+          return String(left?.stockSymbol || '').localeCompare(String(right?.stockSymbol || ''), 'zh-Hans-CN');
+        }
+        return rightComparable - leftComparable;
+      });
+    const usCount = overseasAllItems.filter((item) => String(item?.stockMarket || '').toUpperCase() === 'US').length;
+    const hkCount = overseasAllItems.filter((item) => String(item?.stockMarket || '').toUpperCase() === 'HK').length;
+    const quotedCount = filteredItems.filter((item) => typeof item?.lastPrice === 'number').length;
+    const latestUpdatedAt = filteredItems
+      .map((item) => item?.snapshotUpdatedAt)
+      .filter((value) => typeof value === 'string' && value)
+      .sort()
+      .at(-1) || null;
+    const topMover = filteredItems
+      .filter((item) => typeof item?.changePct === 'number')
+      .sort((left, right) => Math.abs(right.changePct) - Math.abs(left.changePct))[0] || null;
+    const activeOverseasSymbol = filteredItems.some((item) => item?.stockSymbol === overseasPreviewSymbol)
+      ? overseasPreviewSymbol
+      : (filteredItems[0]?.stockSymbol || '');
+
+    return (
+      <article className="panel wide overseas-panel">
+        <div className="section-heading overview-heading overseas-heading">
+          <div>
+            <h2>美股/HK 总览</h2>
+            <p className="panel-tip compact">沿用 A股总览的高密度列表，单独查看已激活 QDII 基金穿透出的海外股票。</p>
+          </div>
+          <div className="overview-heading-meta">
+            <span className="symbol-count-badge">美股 {usCount}</span>
+            <span className="symbol-count-badge">港股 {hkCount}</span>
+            <span className="symbol-count-badge">有行情 {quotedCount}</span>
+            <span className="symbol-count-badge">最近更新 {latestUpdatedAt ? formatRelativeDateTime(latestUpdatedAt) : '--'}</span>
+            <span className="symbol-count-badge">最大波动 {topMover ? `${topMover.stockSymbol} ${formatSignedPercent(topMover.changePct)}` : '--'}</span>
+          </div>
+        </div>
+
+        <div className="overview-toolbar">
+          <div className="content-filter-row overview-search-row">
+            <label className="content-symbol-select-label" htmlFor="overseas-search-input">搜索标的</label>
+            <input
+              id="overseas-search-input"
+              className="overview-search-input"
+              value={overseasSearchQuery}
+              onChange={(event) => setOverseasSearchQuery(event.target.value)}
+              placeholder="搜索股票代码/名称"
+            />
+          </div>
+          <div className="content-filter-row overview-sort-row">
+            <label className="content-symbol-select-label" htmlFor="overseas-sort-select">排序方式</label>
+            <div className="overview-sort-controls">
+              <select
+                id="overseas-sort-select"
+                className="content-symbol-select"
+                value={overseasSortKey}
+                onChange={(event) => setOverseasSortKey(event.target.value)}
+              >
+                <option value="estimatedBasketExposurePercent">组合权重</option>
+                <option value="changePct">涨跌幅</option>
+                <option value="lastPrice">最新价</option>
+                <option value="contributingFundCount">关联基金数</option>
+              </select>
+            </div>
+          </div>
+          <div className="content-filter-row overview-mode-row">
+            <span className="content-symbol-select-label">市场</span>
+            <div className="content-switch-group overview-mode-switch overseas-market-switch" role="group" aria-label="海外市场筛选">
+              {[
+                { value: 'US', label: '美股' },
+                { value: 'HK', label: '港股' },
+                { value: 'all', label: '全部' },
+              ].map((option) => (
+                <button
+                  type="button"
+                  className={overseasMarketFilter === option.value ? 'content-switch-option active' : 'content-switch-option'}
+                  aria-pressed={overseasMarketFilter === option.value}
+                  key={option.value}
+                  onClick={() => setOverseasMarketFilter(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {fundPortfolioRequestState === 'loading' || fundPortfolioRequestState === 'idle' ? <p className="status-line pending">海外持仓加载中...</p> : null}
+        {fundPortfolioRequestState === 'error' ? <p className="status-line error">海外持仓加载失败，请稍后重试。</p> : null}
+        {fundPortfolioRequestState === 'ready' && !overseasAllItems.length ? <p className="panel-tip compact fund-portfolio-empty">当前激活基金尚未同步美股/HK 持仓。</p> : null}
+
+        {fundPortfolioRequestState === 'ready' && overseasAllItems.length ? (
+          <div className="overview-density-layout">
+            <section className="overview-table-panel overseas-table-panel" aria-label="海外持仓高密度列表">
+              <div className="detail-table-wrap overview-table-wrap">
+                <table className="detail-table overview-table overseas-table">
+                <thead>
+                  <tr>
+                    <th>标的</th>
+                    <th>最新</th>
+                    <th>涨跌</th>
+                    <th>组合权重</th>
+                    <th>基金</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredItems.length ? filteredItems.map((item) => {
+                    const rowTone = getSnapshotCardTone(item?.changePct);
+                    const isSelected = activeOverseasSymbol === item.stockSymbol;
+                    return (
+                    <tr
+                      className={isSelected ? 'overview-table-row active' : 'overview-table-row'}
+                      key={`${item.stockMarket}-${item.stockSymbol}-${item.latestReportDate || 'latest'}`}
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={isSelected}
+                      onClick={() => setOverseasPreviewSymbol(item.stockSymbol)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault();
+                          setOverseasPreviewSymbol(item.stockSymbol);
+                        }
+                      }}
+                    >
+                      <td>
+                        <strong>{item.stockName || item.stockSymbol}</strong>
+                        <span className="table-subtext">{item.stockSymbol} · {overseasMarketLabels[item.stockMarket] || item.stockMarket || '--'}</span>
+                      </td>
+                      <td>
+                        <strong>{formatCurrencyPrice(item.lastPrice, item.currency)}</strong>
+                        <span className="table-subtext">{item.currency || '--'}</span>
+                      </td>
+                      <td>
+                        <strong className={rowTone === 'positive' ? 'positive' : rowTone === 'negative' ? 'negative' : ''}>{formatSignedPercent(item.changePct)}</strong>
+                        <span className="table-subtext">贡献 {formatSignedPercent(item.estimatedContribution)}</span>
+                      </td>
+                      <td>
+                        <strong>{formatPercentValue(item.estimatedBasketExposurePercent)}</strong>
+                        <span className="table-subtext">单股跌 1% {formatSignedPercent(item.stressImpactDown1Pct)}</span>
+                      </td>
+                      <td>
+                        <strong>{item.contributingFundCount ? `${item.contributingFundCount} 只基金` : '基金待补充'}</strong>
+                        <span className="table-subtext">{item.latestReportDate ? `${formatReportQuarter(item.latestReportDate)} · ${item.latestReportDate}` : '报告期待同步'}</span>
+                      </td>
+                      <td>
+                        <span className="overview-status-stack">
+                          <span className="table-meta-badge">{overseasQuoteSourceLabels[item.quoteSource] || item.quoteSource || '--'}</span>
+                          <span className="table-subtext">{item.snapshotUpdatedAt ? formatRelativeDateTime(item.snapshotUpdatedAt) : '--'} · {item.delayLabel || '--'}</span>
+                        </span>
+                      </td>
+                      <td>
+                        <button
+                          type="button"
+                          className="inline-action-button overview-detail-button"
+                          onKeyDown={(event) => {
+                            event.stopPropagation();
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault();
+                              handleOpenOverseasStockDetail(item);
+                            }
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            handleOpenOverseasStockDetail(item);
+                          }}
+                        >
+                          详情
+                        </button>
+                      </td>
+                    </tr>
+                    );
+                  }) : <tr><td colSpan="7" className="panel-tip compact overview-empty-note">当前筛选条件下没有海外持仓。</td></tr>}
+                </tbody>
+              </table>
+              </div>
+            </section>
+          </div>
+        ) : null}
+      </article>
     );
   }
 
@@ -6442,10 +6745,11 @@ function App() {
         .filter((item) => activeFundCodeSet.has((item?.fundCode || '').trim()))
         .map((item) => [(item?.fundCode || '').trim(), item]),
     );
+    const selectedComparableSymbol = normalizeStockSymbolForComparison(selectedSnapshotSymbol, selectedSnapshot?.market || detailPayload?.snapshot?.market);
     activeFunds.forEach((fundCodeValue) => {
       const fundDetail = fundDetails[fundCodeValue];
       const matchingHolding = Array.isArray(fundDetail?.topHoldings)
-        ? fundDetail.topHoldings.find((holding) => normalizeStockSymbolCandidate(holding?.stockSymbol) === selectedSnapshotSymbol)
+        ? fundDetail.topHoldings.find((holding) => normalizeStockSymbolForComparison(holding?.stockSymbol, holding?.stockMarket) === selectedComparableSymbol)
         : null;
       if (!matchingHolding || monitoredFundHoldingMap.has(fundCodeValue)) {
         return;
@@ -7793,7 +8097,9 @@ function App() {
   }
 
   const workbenchNavItems = [
-    ...baseWorkbenchNavItems.slice(0, 6),
+    ...baseWorkbenchNavItems.slice(0, 5),
+    overseasWorkbenchNavItem,
+    ...baseWorkbenchNavItems.slice(5, 6),
     globalMarketsWorkbenchNavItem,
     ...(macroCapabilities.enabled ? [macroWorkbenchNavItem] : []),
     baseWorkbenchNavItems[6],
@@ -7965,6 +8271,8 @@ function App() {
           renderGoldView()
         ) : activeView === 'globalMarkets' ? (
           renderGlobalMarketsView()
+        ) : activeView === 'overseas' ? (
+          selectedSnapshotSymbol ? <article className="panel wide">{renderDetailView()}</article> : renderOverseasEquityView()
         ) : activeView === 'funds' ? (
           renderFundsView()
         ) : activeView === 'dragonTiger' ? (

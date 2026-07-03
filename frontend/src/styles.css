@@ -1622,6 +1622,40 @@ textarea {
   gap: 14px;
 }
 
+.overseas-panel {
+  display: grid;
+  gap: 18px;
+}
+
+.overseas-heading {
+  align-items: flex-start;
+}
+
+.overseas-summary-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.overseas-toolbar {
+  align-items: end;
+}
+
+.overseas-market-switch {
+  min-width: 240px;
+}
+
+.overseas-table-card {
+  display: grid;
+  gap: 10px;
+}
+
+.overseas-table-wrap {
+  max-height: 560px;
+}
+
+.overseas-table {
+  min-width: 980px;
+}
+
 .gold-panel {
   display: grid;
   gap: 18px;
