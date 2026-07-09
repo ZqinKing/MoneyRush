@@ -6,6 +6,7 @@ import logging
 from datetime import UTC, datetime
 
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 from collector.services.global_markets_client import GlobalMarketsClient
 
@@ -26,7 +27,12 @@ class GlobalMarketsCollectorWorker:
 
         logger.info("global markets collector started")
         while True:
-            await self.refresh_once()
+            try:
+                _ = await self.refresh_once()
+            except Exception:
+                logger.exception("global markets refresh cycle failed")
+                if run_once:
+                    raise
             if run_once:
                 return
             await asyncio.sleep(self._settings.global_markets_refresh_seconds)
@@ -52,18 +58,29 @@ class GlobalMarketsCollectorWorker:
                 "errors": [{"source": "worker", "marketId": None, "message": "no global market payload available"}],
             }
 
-        await self._redis.set(self._settings.global_markets_cache_key, json.dumps(payload), ex=120)
+        await self._store_payload(payload)
         return payload
 
     async def _load_cached_payload(self) -> dict[str, object] | None:
-        payload = await self._redis.get(self._settings.global_markets_cache_key)
+        try:
+            payload = await self._redis.get(self._settings.global_markets_cache_key)
+        except RedisError:
+            logger.exception("global markets cached payload read failed")
+            return None
         if payload is None:
             return None
         try:
             loaded = json.loads(payload)
         except json.JSONDecodeError:
+            logger.exception("global markets cached payload decode failed")
             return None
         return loaded if isinstance(loaded, dict) else None
+
+    async def _store_payload(self, payload: dict[str, object]) -> None:
+        try:
+            await self._redis.set(self._settings.global_markets_cache_key, json.dumps(payload), ex=120)
+        except RedisError:
+            logger.exception("global markets cached payload write failed")
 
     def _mark_last_good_stale(self, payload: dict[str, object], exc: Exception) -> dict[str, object]:
         recovered = dict(payload)

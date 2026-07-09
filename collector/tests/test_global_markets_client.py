@@ -7,6 +7,8 @@ from math import isclose
 from types import SimpleNamespace
 from typing import cast
 
+from redis.exceptions import RedisError
+
 from collector.services.global_markets_client import (
     GlobalMarketsClient,
     is_snapshot_stale,
@@ -832,6 +834,52 @@ def test_global_markets_last_good_cache_reused_as_stale_on_failure(monkeypatch) 
     asyncio.run(exercise())
 
 
+def test_global_markets_worker_continues_when_cached_read_fails(monkeypatch) -> None:
+    async def exercise() -> None:
+        await worker.run(run_once=True)
+
+        assert redis.set_calls == [("moneyrush:global_markets:latest", json.dumps(payload), 120)]
+
+    payload: dict[str, object] = {
+        "items": [],
+        "regions": [],
+        "source": "test",
+        "updatedAt": NOW.isoformat(),
+        "delayLabel": None,
+        "stale": False,
+        "errors": [],
+    }
+    redis = FailingGetRedis()
+    monkeypatch.setattr("collector.workers.global_markets_loop.Redis.from_url", lambda *_args, **_kwargs: redis)
+    monkeypatch.setattr("collector.workers.global_markets_loop.GlobalMarketsClient", lambda _settings: FakeClient(payload))
+    worker = GlobalMarketsCollectorWorker(_settings())
+
+    asyncio.run(exercise())
+
+
+def test_global_markets_worker_survives_cached_write_failure(monkeypatch) -> None:
+    async def exercise() -> None:
+        result = await worker.refresh_once()
+
+        assert result == payload
+
+    payload: dict[str, object] = {
+        "items": [],
+        "regions": [],
+        "source": "test",
+        "updatedAt": NOW.isoformat(),
+        "delayLabel": None,
+        "stale": False,
+        "errors": [],
+    }
+    redis = FailingSetRedis()
+    monkeypatch.setattr("collector.workers.global_markets_loop.Redis.from_url", lambda *_args, **_kwargs: redis)
+    monkeypatch.setattr("collector.workers.global_markets_loop.GlobalMarketsClient", lambda _settings: FakeClient(payload))
+    worker = GlobalMarketsCollectorWorker(_settings())
+
+    asyncio.run(exercise())
+
+
 def test_global_markets_client_marks_previous_payload_items_stale(monkeypatch) -> None:
     settings = _settings(global_markets_stale_after_minutes=1)
     client = GlobalMarketsClient(settings)
@@ -947,3 +995,13 @@ class FakeRedis:
     async def set(self, key: str, value: str, ex: int | None = None) -> None:
         self.set_calls.append((key, value, ex))
         self._cached_payload = value
+
+
+class FailingGetRedis(FakeRedis):
+    async def get(self, _key: str) -> str | None:
+        raise RedisError("redis loading")
+
+
+class FailingSetRedis(FakeRedis):
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        raise RedisError("redis loading")
