@@ -10,7 +10,7 @@ from decimal import Decimal
 
 import requests
 
-from collector.services.ai_summary_client import CONTENT_SUMMARY_PROMPT_VERSION, LLM_REQUEST_MAX_RETRIES, build_llm_attempt_meta, build_openai_chat_payload, extract_chat_message_text, get_ai_base_url, get_ai_model, get_ai_model_candidates, get_ai_request_timeout_seconds, is_ai_configured, normalize_ai_text
+from collector.services.ai_summary_client import CONTENT_SUMMARY_PROMPT_VERSION, LLM_REQUEST_MAX_RETRIES, build_llm_attempt_meta, build_llm_request, get_ai_base_url, get_ai_model, get_ai_model_candidates, get_ai_request_timeout_seconds, is_ai_configured, normalize_ai_text, parse_llm_response
 
 
 logger = logging.getLogger(__name__)
@@ -354,14 +354,12 @@ class AnomalyReasonAnalyzer:
         self._last_latency_ms = None
         self._last_model_used = None
         self._last_attempts = []
-        base_url = get_ai_base_url(self._settings)
-        if base_url is None:
+        if get_ai_base_url(self._settings) is None:
             return None
-        url = f"{base_url.rstrip('/')}/chat/completions"
         timeout = get_ai_request_timeout_seconds(self._settings)
         retries = LLM_REQUEST_MAX_RETRIES
         for model in get_ai_model_candidates(self._settings):
-            payload = build_openai_chat_payload(
+            llm_request = build_llm_request(
                 self._settings,
                 model=model,
                 system_prompt=SYSTEM_PROMPT,
@@ -372,14 +370,10 @@ class AnomalyReasonAnalyzer:
                 started_at = time.monotonic()
                 self._last_model_used = model
                 try:
-                    headers = {"Content-Type": "application/json"}
-                    api_key = getattr(self._settings, "ai_api_key", None)
-                    if api_key:
-                        headers["Authorization"] = f"Bearer {str(api_key).strip()}"
                     response = requests.post(
-                        url,
-                        headers=headers,
-                        json=payload,
+                        llm_request.url,
+                        headers=llm_request.headers,
+                        json=llm_request.payload,
                         timeout=timeout,
                     )
                     if response.status_code >= 400:
@@ -388,22 +382,18 @@ class AnomalyReasonAnalyzer:
                         response.raise_for_status()
                     data = response.json()
                     self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
-                    choices = data.get("choices") if isinstance(data, dict) else None
-                    usage = data.get("usage") if isinstance(data, dict) else None
-                    if not isinstance(choices, list) or not choices:
-                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="missing_choices", status_code=response.status_code, usage=usage))
+                    parsed_response = parse_llm_response(data, protocol=llm_request.protocol)
+                    if parsed_response.text is None:
+                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="missing_choices", status_code=response.status_code, usage=parsed_response.usage, provider=llm_request.provider, protocol=llm_request.protocol))
                         logger.warning("anomaly ai reason response missing choices", extra={"model": model})
                         break
-                    message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                    content = extract_chat_message_text(message)
-                    result = normalize_ai_text(content)
+                    result = normalize_ai_text(parsed_response.text)
                     if result is None:
-                        finish_reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
-                        status = "truncated_before_final_content" if finish_reason == "length" else "missing_final_content"
-                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message, usage=usage))
+                        status = "truncated_before_final_content" if parsed_response.finish_reason in {"length", "incomplete"} else "missing_final_content"
+                        self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status=status, status_code=response.status_code, finish_reason=parsed_response.finish_reason, message=parsed_response.message, usage=parsed_response.usage, provider=llm_request.provider, protocol=llm_request.protocol))
                         logger.warning("anomaly ai reason response missing usable final content", extra={"model": model})
                         break
-                    self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message, usage=usage))
+                    self._last_attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=self._last_latency_ms, status="completed", status_code=response.status_code, finish_reason=parsed_response.finish_reason, message=parsed_response.message, usage=parsed_response.usage, provider=llm_request.provider, protocol=llm_request.protocol))
                     return result
                 except Exception as exc:
                     self._last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
