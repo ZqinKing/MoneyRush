@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 import requests
 
-from app.services.llm_capabilities import LLM_MAX_INPUT_CHARS, LLM_REQUEST_MAX_RETRIES, build_ai_headers, build_llm_attempt_meta, build_openai_chat_payload, extract_chat_message_text, get_ai_base_url, get_ai_model_candidates, get_ai_request_timeout_seconds, is_shared_llm_configured
+from app.services.llm_capabilities import LLM_MAX_INPUT_CHARS, LLM_REQUEST_MAX_RETRIES, build_llm_attempt_meta, build_llm_request, get_ai_base_url, get_ai_model_candidates, get_ai_request_timeout_seconds, is_shared_llm_configured, parse_llm_response
 
 
 logger = logging.getLogger(__name__)
@@ -210,10 +210,8 @@ class MacroAnalysisService:
             derived_facts=_build_derived_facts(snapshot),
             snapshot_json=snapshot_json,
         )
-        base_url = get_ai_base_url(self._settings)
-        if base_url is None:
+        if get_ai_base_url(self._settings) is None:
             return MacroAnalysisResult(analysis=None, model_used=None, prompt_version="macro-llm-v1", skip_reason="missing_model_config")
-        url = f"{base_url.rstrip('/')}/chat/completions"
         timeout = get_ai_request_timeout_seconds(self._settings)
         retries = LLM_REQUEST_MAX_RETRIES
         last_latency_ms: int | None = None
@@ -221,7 +219,7 @@ class MacroAnalysisService:
         last_skip_reason = "request_failed"
         attempts: list[dict[str, object]] = []
         for model in get_ai_model_candidates(self._settings):
-            payload = build_openai_chat_payload(
+            llm_request = build_llm_request(
                 self._settings,
                 model=model,
                 system_prompt=SYSTEM_PROMPT,
@@ -233,33 +231,29 @@ class MacroAnalysisService:
                 last_model = model
                 try:
                     response = requests.post(
-                        url,
-                        headers=build_ai_headers(self._settings),
-                        json=payload,
+                        llm_request.url,
+                        headers=llm_request.headers,
+                        json=llm_request.payload,
                         timeout=timeout,
                     )
                     if response.status_code >= 400:
                         raise requests.HTTPError(f"macro LLM upstream error {response.status_code}")
                     data = response.json()
                     last_latency_ms = max(int((time.monotonic() - started_at) * 1000), 0)
-                    choices = data.get("choices") if isinstance(data, dict) else None
-                    usage = data.get("usage") if isinstance(data, dict) else None
-                    if not isinstance(choices, list) or not choices:
+                    parsed_response = parse_llm_response(data, protocol=llm_request.protocol)
+                    if parsed_response.text is None:
                         last_skip_reason = "empty_choices"
-                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="missing_choices", status_code=response.status_code, usage=usage))
+                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="missing_choices", status_code=response.status_code, usage=parsed_response.usage, provider=llm_request.provider, protocol=llm_request.protocol))
                         logger.warning("macro LLM response missing choices", extra={"model": model})
                         break
-                    message = choices[0].get("message") if isinstance(choices[0], dict) else None
-                    content = extract_chat_message_text(message)
-                    parsed = _extract_json_object(content)
+                    parsed = _extract_json_object(parsed_response.text)
                     if parsed is None or _contains_forbidden_advice(parsed) or _violates_snapshot_facts(parsed, snapshot):
                         last_skip_reason = "invalid_model_output"
-                        finish_reason = choices[0].get("finish_reason") if isinstance(choices[0], dict) else None
-                        status = "truncated_before_final_content" if parsed is None and finish_reason == "length" else "invalid_output"
-                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status=status, status_code=response.status_code, finish_reason=finish_reason, message=message, usage=usage))
+                        status = "truncated_before_final_content" if parsed is None and parsed_response.finish_reason in {"length", "incomplete"} else "invalid_output"
+                        attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status=status, status_code=response.status_code, finish_reason=parsed_response.finish_reason, message=parsed_response.message, usage=parsed_response.usage, provider=llm_request.provider, protocol=llm_request.protocol))
                         logger.warning("macro LLM response failed safety or JSON checks", extra={"model": model})
                         break
-                    attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="completed", status_code=response.status_code, finish_reason=choices[0].get("finish_reason") if isinstance(choices[0], dict) else None, message=message, usage=usage))
+                    attempts.append(build_llm_attempt_meta(model=model, attempt=attempt + 1, latency_ms=last_latency_ms, status="completed", status_code=response.status_code, finish_reason=parsed_response.finish_reason, message=parsed_response.message, usage=parsed_response.usage, provider=llm_request.provider, protocol=llm_request.protocol))
                     return MacroAnalysisResult(
                         analysis=_normalize_analysis(parsed, focus=focus, depth=depth),
                         model_used=model,
