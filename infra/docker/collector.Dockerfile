@@ -10,6 +10,7 @@ COPY collector/requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
 COPY collector /app/collector
+COPY shared /app/shared
 
 WORKDIR /app
 

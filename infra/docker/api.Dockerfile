@@ -10,6 +10,7 @@ COPY backend/requirements.txt /tmp/requirements.txt
 RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
 COPY backend /app
+COPY shared /app/shared
 
 EXPOSE 8000
 
