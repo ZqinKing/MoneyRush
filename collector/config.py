@@ -115,9 +115,16 @@ class Settings(BaseSettings):
     content_news_detail_fetch_max_age_seconds: int = 1800
     ai_base_url: str | None = None
     ai_api_key: str | None = None
+    ai_provider: str = "openai"
+    ai_protocol: str = "openai-chat"
     ai_model: str | None = None
     ai_fallback_model: str | None = None
     ai_thinking_enabled: bool = False
+    ai_reasoning_enabled: bool = False
+    ai_reasoning_effort: str = "low"
+    ai_reasoning_budget_tokens: int = 2048
+    ai_max_output_tokens: int = 8192
+    ai_anthropic_version: str = "2023-06-01"
     ai_request_timeout_seconds: int = 90
     ai_context_length: int = 131072
     ai_max_tokens: int = 8192
