@@ -38,6 +38,7 @@ class Settings(BaseSettings):
     collector_mootdx_servers: str = "180.153.18.170:7709"
     collector_intraday_history_enabled: bool = True
     collector_intraday_history_refresh_seconds: ClassVar[int] = 1800
+    collector_intraday_history_retry_seconds: ClassVar[int] = 120
     collector_intraday_history_request_interval_seconds: ClassVar[int] = 8
     collector_intraday_history_request_jitter_seconds: ClassVar[int] = 2
     collector_intraday_history_vendor_cooldown_seconds: ClassVar[int] = 3600

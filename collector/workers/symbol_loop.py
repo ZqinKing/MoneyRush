@@ -14,6 +14,7 @@ from collector.services.ai_summary_client import is_ai_configured
 from collector.services.anomaly_reason_analyzer import AnomalyReasonAnalyzer, compute_evidence_fingerprint
 from collector.services.persistence import PostgresStore
 from collector.services.tencent_quote_client import MarketQuoteClient
+from shared.market_symbols import is_domestic_stock_collector_symbol
 
 
 logger = logging.getLogger(__name__)
@@ -177,8 +178,15 @@ class CollectorWorker:
         active_symbols = sorted(await self._redis.smembers(self._settings.active_symbols_key))
         logger.info("active symbols snapshot", extra={"active_symbols": active_symbols})
 
-        collected_symbols: list[str] = []
+        supported_symbols: list[str] = []
         for symbol in active_symbols:
+            if is_domestic_stock_collector_symbol(symbol):
+                supported_symbols.append(symbol)
+                continue
+            await self._remove_unsupported_active_symbol(symbol)
+
+        collected_symbols: list[str] = []
+        for symbol in supported_symbols:
             try:
                 await self._collect_symbol(symbol)
                 collected_symbols.append(symbol)
@@ -193,6 +201,16 @@ class CollectorWorker:
             except Exception:
                 logger.exception("collector skipped symbol history refresh after failure", extra={"symbol": symbol})
                 continue
+
+    async def _remove_unsupported_active_symbol(self, symbol: str) -> None:
+        await self._redis.srem(self._settings.active_symbols_key, symbol)
+        await self._redis.srem(f"{self._settings.active_symbols_key}:manual", symbol)
+        await self._redis.delete(
+            f"{self._settings.market_snapshot_key_prefix}:{symbol}",
+            f"{self._settings.market_event_key_prefix}:{symbol}",
+        )
+        self._clear_symbol_runtime_state(symbol)
+        logger.warning("collector removed unsupported active symbol", extra={"symbol": symbol})
 
     async def _aggregate_active_symbol_anomalies(self, *, force: bool = False) -> None:
         if not self._settings.anomaly_aggregation_enabled:
@@ -820,8 +838,8 @@ class CollectorWorker:
         if last_attempt_at is None:
             return False
 
-        refresh_seconds = self._intraday_refresh_interval_seconds(trade_day_date)
-        return monotonic() - last_attempt_at < refresh_seconds
+        retry_seconds = max(int(getattr(self._settings, "collector_intraday_history_retry_seconds", 120)), 1)
+        return monotonic() - last_attempt_at < retry_seconds
 
     def _record_intraday_attempt(self, symbol: str, trade_day_date: date) -> None:
         self._intraday_history_last_attempt_at_by_key[self._intraday_attempt_key(symbol, trade_day_date)] = monotonic()
@@ -840,13 +858,10 @@ class CollectorWorker:
 
     def _resolve_intraday_terminal_status(self, trade_day_date: date, history: list[dict[str, object]]) -> str | None:
         if trade_day_date != datetime.now(CHINA_MARKET_TZ).date():
-            return "complete" if self._is_intraday_history_complete(trade_day_date, history) else "incomplete"
+            return "complete" if self._is_intraday_history_complete(trade_day_date, history) else None
 
         if self._is_intraday_history_complete(trade_day_date, history):
             return "complete"
-
-        if not self._is_within_intraday_reconciliation_window(trade_day_date):
-            return "incomplete"
 
         return None
 
@@ -931,5 +946,5 @@ class CollectorWorker:
             timestamp=timestamp,
             symbol=symbol,
             command_type=payload.get("event", "unknown"),
-            payload=payload,
+            payload=dict(payload),
         )
