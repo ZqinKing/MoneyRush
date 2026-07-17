@@ -9,6 +9,7 @@ from redis.asyncio import Redis
 from collector.services.capital_flow_client import CapitalFlowClient, CapitalFlowClientError
 from collector.services.persistence import PostgresStore
 from collector.services.vendor_scheduler import VendorScheduler
+from shared.market_symbols import is_domestic_stock_collector_symbol
 
 
 logger = logging.getLogger(__name__)
@@ -270,7 +271,7 @@ class CapitalFlowCollectorWorker:
 
     async def _fetch_active_symbols(self) -> list[str]:
         active_symbols = await self._redis.smembers(self._settings.active_symbols_key)
-        return [symbol for symbol in active_symbols if isinstance(symbol, str) and symbol.isdigit() and len(symbol) == 6]
+        return [symbol for symbol in active_symbols if is_domestic_stock_collector_symbol(symbol)]
 
     def _expected_trade_date(self) -> date:
         china_now = datetime.now(CHINA_MARKET_TZ)

@@ -23,6 +23,28 @@ def test_refresh_fund_registers_overseas_symbols_separately() -> None:
     assert client.stock_fund_holder_symbols == ["000001"]
 
 
+def test_refresh_fund_removes_unsupported_domestic_lane_symbol() -> None:
+    redis = FakeRedis()
+    redis.sets["moneyrush:active_symbols"] = {"000001", "005930"}
+    redis.sets["moneyrush:active_symbols:fund:513500"] = {"000001", "005930"}
+    postgres = FakePostgres()
+    client = FakeFundClient(
+        holdings=[
+            {"fund_code": "513500", "stock_symbol": "000001", "stock_market": "SZ", "report_date": "2026-06-30"},
+            {"fund_code": "513500", "stock_symbol": "005930", "stock_market": "KR", "report_date": "2026-06-30"},
+        ]
+    )
+    worker = _worker(redis=redis, postgres=postgres, client=client)
+
+    asyncio.run(worker._refresh_fund("513500", auto_link_stocks=True))
+
+    assert redis.sets["moneyrush:active_symbols"] == {"000001"}
+    assert redis.sets["moneyrush:active_symbols:fund:513500"] == {"000001"}
+    assert sorted(str(row["stock_symbol"]) for row in postgres.fund_stock_links) == ["000001"]
+    assert postgres.deleted_exclude_symbols_by_fund_code["513500"] == ["000001"]
+    assert client.stock_fund_holder_symbols == ["000001"]
+
+
 def test_deactivate_fund_removes_unshared_overseas_symbol() -> None:
     redis = FakeRedis()
     redis.values["moneyrush:fund:513500:holdings"] = json.dumps(["000001", "AAPL.US"])
@@ -69,19 +91,21 @@ def _settings() -> SimpleNamespace:
 
 
 class FakeFundClient:
-    def __init__(self) -> None:
+    def __init__(self, holdings: list[dict[str, object]] | None = None) -> None:
         self.stock_fund_holder_symbols: list[str] = []
+        self._holdings = holdings
 
     def fetch_fund_state(self, fund_code: str) -> dict[str, object]:
+        holdings = self._holdings or [
+            {"fund_code": fund_code, "stock_symbol": "000001", "stock_market": "SZ", "report_date": "2026-06-30"},
+            {"fund_code": fund_code, "stock_symbol": "AAPL.US", "stock_market": "US", "report_date": "2026-06-30"},
+            {"fund_code": fund_code, "stock_symbol": "00700.HK", "stock_market": "HK", "report_date": "2026-06-30"},
+        ]
         return {
             "profile": {"fundCode": fund_code, "fundName": "QDII Fund"},
             "snapshot": {"fundCode": fund_code, "fundName": "QDII Fund"},
             "nav_history": [],
-            "holdings": [
-                {"fund_code": fund_code, "stock_symbol": "000001", "stock_market": "SZ", "report_date": "2026-06-30"},
-                {"fund_code": fund_code, "stock_symbol": "AAPL.US", "stock_market": "US", "report_date": "2026-06-30"},
-                {"fund_code": fund_code, "stock_symbol": "00700.HK", "stock_market": "HK", "report_date": "2026-06-30"},
-            ],
+            "holdings": holdings,
         }
 
     def fetch_stock_fund_holders(self, symbol: str) -> list[dict[str, object]]:
@@ -93,6 +117,7 @@ class FakePostgres:
     def __init__(self) -> None:
         self.fund_stock_links: list[dict[str, object]] = []
         self.deleted_fund_codes: list[str] = []
+        self.deleted_exclude_symbols_by_fund_code: dict[str, list[str] | None] = {}
 
     async def upsert_fund_profile(self, _profile: dict[str, object]) -> None:
         pass
@@ -114,6 +139,7 @@ class FakePostgres:
 
     async def delete_fund_stock_links(self, fund_code: str, exclude_stock_symbols: list[str] | None = None) -> None:
         self.deleted_fund_codes.append(fund_code)
+        self.deleted_exclude_symbols_by_fund_code[fund_code] = exclude_stock_symbols
 
     async def has_other_fund_stock_links(self, *, stock_symbol: str, excluding_fund_code: str) -> bool:
         return False
