@@ -126,9 +126,10 @@ class PostgresStore:
             raise RuntimeError("PostgresStore must be connected before schema initialization")
 
         async with self._pool.acquire() as connection:
-            exact_duplicate_cleanup = await self._dedupe_exact_market_rows(connection)
-            if any(exact_duplicate_cleanup.values()):
-                logger.warning("collector removed exact duplicate market rows", extra=exact_duplicate_cleanup)
+            if not await self._market_identity_indexes_exist(connection):
+                exact_duplicate_cleanup = await self._dedupe_exact_market_rows(connection)
+                if any(exact_duplicate_cleanup.values()):
+                    logger.warning("collector removed exact duplicate market rows", extra=exact_duplicate_cleanup)
 
             await connection.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS stock_tick_identity_idx ON stock_tick (symbol, ts, source, price, COALESCE(volume, -1), COALESCE(amount, -1), COALESCE(side, ''))"
@@ -856,6 +857,18 @@ class PostgresStore:
             "removed_tick_duplicates": removed_tick_duplicates or 0,
             "removed_event_duplicates": removed_event_duplicates or 0,
         }
+
+    async def _market_identity_indexes_exist(self, connection: asyncpg.Connection) -> bool:
+        existing_indexes = await connection.fetch(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND indexname = ANY($1::text[])
+            """,
+            ["stock_tick_identity_idx", "stock_event_identity_idx"],
+        )
+        return {str(row["indexname"]) for row in existing_indexes} == {"stock_tick_identity_idx", "stock_event_identity_idx"}
 
     async def _repair_runtime_data(self, connection: asyncpg.Connection) -> dict[str, int]:
         repaired_ticks = await connection.fetchval(
