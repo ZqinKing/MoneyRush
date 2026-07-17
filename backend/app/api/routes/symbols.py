@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.services.market_detail.capital_flow_snapshots import CAPITAL_FLOW_STALE_REASON, enrich_snapshots_with_capital_flow, expected_capital_flow_trade_date
 from app.services.normalize.market_payloads import normalize_symbol_input
+from shared.market_symbols import is_domestic_stock_collector_symbol
 
 
 router = APIRouter(prefix="/symbols", tags=["symbols"])
@@ -32,6 +33,8 @@ def _validate_limit(limit: int) -> int:
 
 
 def _parse_iso_datetime(value: object) -> datetime | None:
+    if isinstance(value, datetime):
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -59,6 +62,17 @@ def _filter_intraday_bars_for_reference_day(
     if not bars or reference_ts is None:
         return []
     return [bar for bar in bars if _is_same_china_trade_day(bar.get("bucketTs"), reference_ts)]
+
+
+def _latest_reference_timestamp(*values: object) -> object:
+    candidates: list[tuple[datetime, object]] = []
+    for value in values:
+        parsed = _parse_iso_datetime(value)
+        if parsed is not None:
+            candidates.append((parsed.astimezone(timezone.utc), value))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
 
 
 @router.get("/active")
@@ -106,12 +120,14 @@ async def symbol_detail(symbol: str, request: Request) -> dict[str, object]:
         latest_event = await query_service.fetch_latest_event(normalized_symbol)
 
     latest_kline = await query_service.fetch_latest_kline(normalized_symbol, period="1d")
+    latest_intraday_kline = await query_service.fetch_latest_kline(normalized_symbol, period="1m")
     capital_flow = await query_service.fetch_latest_capital_flow(normalized_symbol)
     daily_bars_preview = await query_service.fetch_klines(normalized_symbol, period="1d", limit=30)
-    reference_intraday_ts = (
-        (snapshot or {}).get("updatedAt")
-        or (latest_event or {}).get("generatedAt")
-        or (latest_kline or {}).get("bucketTs")
+    reference_intraday_ts = _latest_reference_timestamp(
+        (snapshot or {}).get("updatedAt"),
+        (latest_event or {}).get("generatedAt"),
+        (latest_kline or {}).get("bucketTs"),
+        (latest_intraday_kline or {}).get("bucketTs"),
     )
     intraday_minute_bars = await query_service.fetch_intraday_sampled_bars(
         normalized_symbol,
@@ -238,6 +254,8 @@ async def symbol_events(symbol: str, request: Request, limit: int = 20) -> dict[
 @router.post("/activate")
 async def activate_symbol(payload: ActivateSymbolRequest, request: Request) -> JSONResponse:
     symbol = _normalize_symbol_or_422(payload.symbol)
+    if not is_domestic_stock_collector_symbol(symbol):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=f"股票代码 {symbol} 暂不支持当前 A 股实时采集链路")
 
     redis_store = request.app.state.redis_store
     symbol_lookup_service = request.app.state.symbol_lookup_service

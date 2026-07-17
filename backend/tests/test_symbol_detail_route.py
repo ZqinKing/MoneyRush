@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
-from app.api.routes.symbols import symbol_detail
+from app.api.routes.symbols import ActivateSymbolRequest, activate_symbol, symbol_detail
 
 
 class FakeRedisStore:
@@ -22,6 +22,7 @@ class FakeFundQueryService:
 class FakeQueryService:
     def __init__(self) -> None:
         self.intraday_calls: list[dict[str, object]] = []
+        self.completeness_reference_ts: object = "2026-06-30T15:00:00+08:00"
 
     async def fetch_snapshot(self, _symbol: str) -> None:
         return None
@@ -30,8 +31,11 @@ class FakeQueryService:
         return None
 
     async def fetch_latest_kline(self, _symbol: str, *, period: str) -> dict[str, object]:
-        assert period == "1d"
-        return {"bucketTs": "2026-06-30T00:00:00+00:00"}
+        if period == "1d":
+            return {"bucketTs": "2026-06-30T00:00:00+00:00"}
+        if period == "1m":
+            return {"bucketTs": "2026-06-30T01:31:00+00:00"}
+        raise AssertionError(f"unexpected period: {period}")
 
     async def fetch_latest_capital_flow(self, _symbol: str) -> None:
         return None
@@ -72,7 +76,7 @@ class FakeQueryService:
         }
 
     async def fetch_intraday_completeness(self, _symbol: str, *, reference_ts: object, reconciliation_seconds: int) -> dict[str, object]:
-        assert reference_ts == "2026-06-30T15:00:00+08:00"
+        assert reference_ts == self.completeness_reference_ts
         assert reconciliation_seconds == 60
         return {"tradeDay": "2026-06-30", "status": "complete"}
 
@@ -106,3 +110,78 @@ def test_symbol_detail_passes_reference_ts_to_intraday_queries_and_enables_depth
     assert capabilities["supportsBestBidAsk"] is True
     assert capabilities["supportsOrderBookDepth5"] is True
     assert last_bid["level"] == 5
+
+
+class StaleSnapshotRedisStore(FakeRedisStore):
+    async def get_symbol_snapshot(self, _symbol: str) -> dict[str, object]:
+        return {"updatedAt": "2026-07-14T15:00:00+08:00", "lastPrice": 10.0, "source": "tencent-finance"}
+
+
+class FreshIntradayQueryService(FakeQueryService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.completeness_reference_ts = "2026-07-17T06:36:00+00:00"
+
+    async def fetch_latest_kline(self, _symbol: str, *, period: str) -> dict[str, object]:
+        if period == "1d":
+            return {"bucketTs": "2026-07-17T00:00:00+00:00"}
+        if period == "1m":
+            return {"bucketTs": "2026-07-17T06:36:00+00:00"}
+        raise AssertionError(f"unexpected period: {period}")
+
+    async def fetch_intraday_sampled_bars(self, symbol: str, *, interval_minutes: int, allow_tick_fallback: bool = True, reference_ts: object = None) -> list[dict[str, object]]:
+        self.intraday_calls.append(
+            {
+                "symbol": symbol,
+                "interval_minutes": interval_minutes,
+                "allow_tick_fallback": allow_tick_fallback,
+                "reference_ts": reference_ts,
+            }
+        )
+        return [
+            {"bucketTs": "2026-07-17T06:35:00+00:00", "close": 10.0},
+            {"bucketTs": "2026-07-17T06:36:00+00:00", "close": 10.1},
+        ]
+
+
+def test_symbol_detail_prefers_fresh_intraday_reference_over_stale_snapshot() -> None:
+    query_service = FreshIntradayQueryService()
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                redis_store=StaleSnapshotRedisStore(),
+                market_detail_query_service=query_service,
+                fund_query_service=FakeFundQueryService(),
+                settings=SimpleNamespace(collector_intraday_post_close_reconciliation_seconds=60),
+            )
+        )
+    )
+
+    payload = asyncio.run(symbol_detail("300196", request))
+    capabilities = payload["capabilities"]
+
+    assert [call["reference_ts"] for call in query_service.intraday_calls] == ["2026-07-17T06:36:00+00:00"] * 2
+    assert isinstance(capabilities, dict)
+    assert capabilities["supportsIntradayMinuteBars"] is True
+
+
+def test_activate_symbol_rejects_unsupported_domestic_collector_symbol_before_lookup() -> None:
+    class FailingLookupService:
+        def lookup(self, _symbol: str) -> object:
+            raise AssertionError("unsupported collector symbols should be rejected before lookup")
+
+    request = SimpleNamespace(
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                redis_store=object(),
+                symbol_lookup_service=FailingLookupService(),
+            )
+        )
+    )
+
+    try:
+        asyncio.run(activate_symbol(ActivateSymbolRequest(symbol="005930"), request))
+    except Exception as exc:
+        assert getattr(exc, "status_code", None) == 422
+    else:
+        raise AssertionError("unsupported collector symbol was accepted")
