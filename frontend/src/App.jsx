@@ -1694,6 +1694,16 @@ function formatImpactPercent(value) {
   return `估算影响 ${formatSignedPercent(value)}`;
 }
 
+function formatAnomalyFundPosition(fund) {
+  if (typeof fund?.stockWeightInFund === 'number') {
+    return `仓位 ${formatSignedPercent(fund.stockWeightInFund).replace('+', '')}`;
+  }
+  if (typeof fund?.holdMarketValue === 'number') {
+    return `持仓市值 ${formatTurnoverAmount(fund.holdMarketValue)}`;
+  }
+  return '仓位待估';
+}
+
 function formatPercentValue(value) {
   if (typeof value !== 'number') {
     return '--';
@@ -7626,7 +7636,7 @@ function App() {
               <div className="anomaly-fund-row" key={`${item?.symbol}-${fund.fundCode}-${fund.reportDate}`}>
                 <span>{fund.fundName || fund.fundCode}</span>
                 <small>
-                  {fund.fundCode} · {fund.reportDate || '报告期未知'} · 仓位 {formatSignedPercent(fund.stockWeightInFund).replace('+', '')} · {formatImpactPercent(fund.estimatedImpact)}
+                  {fund.fundCode} · {fund.reportDate || '报告期未知'} · {formatAnomalyFundPosition(fund)} · {formatImpactPercent(fund.estimatedImpact)}
                 </small>
               </div>
             ))}
@@ -7646,7 +7656,7 @@ function App() {
             <h4>{timeline.length > 1 ? '日内异动轨迹' : '日内异动触发点'}</h4>
             <ul className="timeline-list">
               {timeline.map((entry, index) => (
-                <li className={`timeline-item severity-${entry?.severity || 'normal'}`} key={`${item?.symbol || 'item'}-${entry?.timeBucket || entry?.triggerTime || index}`}>
+                <li className={`timeline-item severity-${entry?.severity || 'normal'}`} key={`${item?.symbol || 'item'}-${entry?.timeBucket || entry?.triggerTime || 'entry'}-${entry?.anomalyType || 'unknown'}-${index}`}>
                   <span className="timeline-time">{entry?.displayTime || formatTime(entry?.timeBucket || entry?.triggerTime)}</span>
                   <span className="timeline-segment">{getSessionSegmentLabel(entry?.sessionSegment)}</span>
                   <span className="timeline-type">{getAnomalyTypeLabel(entry?.anomalyType)}</span>
