@@ -763,23 +763,35 @@ class MarketDetailQueryService:
             fund_rows = await self._fetch(
                 """
             WITH latest_report AS (
-                SELECT stock_symbol, MAX(report_date) AS report_date
-                FROM stock_fund_holding
-                WHERE stock_symbol = ANY($1::text[])
-                  AND fund_code = ANY($2::text[])
-                GROUP BY stock_symbol
+                SELECT fund_code, MAX(report_date) AS report_date
+                FROM fund_stock_holding
+                WHERE fund_code = ANY($2::text[])
+                GROUP BY fund_code
             ), ranked AS (
-                SELECT sfh.stock_symbol, sfh.fund_code, sfh.fund_name, sfh.fund_type, sfh.report_date,
-                       sfh.weight_percent, sfh.hold_market_value, sfh.change_type, sfh.raw,
+                SELECT fsh.stock_symbol, fsh.fund_code, fp.fund_name, fp.fund_type, fsh.report_date,
+                       COALESCE(fsh.weight_percent, sfh.weight_percent) AS weight_percent,
+                       fsh.hold_market_value, fsh.change_type, fsh.raw,
                        ROW_NUMBER() OVER (
-                           PARTITION BY sfh.stock_symbol, sfh.fund_code
-                           ORDER BY sfh.weight_percent DESC NULLS LAST, sfh.hold_market_value DESC NULLS LAST
+                           PARTITION BY fsh.stock_symbol, fsh.fund_code
+                           ORDER BY fsh.rank ASC NULLS LAST, fsh.weight_percent DESC NULLS LAST, fsh.hold_market_value DESC NULLS LAST
                        ) AS row_choice
-                FROM stock_fund_holding sfh
+                FROM fund_stock_holding fsh
                 JOIN latest_report lr
-                  ON lr.stock_symbol = sfh.stock_symbol
-                 AND lr.report_date = sfh.report_date
-                WHERE sfh.fund_code = ANY($2::text[])
+                  ON lr.fund_code = fsh.fund_code
+                 AND lr.report_date = fsh.report_date
+                LEFT JOIN fund_profile fp ON fp.fund_code = fsh.fund_code
+                LEFT JOIN LATERAL (
+                    SELECT weight_percent
+                    FROM stock_fund_holding
+                    WHERE stock_symbol = fsh.stock_symbol
+                      AND fund_code = fsh.fund_code
+                      AND report_date = fsh.report_date
+                      AND weight_percent IS NOT NULL
+                    ORDER BY weight_percent DESC
+                    LIMIT 1
+                ) sfh ON true
+                WHERE fsh.stock_symbol = ANY($1::text[])
+                  AND fsh.fund_code = ANY($2::text[])
             )
             SELECT stock_symbol, fund_code, fund_name, fund_type, report_date, weight_percent,
                    hold_market_value, change_type, raw
@@ -883,23 +895,35 @@ class MarketDetailQueryService:
             fund_rows = await self._fetch(
                 """
             WITH latest_report AS (
-                SELECT stock_symbol, MAX(report_date) AS report_date
-                FROM stock_fund_holding
-                WHERE stock_symbol = ANY($1::text[])
-                  AND fund_code = ANY($2::text[])
-                GROUP BY stock_symbol
+                SELECT fund_code, MAX(report_date) AS report_date
+                FROM fund_stock_holding
+                WHERE fund_code = ANY($2::text[])
+                GROUP BY fund_code
             ), ranked AS (
-                SELECT sfh.stock_symbol, sfh.fund_code, sfh.fund_name, sfh.fund_type, sfh.report_date,
-                       sfh.weight_percent, sfh.hold_market_value, sfh.change_type,
+                SELECT fsh.stock_symbol, fsh.fund_code, fp.fund_name, fp.fund_type, fsh.report_date,
+                       COALESCE(fsh.weight_percent, sfh.weight_percent) AS weight_percent,
+                       fsh.hold_market_value, fsh.change_type,
                        ROW_NUMBER() OVER (
-                           PARTITION BY sfh.stock_symbol, sfh.fund_code
-                           ORDER BY sfh.weight_percent DESC NULLS LAST, sfh.hold_market_value DESC NULLS LAST
+                           PARTITION BY fsh.stock_symbol, fsh.fund_code
+                           ORDER BY fsh.rank ASC NULLS LAST, fsh.weight_percent DESC NULLS LAST, fsh.hold_market_value DESC NULLS LAST
                        ) AS row_choice
-                FROM stock_fund_holding sfh
+                FROM fund_stock_holding fsh
                 JOIN latest_report lr
-                  ON lr.stock_symbol = sfh.stock_symbol
-                 AND lr.report_date = sfh.report_date
-                WHERE sfh.fund_code = ANY($2::text[])
+                  ON lr.fund_code = fsh.fund_code
+                 AND lr.report_date = fsh.report_date
+                LEFT JOIN fund_profile fp ON fp.fund_code = fsh.fund_code
+                LEFT JOIN LATERAL (
+                    SELECT weight_percent
+                    FROM stock_fund_holding
+                    WHERE stock_symbol = fsh.stock_symbol
+                      AND fund_code = fsh.fund_code
+                      AND report_date = fsh.report_date
+                      AND weight_percent IS NOT NULL
+                    ORDER BY weight_percent DESC
+                    LIMIT 1
+                ) sfh ON true
+                WHERE fsh.stock_symbol = ANY($1::text[])
+                  AND fsh.fund_code = ANY($2::text[])
             )
             SELECT stock_symbol, fund_code, fund_name, fund_type, report_date, weight_percent,
                    hold_market_value, change_type
